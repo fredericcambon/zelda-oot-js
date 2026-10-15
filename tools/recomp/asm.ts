@@ -89,6 +89,72 @@ const FORMATS: Record<string, Format> = {
   cache: { op: 0x2f, operands: ['rt', 'mem'] },
 };
 
+const FPU_FMT: Record<string, number> = { s: 16, d: 17, w: 20, l: 21 };
+const FPU_FN: Record<string, number> = {
+  add: 0, sub: 1, mul: 2, div: 3, sqrt: 4, abs: 5, mov: 6, neg: 7,
+  'round.l': 8, 'trunc.l': 9, 'ceil.l': 10, 'floor.l': 11, 'round.w': 12, 'trunc.w': 13, 'ceil.w': 14, 'floor.w': 15,
+  'cvt.s': 0x20, 'cvt.d': 0x21, 'cvt.w': 0x24, 'cvt.l': 0x25,
+};
+const FPU_COND = ['f', 'un', 'eq', 'ueq', 'olt', 'ult', 'ole', 'ule', 'sf', 'ngle', 'seq', 'ngl', 'lt', 'nge', 'le', 'ngt'];
+const FPU_MOVE: Record<string, number> = { mfc1: 0, dmfc1: 1, cfc1: 2, mtc1: 4, dmtc1: 5, ctc1: 6 };
+const FPU_MEM: Record<string, number> = { lwc1: 0x31, swc1: 0x39, ldc1: 0x35, sdc1: 0x3d };
+const FPU_BRANCH: Record<string, number> = { bc1f: 0, bc1t: 1, bc1fl: 2, bc1tl: 3 };
+const COP0_MOVE: Record<string, number> = { mfc0: 0, dmfc0: 1, mtc0: 4, dmtc0: 5 };
+const COP0_TLB: Record<string, number> = { tlbr: 1, tlbwi: 2, tlbwr: 6, tlbp: 8, eret: 0x18 };
+
+function parseFpr(tok: string): number {
+  const m = /^\$f(\d+)$/.exec(tok.trim());
+  if (!m || Number(m[1]) > 31) throw new Error(`bad FPU register '${tok}'`);
+  return Number(m[1]);
+}
+
+/** Encodes a COP0 or COP1 instruction; undefined when `name` is neither. */
+function encodeCop(name: string, args: string[], text: string, branchOffset: (tok: string) => number): number | undefined {
+  const need = (n: number) => {
+    if (args.length !== n) throw new Error(`'${text}': expected ${n} operands`);
+  };
+  const cop1 = (fmt: number, ft: number, fs: number, fd: number, fn: number) =>
+    ((0x11 << 26) | (fmt << 21) | (ft << 16) | (fs << 11) | (fd << 6) | fn) >>> 0;
+  if (name in FPU_MOVE) {
+    need(2);
+    const reg = name.endsWith('c1') && name[0] === 'c' ? Number(args[1]!.replace('$', '')) : parseFpr(args[1]!);
+    return ((0x11 << 26) | (FPU_MOVE[name]! << 21) | (parseReg(args[0]!) << 16) | (reg << 11)) >>> 0;
+  }
+  if (name in FPU_MEM) {
+    need(2);
+    const m = /^(-?\w+)?\(\s*(\$\w+)\s*\)$/.exec(args[1]!);
+    if (!m) throw new Error(`'${text}': bad memory operand`);
+    const off = m[1] ? parseNum(m[1]) : 0;
+    return ((FPU_MEM[name]! << 26) | (parseReg(m[2]!) << 21) | (parseFpr(args[0]!) << 16) | (off & 0xffff)) >>> 0;
+  }
+  if (name in FPU_BRANCH) {
+    need(1);
+    return ((0x11 << 26) | (8 << 21) | (FPU_BRANCH[name]! << 16) | (branchOffset(args[0]!) & 0xffff)) >>> 0;
+  }
+  if (name in COP0_MOVE) {
+    need(2);
+    return ((0x10 << 26) | (COP0_MOVE[name]! << 21) | (parseReg(args[0]!) << 16) | (parseNum(args[1]!.replace('$', '')) << 11)) >>> 0;
+  }
+  if (name in COP0_TLB) return ((0x10 << 26) | (1 << 25) | COP0_TLB[name]!) >>> 0;
+  const m = /^(.+)\.([sdwl])$/.exec(name);
+  if (!m) return undefined;
+  const fmt = FPU_FMT[m[2]!]!;
+  if (m[1]!.startsWith('c.')) {
+    need(2);
+    const cond = FPU_COND.indexOf(m[1]!.slice(2));
+    if (cond < 0) throw new Error(`'${text}': unknown condition`);
+    return cop1(fmt, parseFpr(args[1]!), parseFpr(args[0]!), 0, 0x30 | cond);
+  }
+  const fn = FPU_FN[m[1]!];
+  if (fn === undefined) return undefined;
+  if (fn >= 4) {
+    need(2);
+    return cop1(fmt, 0, parseFpr(args[1]!), parseFpr(args[0]!), fn);
+  }
+  need(3);
+  return cop1(fmt, parseFpr(args[2]!), parseFpr(args[1]!), parseFpr(args[0]!), fn);
+}
+
 export const INTEGER_MNEMONICS: readonly string[] = Object.keys(FORMATS);
 
 interface Line {
@@ -167,6 +233,13 @@ export function assemble(source: string, base: number): Assembled {
 
   const encode = (ln: Line): number => {
     const [name, given] = expandPseudo(ln.mnemonic, ln.args);
+    const branchOffset = (tok: string) => {
+      const off = (target(tok) - (ln.addr + 4)) / 4;
+      if (!Number.isInteger(off) || off < -0x8000 || off > 0x7fff) throw new Error(`'${ln.text}': branch out of range`);
+      return off;
+    };
+    const cop = encodeCop(name, given, ln.text, branchOffset);
+    if (cop !== undefined) return cop;
     const fmt = FORMATS[name];
     const args = given.length === 0 && fmt?.operands[0] === 'code' ? ['0'] : given;
     if (!fmt) throw new Error(`unknown instruction '${ln.mnemonic}' in '${ln.text}'`);

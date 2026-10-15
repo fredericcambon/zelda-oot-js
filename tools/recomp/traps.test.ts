@@ -58,12 +58,12 @@ snippetSuite('traps and exceptions', [
   cond('tnei $t1, 5', { t1: 6 }, true),
   cond('tnei $t1, 5', { t1: 5 }, false),
 
-  full('an instruction outside the integer set is reported, not skipped', `
-    .word 0x46000000
+  full('an undefined instruction is reported, not skipped', `
+    .word 0xec000000
     jr $ra
-    nop`, {}, {}, { trap: { kind: 'unimplemented', pc: PC, code: 0x46000000 } }),
-  full('coprocessor 0 moves are reported', `
-    .word 0x40086000
+    nop`, {}, {}, { trap: { kind: 'unimplemented', pc: PC, code: 0xec000000 } }),
+  full('a coprocessor 2 instruction is reported', `
+    .word 0x48000000
     jr $ra
-    nop`, {}, {}, { trap: { kind: 'unimplemented', pc: PC, code: 0x40086000 } }),
+    nop`, {}, {}, { trap: { kind: 'unimplemented', pc: PC, code: 0x48000000 } }),
 ]);

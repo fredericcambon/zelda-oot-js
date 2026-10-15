@@ -1,5 +1,6 @@
 // MIPS III integer ISA to C. Each function becomes `void name(Cpu *c)`; see runtime/cpu.h.
 import { decode, format, type Insn } from '../analyze/mips.ts';
+import { FPU_CONDITIONS, fpuPlain } from './fpu.ts';
 
 export interface FuncInput {
   addr: number;
@@ -10,7 +11,18 @@ export interface FuncInput {
 export interface EmitOptions {
   /** C identifier of the recompiled function at a guest address. */
   symbol?: (addr: number) => string;
+  /** ELF relocation type of each word the loader rewrites at load time (overlays), by link address. */
+  relocs?: ReadonlyMap<number, number>;
+  /**
+   * C expression for the load address minus the link address of the code being recompiled. Code is translated
+   * against its link address; the low half of every relocated hi/lo pair adds this to reach the loaded copy.
+   */
+  delta?: string;
+  /** Targets of the jump tables, by the address of the `jr` that dispatches through each. */
+  jumpTables?: ReadonlyMap<number, readonly number[]>;
 }
+
+const R_MIPS_LO16 = 6;
 
 export const defaultSymbol = (addr: number) => `fn_${(addr >>> 0).toString(16).padStart(8, '0')}`;
 
@@ -35,10 +47,12 @@ const CONDITIONS: Record<string, (i: Insn) => string> = {
   bgtz: (i) => `${S64(i.rs)} > 0`,
   bltz: (i) => `${S64(i.rs)} < 0`,
   bgez: (i) => `${S64(i.rs)} >= 0`,
+  bc1t: () => FPU_CONDITIONS.bc1t!,
+  bc1f: () => FPU_CONDITIONS.bc1f!,
 };
 const BRANCH_BASE: Record<string, string> = {
   beql: 'beq', bnel: 'bne', blezl: 'blez', bgtzl: 'bgtz', bltzl: 'bltz', bgezl: 'bgez',
-  bltzal: 'bltz', bgezal: 'bgez', bltzall: 'bltz', bgezall: 'bgez',
+  bltzal: 'bltz', bgezal: 'bgez', bltzall: 'bltz', bgezall: 'bgez', bc1tl: 'bc1t', bc1fl: 'bc1f',
 };
 
 const TRAP_REG: Record<string, (i: Insn) => string> = {
@@ -68,8 +82,14 @@ const LOADS: Record<string, (a: string) => string> = {
   ld: (a) => `rd64(${a})`,
 };
 
-function addrExpr(i: Insn): string {
-  return `(uint32_t)(${U32(i.rs)} + ${sx16(i.imm) >>> 0}u)`;
+/** Whether the instruction carries the low half of a relocated address. */
+function relocatedLo(x: Ctx, i: Insn): boolean {
+  return x.relocs?.get(i.addr) === R_MIPS_LO16;
+}
+
+function addrExpr(x: Ctx, i: Insn): string {
+  const delta = relocatedLo(x, i) ? ` + ${x.delta}` : '';
+  return `(uint32_t)(${U32(i.rs)} + ${sx16(i.imm) >>> 0}u${delta})`;
 }
 
 /** Overflow-checked add/sub: the destination is untouched when the exception is raised. */
@@ -79,14 +99,24 @@ function checked(dest: number, op: 'add' | 'sub', bits: 32 | 64, a: string, b: s
   return `{ ${t} r; if (__builtin_${op}_overflow(${a}, ${b}, &r)) rt_trap(c, TRAP_OVERFLOW, 0x${hex8(pc)}u, 0); ${set(dest, res)} }`;
 }
 
-function plain(i: Insn): string {
+function plain(x: Ctx, i: Insn): string {
   const { rs, rt, rd } = i;
   const sa = (i.word >>> 6) & 31;
   const simm = sx16(i.imm);
   const pc = i.addr;
   const imm = i.imm;
   switch (i.op) {
-    case 'nop': case 'sync': case 'cache': return ';';
+    case 'nop': case 'sync': return ';';
+    case 'cache': return `rt_cache(c, ${rt}, ${addrExpr(x, i)});`;
+    case 'mfc0': return set(rt, SX(`(uint32_t)rt_mfc0(c, ${rd})`));
+    case 'dmfc0': return set(rt, `rt_mfc0(c, ${rd})`);
+    case 'mtc0': return `rt_mtc0(c, ${rd}, ${SX(U32(rt))});`;
+    case 'dmtc0': return `rt_mtc0(c, ${rd}, ${U(rt)});`;
+    case 'tlbr': return `rt_tlb(c, TLB_READ, 0x${hex8(pc)}u);`;
+    case 'tlbwi': return `rt_tlb(c, TLB_WRITE_INDEXED, 0x${hex8(pc)}u);`;
+    case 'tlbwr': return `rt_tlb(c, TLB_WRITE_RANDOM, 0x${hex8(pc)}u);`;
+    case 'tlbp': return `rt_tlb(c, TLB_PROBE, 0x${hex8(pc)}u);`;
+    case 'eret': return 'rt_eret(c);';
     case 'sll': return set(rd, SX(`${U32(rt)} << ${sa}`));
     case 'srl': return set(rd, SX(`${U32(rt)} >> ${sa}`));
     case 'sra': return set(rd, SX(`${S32(rt)} >> ${sa}`));
@@ -130,35 +160,39 @@ function plain(i: Insn): string {
     case 'sltu': return set(rd, `(uint64_t)(${U(rs)} < ${U(rt)})`);
     case 'addi': return checked(rt, 'add', 32, S32(rs), `${simm}`, pc);
     case 'daddi': return checked(rt, 'add', 64, S64(rs), `${simm}ll`, pc);
-    case 'addiu': return set(rt, SX(`${U32(rs)} + ${simm >>> 0}u`));
+    case 'addiu': return set(rt, SX(`${U32(rs)} + ${simm >>> 0}u${relocatedLo(x, i) ? ` + ${x.delta}` : ''}`));
     case 'daddiu': return set(rt, `${U(rs)} + (uint64_t)${simm}ll`);
     case 'slti': return set(rt, `(uint64_t)(${S64(rs)} < ${simm}ll)`);
     case 'sltiu': return set(rt, `(uint64_t)(${U(rs)} < (uint64_t)${simm}ll)`);
     case 'andi': return set(rt, `${U(rs)} & ${imm}ull`);
-    case 'ori': return set(rt, `${U(rs)} | ${imm}ull`);
+    case 'ori':
+      if (relocatedLo(x, i)) return set(rt, SX(`(uint32_t)(${U(rs)} | ${imm}ull) + ${x.delta}`));
+      return set(rt, `${U(rs)} | ${imm}ull`);
     case 'xori': return set(rt, `${U(rs)} ^ ${imm}ull`);
     case 'lui': return set(rt, SX(`${imm << 16 >>> 0}u`));
-    case 'lwl': return set(rt, `lwl(${U(rt)}, ${addrExpr(i)})`);
-    case 'lwr': return set(rt, `lwr(${U(rt)}, ${addrExpr(i)})`);
-    case 'ldl': return set(rt, `ldl(${U(rt)}, ${addrExpr(i)})`);
-    case 'ldr': return set(rt, `ldr(${U(rt)}, ${addrExpr(i)})`);
-    case 'sb': return `wr8(${addrExpr(i)}, (uint8_t)${U(rt)});`;
-    case 'sh': return `wr16(${addrExpr(i)}, (uint16_t)${U(rt)});`;
-    case 'sw': return `wr32(${addrExpr(i)}, ${U32(rt)});`;
-    case 'sd': return `wr64(${addrExpr(i)}, ${U(rt)});`;
-    case 'swl': return `swl(${U32(rt)}, ${addrExpr(i)});`;
-    case 'swr': return `swr(${U32(rt)}, ${addrExpr(i)});`;
-    case 'sdl': return `sdl(${U(rt)}, ${addrExpr(i)});`;
-    case 'sdr': return `sdr(${U(rt)}, ${addrExpr(i)});`;
-    case 'll': return `{ uint32_t a = ${addrExpr(i)}; c->llbit = 1; ${set(rt, SX('rd32(a)'))} }`;
-    case 'lld': return `{ uint32_t a = ${addrExpr(i)}; c->llbit = 1; ${set(rt, 'rd64(a)')} }`;
-    case 'sc': return `{ uint32_t a = ${addrExpr(i)}; uint64_t ok = c->llbit; if (ok) wr32(a, ${U32(rt)}); c->llbit = 0; ${set(rt, 'ok')} }`;
-    case 'scd': return `{ uint32_t a = ${addrExpr(i)}; uint64_t ok = c->llbit; if (ok) wr64(a, ${U(rt)}); c->llbit = 0; ${set(rt, 'ok')} }`;
+    case 'lwl': return set(rt, `lwl(${U(rt)}, ${addrExpr(x, i)})`);
+    case 'lwr': return set(rt, `lwr(${U(rt)}, ${addrExpr(x, i)})`);
+    case 'ldl': return set(rt, `ldl(${U(rt)}, ${addrExpr(x, i)})`);
+    case 'ldr': return set(rt, `ldr(${U(rt)}, ${addrExpr(x, i)})`);
+    case 'sb': return `wr8(${addrExpr(x, i)}, (uint8_t)${U(rt)});`;
+    case 'sh': return `wr16(${addrExpr(x, i)}, (uint16_t)${U(rt)});`;
+    case 'sw': return `wr32(${addrExpr(x, i)}, ${U32(rt)});`;
+    case 'sd': return `wr64(${addrExpr(x, i)}, ${U(rt)});`;
+    case 'swl': return `swl(${U32(rt)}, ${addrExpr(x, i)});`;
+    case 'swr': return `swr(${U32(rt)}, ${addrExpr(x, i)});`;
+    case 'sdl': return `sdl(${U(rt)}, ${addrExpr(x, i)});`;
+    case 'sdr': return `sdr(${U(rt)}, ${addrExpr(x, i)});`;
+    case 'll': return `{ uint32_t a = ${addrExpr(x, i)}; c->llbit = 1; ${set(rt, SX('rd32(a)'))} }`;
+    case 'lld': return `{ uint32_t a = ${addrExpr(x, i)}; c->llbit = 1; ${set(rt, 'rd64(a)')} }`;
+    case 'sc': return `{ uint32_t a = ${addrExpr(x, i)}; uint64_t ok = c->llbit; if (ok) wr32(a, ${U32(rt)}); c->llbit = 0; ${set(rt, 'ok')} }`;
+    case 'scd': return `{ uint32_t a = ${addrExpr(x, i)}; uint64_t ok = c->llbit; if (ok) wr64(a, ${U(rt)}); c->llbit = 0; ${set(rt, 'ok')} }`;
     case 'syscall': return `rt_trap(c, TRAP_SYSCALL, 0x${hex8(pc)}u, ${(i.word >>> 6) & 0xfffff});`;
     case 'break': return `rt_trap(c, TRAP_BREAK, 0x${hex8(pc)}u, ${(i.word >>> 6) & 0xfffff});`;
   }
+  const fp = fpuPlain(i, (n) => addrExpr(x, n), set, U);
+  if (fp !== undefined) return fp;
   const load = LOADS[i.op];
-  if (load) return set(rt, load(addrExpr(i)));
+  if (load) return set(rt, load(addrExpr(x, i)));
   const tr = TRAP_REG[i.op];
   if (tr) return `if (${tr(i)}) rt_trap(c, TRAP_COND, 0x${hex8(pc)}u, ${(i.word >>> 6) & 0x3ff});`;
   const ti = TRAP_IMM[i.op];
@@ -169,6 +203,9 @@ function plain(i: Insn): string {
 const isControl = (i: Insn) => i.kind !== 'plain';
 
 interface Ctx {
+  relocs?: ReadonlyMap<number, number>;
+  delta?: string;
+  jumpTables?: ReadonlyMap<number, readonly number[]>;
   start: number;
   end: number;
   symbol: (addr: number) => string;
@@ -183,7 +220,7 @@ const label = (addr: number) => `L_${hex8(addr)}`;
 function branch(x: Ctx, i: Insn, slot: Insn): string {
   const pc = i.addr;
   const next = pc + 8;
-  const slotCode = plain(slot);
+  const slotCode = plain(x, slot);
   const link = `c->r[31] = 0x${hex8(next)}u;`;
   const callTo = (t: number) => {
     x.callees.add(t);
@@ -197,7 +234,15 @@ function branch(x: Ctx, i: Insn, slot: Insn): string {
 
   switch (i.kind) {
     case 'return': return `{ ${slotCode} return; }`;
-    case 'jr': return `{ uint32_t t = ${U32(i.rs)}; ${slotCode} rt_call(c, t); return; }`;
+    case 'jr': {
+      const targets = x.jumpTables?.get(i.addr);
+      if (!targets) return `{ uint32_t t = ${U32(i.rs)}; ${slotCode} rt_call(c, t); return; }`;
+      // Dispatch on the target address itself: no index expression has to be recovered. Overlay tables
+      // hold loaded addresses, so the value is brought back to the link address first.
+      const key = x.delta ? `t - ${x.delta}` : 't';
+      const cases = [...new Set(targets)].map((a) => `case 0x${hex8(a)}u: ${goTo(a)}`);
+      return `{ uint32_t t = ${U32(i.rs)}; ${slotCode} switch (${key}) { ${cases.join(' ')} default: rt_call(c, t); return; } }`;
+    }
     case 'jalr':
       return `{ uint32_t t = ${U32(i.rs)}; ${i.rd === 0 ? '' : `c->r[${i.rd}] = 0x${hex8(next)}u;`} ${slotCode} rt_call(c, t); }`;
     case 'jump': return `{ ${slotCode} ${goTo(i.target!)} }`;
@@ -222,6 +267,8 @@ function branch(x: Ctx, i: Insn, slot: Insn): string {
 /** Whether execution can never continue past the branch to the next instruction. */
 function terminates(i: Insn): boolean {
   if (i.kind === 'return' || i.kind === 'jr' || i.kind === 'jump') return true;
+  // The runtime never returns from these.
+  if (i.op === 'eret' || i.op === 'break' || i.op === 'syscall') return true;
   return i.op === 'beq' && i.rs === i.rt;
 }
 
@@ -235,7 +282,10 @@ export interface Recompiled {
 export function recompileFunction(f: FuncInput, opts: EmitOptions = {}): Recompiled {
   const symbol = opts.symbol ?? defaultSymbol;
   const insns = f.words.map((w, k) => decode(w, (f.addr + 4 * k) >>> 0));
-  const x: Ctx = { start: f.addr, end: f.addr + 4 * insns.length, symbol, labels: new Set(), callees: new Set() };
+  const x: Ctx = {
+    start: f.addr, end: f.addr + 4 * insns.length, symbol, labels: new Set(), callees: new Set(),
+    relocs: opts.relocs, delta: opts.delta, jumpTables: opts.jumpTables,
+  };
 
   // A delay slot never holds a branch, so index k+1 after a control insn is always its slot.
   for (let k = 0; k < insns.length; k++) {
@@ -244,6 +294,7 @@ export function recompileFunction(f: FuncInput, opts: EmitOptions = {}): Recompi
     if (k + 1 >= insns.length) throw new Error(`${hex8(i.addr)}: branch without a delay slot`);
     if (isControl(insns[k + 1]!)) throw new Error(`${hex8(i.addr)}: branch in a delay slot`);
     if (i.target !== undefined && inside(x, i.target) && i.kind !== 'call') x.labels.add(i.target);
+    if (i.kind === 'jr') for (const t of x.jumpTables?.get(i.addr) ?? []) if (inside(x, t)) x.labels.add(t);
     k++;
   }
 
@@ -257,7 +308,7 @@ export function recompileFunction(f: FuncInput, opts: EmitOptions = {}): Recompi
     emitLabel(i.addr);
     body.push(`  /* ${format(i)} */`);
     if (!isControl(i)) {
-      body.push(`  ${plain(i)}`);
+      body.push(`  ${plain(x, i)}`);
       last = i;
       continue;
     }
@@ -267,7 +318,7 @@ export function recompileFunction(f: FuncInput, opts: EmitOptions = {}): Recompi
     if (x.labels.has(slot.addr)) {
       // The slot is also a jump target: give it a standalone copy that the branch path skips.
       x.labels.add(slot.addr + 4);
-      body.push(`  goto ${label(slot.addr + 4)};`, `${label(slot.addr)}:;`, `  ${plain(slot)}`);
+      body.push(`  goto ${label(slot.addr + 4)};`, `${label(slot.addr)}:;`, `  ${plain(x, slot)}`);
     }
     last = i;
     k++;

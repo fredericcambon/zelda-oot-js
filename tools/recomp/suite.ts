@@ -24,12 +24,20 @@ export function snippetSuite(name: string, snippets: Snippet[]): void {
   });
 }
 
-type Extra = Partial<Snippet> & { expectMem?: Expectation['mem']; trap?: Expectation['trap'] };
+type Extra = Partial<Snippet> & {
+  expectMem?: Expectation['mem'];
+  trap?: Expectation['trap'];
+  events?: Expectation['events'];
+  /** Expected FPU registers, FCSR and COP0 registers; `fregs`, `fcsr` and `cop0` set the initial state. */
+  expectF?: Expectation['fregs'];
+  expectFcsr?: number;
+  expectCop0?: Expectation['cop0'];
+};
 
 /** A snippet whose assembly is complete, including its returns. */
 export function full(name: string, asm: string, init: Snippet['regs'], regs: Expectation['regs'], extra: Extra = {}): Snippet {
-  const { expectMem, trap, ...rest } = extra;
-  return { name, asm, regs: init, expect: { regs, mem: expectMem, trap }, ...rest };
+  const { expectMem, trap, events, expectF, expectFcsr, expectCop0, ...rest } = extra;
+  return { name, asm, regs: init, expect: { regs, mem: expectMem, trap, events, fregs: expectF, fcsr: expectFcsr, cop0: expectCop0 }, ...rest };
 }
 
 /** A snippet that gets `jr $ra` and its delay slot appended. */

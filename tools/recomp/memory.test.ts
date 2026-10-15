@@ -25,7 +25,7 @@ snippetSuite('loads and stores', [
   snip('load through the uncached segment', 'lw $t0, 0($t1)', { t1: 0xffffffffa0002000n }, { t0: 0xffffffff81020384n }, { mem: [DATA] }),
   snip('load address ignores the upper register half', 'lw $t0, 0($t1)', { t1: 0x500000000n + BigInt(D) }, { t0: 0xffffffff81020384n }, { mem: [DATA] }),
   snip('load into $zero is discarded', 'lw $zero, 0($t1)', { t1: D }, {}, { mem: [DATA] }),
-  snip('cache is a no-op', 'cache $21, 0($t1)', { t1: D }, {}, { mem: [DATA] }),
+  snip('cache is a runtime call', 'cache $21, 0($t1)', { t1: D }, {}, { mem: [DATA], events: ['cache 21 80002000'] }),
 
   snip('sb', 'sb $t2, 3($t1)', { t1: D, t2: SRC }, {}, { expectMem: [bytes(D + 3, 0xef)] }),
   snip('sh', 'sh $t2, 2($t1)', { t1: D, t2: SRC }, {}, { expectMem: [bytes(D + 2, 0xcd, 0xef)] }),

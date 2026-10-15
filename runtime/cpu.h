@@ -2,6 +2,7 @@
 #ifndef OOT_CPU_H
 #define OOT_CPU_H
 
+#include <math.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -9,6 +10,12 @@ typedef struct Cpu {
   uint64_t r[32];
   uint64_t hi, lo;
   uint32_t llbit;
+  // COP1. Registers hold raw bits. With fr == 1 each of the 32 registers is a full 64-bit register; with
+  // fr == 0 an odd register is the upper half of the even register before it and doubles use even registers.
+  uint64_t f[32];
+  uint32_t fcsr;
+  uint32_t fir;
+  uint32_t fr;
 } Cpu;
 
 enum TrapKind {
@@ -28,6 +35,16 @@ __attribute__((noreturn)) void rt_trap(Cpu *c, int kind, uint32_t pc, uint32_t c
 __attribute__((noreturn)) void rt_unimpl(Cpu *c, uint32_t pc, uint32_t word);
 // Indirect call through the runtime's table of recompiled functions.
 void rt_call(Cpu *c, uint32_t addr);
+
+// COP0 register access (mfc0, dmfc0, mtc0, dmtc0). Reads return the register's full value.
+uint64_t rt_mfc0(Cpu *c, uint32_t reg);
+void rt_mtc0(Cpu *c, uint32_t reg, uint64_t value);
+enum TlbOp { TLB_READ = 1, TLB_WRITE_INDEXED = 2, TLB_WRITE_RANDOM = 3, TLB_PROBE = 4 };
+void rt_tlb(Cpu *c, int op, uint32_t pc);
+// Return from exception: control continues at the saved exception PC, never in the calling function.
+__attribute__((noreturn)) void rt_eret(Cpu *c);
+// Cache instruction `op` (the instruction's rt field) on the line containing `addr`.
+void rt_cache(Cpu *c, uint32_t op, uint32_t addr);
 
 #define SX32(x) ((uint64_t)(int64_t)(int32_t)(x))
 
@@ -128,5 +145,64 @@ static inline void ddivu64(Cpu *c, uint64_t a, uint64_t b) {
   if (b == 0) { c->lo = (uint64_t)-1; c->hi = a; }
   else { c->lo = a / b; c->hi = a % b; }
 }
+
+// ---- COP1 -------------------------------------------------------------------------------------------
+
+#define FCSR_COND (1u << 23)
+#define FCSR_VALID 0x0183ffffu
+
+static inline uint32_t fpr_w(const Cpu *c, int n) {
+  if (c->fr) return (uint32_t)c->f[n];
+  return (uint32_t)(c->f[n & ~1] >> ((n & 1) * 32));
+}
+static inline void set_fpr_w(Cpu *c, int n, uint32_t v) {
+  if (c->fr) { c->f[n] = (c->f[n] & ~0xFFFFFFFFull) | v; return; }
+  unsigned sh = (n & 1) * 32;
+  c->f[n & ~1] = (c->f[n & ~1] & ~(0xFFFFFFFFull << sh)) | ((uint64_t)v << sh);
+}
+static inline uint64_t fpr_d(const Cpu *c, int n) { return c->f[c->fr ? n : (n & ~1)]; }
+static inline void set_fpr_d(Cpu *c, int n, uint64_t v) { c->f[c->fr ? n : (n & ~1)] = v; }
+static inline float fpr_s(const Cpu *c, int n) { uint32_t w = fpr_w(c, n); float x; memcpy(&x, &w, 4); return x; }
+static inline void set_fpr_s(Cpu *c, int n, float x) { uint32_t w; memcpy(&w, &x, 4); set_fpr_w(c, n, w); }
+static inline double fpr_dbl(const Cpu *c, int n) { uint64_t d = fpr_d(c, n); double x; memcpy(&x, &d, 8); return x; }
+static inline void set_fpr_dbl(Cpu *c, int n, double x) { uint64_t d; memcpy(&d, &x, 8); set_fpr_d(c, n, d); }
+
+static inline uint64_t cfc1(const Cpu *c, int n) { return n == 31 ? SX32(c->fcsr) : n == 0 ? SX32(c->fir) : 0; }
+static inline void ctc1(Cpu *c, int n, uint32_t v) { if (n == 31) c->fcsr = v & FCSR_VALID; }
+
+// Conversions to integer follow the rounding mode of FCSR (0 nearest even, 1 toward zero, 2 up, 3 down).
+// A NaN or out-of-range operand, which the hardware reports as an unimplemented-operation exception,
+// saturates to the largest value of the destination (the most negative one for large negative operands).
+static inline double fp_round(double x, unsigned mode) {
+  switch (mode & 3) {
+    case 0: return rint(x);
+    case 1: return trunc(x);
+    case 2: return ceil(x);
+    default: return floor(x);
+  }
+}
+static inline uint32_t fp_to_w(double x, unsigned mode) {
+  if (x != x) return 0x7FFFFFFFu;
+  double r = fp_round(x, mode);
+  if (r >= 2147483648.0) return 0x7FFFFFFFu;
+  if (r < -2147483648.0) return 0x80000000u;
+  return (uint32_t)(int32_t)r;
+}
+static inline uint64_t fp_to_l(double x, unsigned mode) {
+  if (x != x) return 0x7FFFFFFFFFFFFFFFull;
+  double r = fp_round(x, mode);
+  if (r >= 9223372036854775808.0) return 0x7FFFFFFFFFFFFFFFull;
+  if (r < -9223372036854775808.0) return 0x8000000000000000ull;
+  return (uint64_t)(int64_t)r;
+}
+#define FP_MODE(c) ((c)->fcsr & 3u)
+
+// Compare: bit 0 of `cond` selects "true when unordered", bit 1 "true when equal", bit 2 "true when less".
+// Bit 3 (signal on NaN) only matters for the invalid-operation exception, which is not raised.
+static inline void fp_cmp(Cpu *c, unsigned cond, int unordered, int less, int equal) {
+  int t = ((cond & 1) && unordered) || ((cond & 2) && equal) || ((cond & 4) && less);
+  c->fcsr = (c->fcsr & ~FCSR_COND) | (t ? FCSR_COND : 0);
+}
+#define FP_COND(c) (((c)->fcsr & FCSR_COND) != 0)
 
 #endif
