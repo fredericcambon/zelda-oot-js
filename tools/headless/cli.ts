@@ -1,11 +1,13 @@
 // `npm run headless -- --frames N [--trace]`: boots the built game (dist/oot.js) in Node with no display and
 // reports what it did frame by frame.
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { romPathFromEnv } from '../analyze/context.ts';
 import { DisplayListInterpreter } from '../gfx/dl.ts';
+import { encodePng } from '../gfx/png.ts';
+import { HEIGHT, SoftRenderer, WIDTH } from '../gfx/raster.ts';
 import { DlTotals } from '../gfx/totals.ts';
 import { bootGame, type Game } from './boot.ts';
 
@@ -17,16 +19,28 @@ async function main(): Promise<number> {
       frames: { type: 'string', default: '300' },
       trace: { type: 'boolean', default: false },
       dl: { type: 'boolean', default: false },
+      dump: { type: 'string' },
+      'dump-every': { type: 'string', default: '1' },
     },
   });
   const frames = Number(values.frames);
   const rom = readFileSync(romPathFromEnv(values.rom));
   const interpreter = new DisplayListInterpreter();
   const totals = new DlTotals();
+  const soft = values.dump ? new SoftRenderer() : undefined;
+  const dumpDir = values.dump ? resolve(values.dump) : undefined;
+  if (dumpDir) mkdirSync(dumpDir, { recursive: true });
+  const dumpEvery = Math.max(1, Number(values['dump-every']));
   let game: Game;
   try {
     game = await bootGame(pathToFileURL(resolve(values.dist!, 'oot.js')).href, rom, {
-      onGfxTask: values.dl ? (task) => totals.add(interpreter.run(task.ram, task.data)) : undefined,
+      onGfxTask: values.dl || soft
+        ? (task) => {
+            const result = interpreter.run(task.ram, task.data);
+            if (values.dl) totals.add(result);
+            soft?.drawTask(result);
+          }
+        : undefined,
     });
   } catch (err) {
     console.error(`error: ${err instanceof Error ? err.message : String(err)}`);
@@ -44,6 +58,10 @@ async function main(): Promise<number> {
     if (r.fatal || !r.alive) {
       const calls = game.lastCalls(40);
       if (calls.length > 0) console.error(`last calls, newest first: ${calls.join(' ')}`);
+    }
+    if (soft && dumpDir && r.frame % dumpEvery === 0) {
+      const img = soft.image(game.framebuffer());
+      if (img) writeFileSync(join(dumpDir, `frame-${String(r.frame).padStart(5, '0')}.png`), encodePng(WIDTH, HEIGHT, img));
     }
     if (r.fatal) {
       console.error(`trap at frame ${r.frame}: ${r.fatal}`);
