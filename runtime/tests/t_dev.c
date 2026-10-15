@@ -550,11 +550,17 @@ TEST(a_halting_task_completes_on_the_sp_event_without_a_hook) {
   rt_set_audio_hook(record_audio);
   watch_rsp_events();
   build_task(TASK_HALT);
+  wr32(TASK + 0x10, HALT_UCODE);
   os(&host, rt_osSpTaskStartGo, TASK, 0, 0, 0);
   CHECK_EQ(seen_n, 0);
   rt_run(HALT_TASK_CYCLES);
   CHECK_EQ(rd32(QUEUE_A + MQ_VALID), 1);
   CHECK_EQ(rd32(QUEUE_B + MQ_VALID), 0);
+}
+
+TEST(a_halting_task_with_other_microcode_is_fatal) {
+  build_task(TASK_HALT);
+  EXPECT_FATAL(os(&host, rt_osSpTaskStartGo, TASK, 0, 0, 0), "unknown type 4");
 }
 
 TEST(a_task_of_unknown_type_is_fatal) {
