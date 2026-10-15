@@ -70,6 +70,7 @@ export class Renderer {
   private readonly buffer: WebGLBuffer;
   private readonly vao: WebGLVertexArrayObject;
   private readonly depth: WebGLRenderbuffer;
+  private scale = 1;
   private readonly targets = new Map<number, Target>();
   private readonly textureCache = new Map<string, GpuTexture>();
   private textureByImage = new WeakMap<Uint8Array, GpuTexture>();
@@ -77,9 +78,7 @@ export class Renderer {
   private lastTarget: Target | null = null;
   private vertices = new Float32Array(0);
 
-  constructor(readonly canvas: HTMLCanvasElement) {
-    canvas.width = SCREEN_W;
-    canvas.height = SCREEN_H;
+  constructor(readonly canvas: HTMLCanvasElement, scale = 1) {
     const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, preserveDrawingBuffer: true });
     if (!gl) throw new Error('WebGL2 is not available in this browser');
     this.gl = gl;
@@ -98,9 +97,28 @@ export class Renderer {
     gl.enableVertexAttribArray(3);
     gl.vertexAttribPointer(3, 1, gl.FLOAT, false, stride, 40);
     this.depth = gl.createRenderbuffer()!;
-    gl.bindRenderbuffer(gl.RENDERBUFFER, this.depth);
-    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, SCREEN_W, SCREEN_H);
+    this.setScale(scale);
     this.white = this.upload(1, 1, Uint8Array.of(255, 255, 255, 255));
+  }
+
+  /** Renders at `scale` times the 320x240 the game addresses; the colour images are dropped and redrawn by the game. */
+  setScale(scale: number): void {
+    const gl = this.gl;
+    this.scale = Math.max(1, Math.round(scale));
+    this.canvas.width = SCREEN_W * this.scale;
+    this.canvas.height = SCREEN_H * this.scale;
+    for (const t of this.targets.values()) {
+      gl.deleteTexture(t.texture);
+      gl.deleteFramebuffer(t.framebuffer);
+    }
+    this.targets.clear();
+    this.lastTarget = null;
+    gl.bindRenderbuffer(gl.RENDERBUFFER, this.depth);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, this.canvas.width, this.canvas.height);
+  }
+
+  get resolutionScale(): number {
+    return this.scale;
   }
 
   // ---- Frame interface ---------------------------------------------------------------------------------------------
@@ -130,7 +148,7 @@ export class Renderer {
     gl.disable(gl.BLEND);
     gl.disable(gl.DEPTH_TEST);
     gl.disable(gl.CULL_FACE);
-    gl.viewport(0, 0, SCREEN_W, SCREEN_H);
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     if (!target) {
       gl.clearColor(0, 0, 0, 1);
       gl.clear(gl.COLOR_BUFFER_BIT);
@@ -152,7 +170,7 @@ export class Renderer {
       const gl = this.gl;
       const texture = gl.createTexture()!;
       gl.bindTexture(gl.TEXTURE_2D, texture);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, SCREEN_W, SCREEN_H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, this.canvas.width, this.canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
       const framebuffer = gl.createFramebuffer()!;
@@ -200,7 +218,8 @@ export class Renderer {
     const x1 = Math.min(sc.x + sc.w, (b.xl >> 2) + 1), y1 = Math.min(sc.y + sc.h, (b.yl >> 2) + 1);
     if (x1 <= x0 || y1 <= y0) return;
     gl.enable(gl.SCISSOR_TEST);
-    gl.scissor(x0, SCREEN_H - y1, x1 - x0, y1 - y0);
+    const k = this.scale;
+    gl.scissor(x0 * k, (SCREEN_H - y1) * k, (x1 - x0) * k, (y1 - y0) * k);
     gl.colorMask(true, true, true, true);
     gl.depthMask(true);
     if (physical(b.state.colorImage.addr) === physical(b.state.depthImage)) {
@@ -284,14 +303,15 @@ export class Renderer {
     gl.colorMask(true, true, true, true);
     const sc = this.scissorRect(state);
     gl.enable(gl.SCISSOR_TEST);
-    gl.scissor(sc.x, SCREEN_H - sc.y - sc.h, sc.w, sc.h);
+    const k = this.scale;
+    gl.scissor(sc.x * k, (SCREEN_H - sc.y - sc.h) * k, sc.w * k, sc.h * k);
 
     const vp = state.viewport;
     if (triangles && vp.scale[0] !== 0 && vp.scale[1] !== 0) {
       const hw = Math.abs(vp.scale[0]) / 4, hh = Math.abs(vp.scale[1]) / 4;
       const cx = vp.trans[0] / 4, cy = vp.trans[1] / 4;
-      gl.viewport(Math.round(cx - hw), Math.round(SCREEN_H - (cy + hh)), Math.round(hw * 2), Math.round(hh * 2));
-    } else gl.viewport(0, 0, SCREEN_W, SCREEN_H);
+      gl.viewport(Math.round((cx - hw) * k), Math.round((SCREEN_H - (cy + hh)) * k), Math.round(hw * 2 * k), Math.round(hh * 2 * k));
+    } else gl.viewport(0, 0, this.canvas.width, this.canvas.height);
 
     if (spec.framebufferBlend) {
       gl.enable(gl.BLEND);

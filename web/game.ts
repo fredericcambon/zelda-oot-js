@@ -1,5 +1,6 @@
 // Boots the recompiled game in the page and feeds each graphics task it submits to the renderer.
 import { DisplayListInterpreter } from '../tools/gfx/dl.ts';
+import { shownFramebuffer } from '../tools/gfx/vi.ts';
 import type { Renderer } from './renderer.ts';
 
 const RDRAM_SIZE = 0x800000;
@@ -14,7 +15,6 @@ interface OotModule {
   _oot_gfx_tasks(): number;
   _oot_retraces(): number;
   _oot_rdram(): number;
-  _oot_vi_framebuffer?(): number;
   _oot_fatal_message(): number;
   UTF8ToString(ptr: number): string;
 }
@@ -46,6 +46,7 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, moduleUrl =
   const copy = mod._malloc(rom.length);
   mod.HEAPU8.set(rom, copy);
   mod._oot_boot(copy, rom.length);
+  const view = () => new DataView(mod.HEAPU8.buffer, mod._oot_rdram(), RDRAM_SIZE);
   return {
     async frame() {
       try {
@@ -55,7 +56,7 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, moduleUrl =
         throw new Error(message || (err instanceof Error ? err.message : String(err)), { cause: err });
       }
     },
-    framebuffer: () => (mod._oot_vi_framebuffer?.() ?? 0) >>> 0,
+    framebuffer: () => shownFramebuffer((addr) => view().getUint32(addr & 0x1fffffff)),
     info: () => ({ frames: mod._oot_frames(), retraces: mod._oot_retraces(), gfxTasks: mod._oot_gfx_tasks(), idle: mod._oot_idle() !== 0, renderError }),
   };
 }

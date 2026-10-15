@@ -15,9 +15,12 @@ const setStatus = (text: string, error = false) => {
   status.classList.toggle('error', error);
 };
 
+// Whole multiples of the 320x240 the game addresses, enough to fill the canvas as displayed.
+const displayScale = () => Math.min(4, Math.max(1, Math.ceil((canvas.clientWidth * devicePixelRatio) / 320)));
+
 let renderer: Renderer;
 try {
-  renderer = new Renderer(canvas);
+  renderer = new Renderer(canvas, displayScale());
 } catch (err) {
   setStatus(err instanceof Error ? err.message : String(err), true);
   throw err;
@@ -31,6 +34,11 @@ addEventListener('keydown', (e) => {
   if (e.key === 'F3') {
     overlay.hidden = !overlay.hidden;
     e.preventDefault();
+  } else if (e.key === 'n' || e.key === 'N') {
+    // Native 320x240, shown with hard pixels, for comparing with the console's resolution.
+    const native = renderer.resolutionScale !== 1;
+    renderer.setScale(native ? 1 : displayScale());
+    canvas.classList.toggle('native', native);
   } else if (e.key === 'c' || e.key === 'C') {
     renderer.cullMode = CULL_MODES[(CULL_MODES.indexOf(renderer.cullMode) + 1) % CULL_MODES.length]!;
   }
@@ -47,7 +55,7 @@ function updateOverlay(): void {
     `unknown commands ${s.unknown}  problems ${s.problems.length}`,
     `programs ${s.programs}  textures ${s.textures}  colour images ${s.targets}`,
     game ? `video framebuffer 0x${game.framebuffer().toString(16)}` : '',
-    `culling ${renderer.cullMode}`,
+    `culling ${renderer.cullMode}  resolution ${renderer.resolutionScale}x`,
     g?.renderError ? `render error: ${g.renderError}` : '',
     ...s.problems,
   ].filter(Boolean).join('\n');
