@@ -14,7 +14,7 @@ const FRAMES = 300;
 
 describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
   it('boots 300 video frames with the retrace and a graphics task going on and no trap', async () => {
-    const work = resolve('out', 'headless-test');
+    const work = resolve('out', 'headless-test-boot');
     const inventory = await analyze({ romPath: rom!, outDir: work, workDir: join(work, 'work'), useGhidra: false });
     const cDir = join(work, 'c');
     const gen = generate(loadContext(rom!), inventory, cDir);

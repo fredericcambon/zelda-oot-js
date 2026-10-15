@@ -16,7 +16,7 @@ const FRAMES = 600;
 
 describe.skipIf(!rom || !existsSync(rom))('display lists of the booted game', () => {
   it('parses every graphics task of 600 frames with documented commands only', async () => {
-    const work = resolve('out', 'headless-test');
+    const work = resolve('out', 'headless-test-gfx');
     const inventory = await analyze({ romPath: rom!, outDir: work, workDir: join(work, 'work'), useGhidra: false });
     const cDir = join(work, 'c');
     const gen = generate(loadContext(rom!), inventory, cDir);
