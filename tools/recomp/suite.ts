@@ -1,20 +1,18 @@
 // Vitest glue: builds all snippets of a suite with one Emscripten invocation and reports each as a test.
 import { join } from 'node:path';
+import { ensureToolchain } from './toolchain.ts';
 import { beforeAll, describe, it } from 'vitest';
-import { check, findToolchain, runSnippets, type Expectation, type Result, type Snippet } from './harness.ts';
-
-const toolchain = findToolchain();
-if (!toolchain) console.warn('recomp snippet suites skipped: Emscripten not found (run `npm run build` once, or set EMSDK)');
+import { check, runSnippets, type Expectation, type Result, type Snippet } from './harness.ts';
 
 let counter = 0;
 
 export function snippetSuite(name: string, snippets: Snippet[]): void {
   const workDir = join(process.cwd(), 'out', 'recomp-test', `${name.replace(/\W+/g, '-')}-${counter++}`);
-  describe.skipIf(!toolchain)(name, () => {
+  describe(name, () => {
     let results: Result[] = [];
     beforeAll(() => {
-      results = runSnippets(snippets, toolchain!, workDir);
-    }, 300_000);
+      results = runSnippets(snippets, ensureToolchain((m) => console.log(m)), workDir);
+    }, 1_800_000);
     snippets.forEach((s, i) => {
       it(s.name, () => {
         const errs = check(s, results[i]!);

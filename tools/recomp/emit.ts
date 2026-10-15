@@ -11,6 +11,8 @@ export interface FuncInput {
 export interface EmitOptions {
   /** C identifier of the recompiled function at a guest address. */
   symbol?: (addr: number) => string;
+  /** C identifier a call to the function at a guest address goes to; defaults to `symbol`. Lets the runtime replace routines. */
+  callee?: (addr: number) => string;
   /** ELF relocation type of each word the loader rewrites at load time (overlays), by link address. */
   relocs?: ReadonlyMap<number, number>;
   /**
@@ -283,7 +285,7 @@ export function recompileFunction(f: FuncInput, opts: EmitOptions = {}): Recompi
   const symbol = opts.symbol ?? defaultSymbol;
   const insns = f.words.map((w, k) => decode(w, (f.addr + 4 * k) >>> 0));
   const x: Ctx = {
-    start: f.addr, end: f.addr + 4 * insns.length, symbol, labels: new Set(), callees: new Set(),
+    start: f.addr, end: f.addr + 4 * insns.length, symbol: opts.callee ?? symbol, labels: new Set(), callees: new Set(),
     relocs: opts.relocs, delta: opts.delta, jumpTables: opts.jumpTables,
   };
 
@@ -326,7 +328,7 @@ export function recompileFunction(f: FuncInput, opts: EmitOptions = {}): Recompi
   if (x.labels.has(x.end)) body.push(`${label(x.end)}:;`);
   if (last === undefined || !terminates(last)) {
     x.callees.add(x.end);
-    body.push(`  ${symbol(x.end)}(c);`);
+    body.push(`  ${x.symbol(x.end)}(c);`);
   }
 
   const name = symbol(f.addr);
@@ -339,7 +341,7 @@ export function recompileFunction(f: FuncInput, opts: EmitOptions = {}): Recompi
 
 /** C translation unit for a set of functions, with declarations for every callee. */
 export function recompileUnit(funcs: FuncInput[], opts: EmitOptions = {}): string {
-  const symbol = opts.symbol ?? defaultSymbol;
+  const symbol = opts.callee ?? opts.symbol ?? defaultSymbol;
   const results = funcs.map((f) => recompileFunction(f, opts));
   const callees = new Set(results.flatMap((r) => r.callees));
   const decls = [...callees].sort((a, b) => a - b).map((a) => `void ${symbol(a)}(Cpu *c);`);

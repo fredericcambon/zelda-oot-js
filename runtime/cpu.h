@@ -33,6 +33,8 @@ extern uint8_t rdram[RDRAM_SIZE];
 __attribute__((noreturn)) void rt_trap(Cpu *c, int kind, uint32_t pc, uint32_t code);
 // Instruction the recompiler does not translate (FPU, COP0, ...).
 __attribute__((noreturn)) void rt_unimpl(Cpu *c, uint32_t pc, uint32_t word);
+// A direct transfer whose target lies in no recompiled file was reached.
+__attribute__((noreturn)) void rt_missing(Cpu *c, uint32_t addr);
 // Indirect call through the runtime's table of recompiled functions.
 void rt_call(Cpu *c, uint32_t addr);
 

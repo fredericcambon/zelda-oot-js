@@ -1,13 +1,12 @@
 // Test harness: assembles snippets, recompiles them to C, builds them with Emscripten, runs them in
 // Node and returns the final CPU and memory state of each snippet.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { assemble, parseReg } from './asm.ts';
 import { recompileUnit } from './emit.ts';
+import { repoRoot as root, type Toolchain } from './toolchain.ts';
 
-const root = resolve(fileURLToPath(import.meta.url), '..', '..', '..');
 
 /** Snippets are assembled here; the first function of a snippet is its entry point. */
 export const CODE_BASE = 0x80001000;
@@ -74,27 +73,6 @@ export function dwords(addr: number, ...vals: RegValue[]): MemBytes {
   };
 }
 export const bytes = (addr: number, ...vals: number[]): MemBytes => ({ addr, bytes: vals });
-
-export interface Toolchain {
-  python: string;
-  emcc: string;
-  env: NodeJS.ProcessEnv;
-}
-
-export function findToolchain(): Toolchain | undefined {
-  const emsdk = process.env.EMSDK ?? join(root, '.tools', 'emsdk');
-  const emcc = join(emsdk, 'upstream', 'emscripten', 'emcc.py');
-  if (!existsSync(emcc)) return undefined;
-  const pyDir = join(emsdk, 'python');
-  const bundled = existsSync(pyDir)
-    ? readdirSync(pyDir).map((d) => join(pyDir, d, process.platform === 'win32' ? 'python.exe' : 'bin/python3')).find(existsSync)
-    : undefined;
-  return {
-    python: bundled ?? (process.platform === 'win32' ? 'python' : 'python3'),
-    emcc,
-    env: { ...process.env, EM_CONFIG: join(emsdk, '.emscripten') },
-  };
-}
 
 export interface Result {
   trap?: { kind: TrapName; pc: number; code: number };
