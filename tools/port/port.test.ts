@@ -4,8 +4,8 @@ import { describe, expect, it } from 'vitest';
 import { loadContext } from '../analyze/context.ts';
 import { analyze } from '../analyze/run.ts';
 import { generate } from '../recomp/generate.ts';
-import { ensureToolchain, repoRoot } from '../recomp/toolchain.ts';
-import { compileAll, link } from './build.ts';
+import { ensureToolchain } from '../recomp/toolchain.ts';
+import { compileAll, link, runtimeSources } from './build.ts';
 
 const rom = process.env.OOT_ROM;
 
@@ -24,8 +24,8 @@ describe.skipIf(!rom || !existsSync(rom))('whole ROM', () => {
     }
 
     const opts = { cDir, objDir: join(work, 'obj'), distDir: join(work, 'dist'), toolchain: ensureToolchain(), log: () => {} };
-    const objects = await compileAll(opts, [join(repoRoot, 'runtime', 'stub.c')]);
-    expect(objects.length).toBe(gen.files.filter((n) => n.endsWith('.c')).length + 1);
+    const objects = await compileAll(opts, runtimeSources());
+    expect(objects.length).toBe(gen.files.filter((n) => n.endsWith('.c')).length + runtimeSources().length);
     const out = await link(opts, objects);
     expect(existsSync(out)).toBe(true);
     expect(existsSync(join(work, 'dist', 'oot.wasm'))).toBe(true);

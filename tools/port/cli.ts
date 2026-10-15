@@ -1,13 +1,13 @@
 // `npm run port -- --rom <path>`: verify → extract → analyse → recompile → Emscripten, ending in dist/.
 import { readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { analyze } from '../analyze/run.ts';
 import { loadContext, romPathFromEnv } from '../analyze/context.ts';
 import { generate } from '../recomp/generate.ts';
-import { ensureToolchain, repoRoot } from '../recomp/toolchain.ts';
+import { ensureToolchain } from '../recomp/toolchain.ts';
 import { extractRom } from '../rom/extract.ts';
-import { compileAll, link } from './build.ts';
+import { compileAll, link, runtimeSources } from './build.ts';
 
 async function main(): Promise<number> {
   const { values } = parseArgs({
@@ -50,7 +50,7 @@ async function main(): Promise<number> {
     const opts = {
       cDir, objDir: resolve(values.generated!, 'obj'), distDir: resolve(values.dist!), toolchain, optimize: values.optimize, log,
     };
-    const objects = await compileAll(opts, [join(repoRoot, 'runtime', 'stub.c')]);
+    const objects = await compileAll(opts, runtimeSources());
 
     stage(5, 'link');
     log(`wrote ${await link(opts, objects)}`);

@@ -14,6 +14,12 @@ export interface BuildOptions {
   log: (msg: string) => void;
 }
 
+/** The runtime's C sources: every file of runtime/ itself (the unit tests live in a subdirectory). */
+export function runtimeSources(): string[] {
+  const dir = join(repoRoot, 'runtime');
+  return readdirSync(dir).filter((f) => f.endsWith('.c')).map((f) => join(dir, f));
+}
+
 const COMPILE_FLAGS = ['-ffp-contract=off', '-Wall', '-Wno-unused-label', '-Wno-unused-variable', '-Wno-unused-but-set-variable', '-Wno-unused-function'];
 
 function emcc(tc: Toolchain, args: string[], cwd: string): Promise<{ code: number; output: string }> {
@@ -33,7 +39,7 @@ export async function compileAll(opts: BuildOptions, extraSources: string[]): Pr
     ...readdirSync(opts.cDir).filter((f) => f.endsWith('.c')).map((f) => join(opts.cDir, f)),
     ...extraSources,
   ];
-  const headers = [...readdirSync(opts.cDir).filter((f) => f.endsWith('.h')).map((f) => join(opts.cDir, f)), join(repoRoot, 'runtime', 'cpu.h'), join(repoRoot, 'runtime', 'dispatch.h')];
+  const headers = [...readdirSync(opts.cDir).filter((f) => f.endsWith('.h')).map((f) => join(opts.cDir, f)), ...readdirSync(join(repoRoot, 'runtime')).filter((f) => f.endsWith('.h')).map((f) => join(repoRoot, 'runtime', f))];
   const newestHeader = Math.max(...headers.map((h) => statSync(h).mtimeMs));
   const jobs = sources.map((src) => {
     const obj = join(opts.objDir, `${src.replace(/^.*[\\/]/, '').replace(/\.c$/, '')}-${extraSources.includes(src) ? 'rt' : 'gen'}.o`);
@@ -72,7 +78,7 @@ export async function link(opts: BuildOptions, objects: string[]): Promise<strin
   const list = join(opts.objDir, 'objects.rsp');
   writeFileSync(list, objects.map((o) => `"${o.replaceAll('\\', '/')}"`).join('\n'));
   const r = await emcc(opts.toolchain, [
-    opts.optimize ?? '-O1', '-sENVIRONMENT=web,node', '-sALLOW_MEMORY_GROWTH=1', '-sEXIT_RUNTIME=1', '-sERROR_ON_UNDEFINED_SYMBOLS=1', '-sMODULARIZE=1', '-sEXPORT_ES6=1', '-sEXPORT_NAME=createOot',
+    opts.optimize ?? '-O1', '-sENVIRONMENT=web,node', '-sALLOW_MEMORY_GROWTH=1', '-sASYNCIFY', '-sEXIT_RUNTIME=1', '-sERROR_ON_UNDEFINED_SYMBOLS=1', '-sMODULARIZE=1', '-sEXPORT_ES6=1', '-sEXPORT_NAME=createOot',
     `@${list}`, '-o', out,
   ], repoRoot);
   if (r.code !== 0) throw new Error(`link failed:\n${r.output.slice(0, 4000)}`);
