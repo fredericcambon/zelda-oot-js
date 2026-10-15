@@ -640,7 +640,7 @@
       "category": "messages",
       "image": "boot",
       "summary": "Inserts message a1 at the front of queue a0 (first = (first+msgCount-1) mod msgCount), blocking like osSendMesg when the queue is full and waking a waiting receiver.",
-      "evidence": "0x80004490: same full-queue test and blocking structure as osSendMesg, but writes the message at the decremented `first` index; called by osPiStartDma (0x80004220) to put a DMA request at the head of the PI command queue.",
+      "evidence": "0x80004490: same full-queue test and blocking structure as osSendMesg, but writes the message at the decremented `first` index; called by osEPiStartDma (0x80004220) to put a DMA request at the head of the PI command queue.",
       "match": {
         "calls": [
           "os_internal_enqueue_and_yield",
@@ -648,7 +648,7 @@
           "osStartThread"
         ],
         "calledBy": [
-          "osPiStartDma"
+          "osEPiStartDma"
         ],
         "special": [
           "break"
@@ -865,11 +865,11 @@
       }
     },
     {
-      "id": "osPiStartDma",
+      "id": "osEPiStartDma",
       "category": "pi",
       "image": "boot",
-      "summary": "Posts a PI DMA request (OSIoMesg a0, priority a1, direction a2, device address a3 and further stack arguments) to the PI manager's command queue: high priority with osJamMesg, normal with osSendMesg.",
-      "evidence": "0x80004220: returns -1 when the PI manager flag 0x80006890 is zero (0x80004224-0x80004248); stores request fields (e.g. `sw t7,20(t8)` at 0x80004258); gets the queue from osPiGetCmdQueue; calls osJamMesg or osSendMesg according to a1.",
+      "summary": "Posts one PI transfer request to the PI manager: a0 = OSPiHandle, a1 = request record, a2 = direction (0 reads the cartridge, non-zero writes it). Stores the handle at request +0x14, the request type 15 (a2 = 0) or 16 (a2 != 0) at +0, and sends the request to the PI command queue: with osJamMesg at the front when the request byte +2 equals 1, with osSendMesg otherwise. Returns -1 when the PI manager is not running.",
+      "evidence": "0x80004220: returns -1 when the PI manager flag 0x80006890 is zero (0x80004224-0x80004248); the store `sw a0,20(a1)` at 0x80004258 stores the handle; the halfword at +0 is 15 when a2 is zero (0x80004268-0x80004274) and 16 otherwise (0x80004278-0x80004280); the byte at +2 selects osJamMesg (0x800042ac) when it is 1, osSendMesg (0x800042d0) otherwise; the queue comes from osPiGetCmdQueue (0x80004298, 0x800042bc). Callers pass the handle first: dma_copy_from_rom at 0x80000a4c (a0 = word at 0x80006730, a1 = request on its stack, a2 = 0) and 0x80091adc.",
       "match": {
         "calls": [
           "osPiGetCmdQueue",
@@ -2330,10 +2330,10 @@
       "category": "dma",
       "image": "boot",
       "summary": "Copies a range of the ROM (a0 = ROM address, a1 = RAM address, a2 = size) with PI DMA in chunks, waiting for each, and invalidates the instruction and data caches over the destination.",
-      "evidence": "0x8000099c: osCreateMesgQueue for the reply, repeated osPiStartDma + osRecvMesg for each chunk, then osInvalICache and osInvalDCache on the destination; 97 instructions with one loop.",
+      "evidence": "0x8000099c: osCreateMesgQueue for the reply, repeated osEPiStartDma + osRecvMesg for each chunk, then osInvalICache and osInvalDCache on the destination; 97 instructions with one loop.",
       "match": {
         "calls": [
-          "osPiStartDma",
+          "osEPiStartDma",
           "osInvalDCache",
           "osInvalICache",
           "osCreateMesgQueue",
@@ -2590,6 +2590,43 @@
       }
     },
     {
+      "id": "sram_pi_transfer",
+      "category": "sram",
+      "image": "code",
+      "summary": "One synchronous transfer between RDRAM and the cartridge save memory through the save-memory PI handle: sram_pi_transfer(a0 = RAM address, a1 = size, a2 = direction, 0 reads the cartridge, 1 writes it).",
+      "evidence": "0x80091a88: creates a one-message reply queue with osCreateMesgQueue (0x80091aa8), stores a0 and a1 into the request record at 0x8010a08c/0x8010a094 (0x80091ac0, 0x80091ac8), osWritebackDCache over the buffer (0x80091ac4), osEPiStartDma on the handle 0x8010a010 with the direction a2 (0x80091adc), osRecvMesg on the reply queue (0x80091af0) and osInvalDCache over the buffer (0x80091afc). Single caller 0x80091b5c.",
+      "match": {
+        "calls": [
+          "osEPiStartDma",
+          "osCreateMesgQueue",
+          "osRecvMesg",
+          "osWritebackDCache",
+          "osInvalDCache"
+        ],
+        "callCount": [
+          5,
+          5
+        ]
+      }
+    },
+    {
+      "id": "sram_transfer",
+      "category": "sram",
+      "image": "code",
+      "summary": "Reads or writes save memory: sram_transfer(a0 = cartridge address, a1 = RAM address, a2 = size, a3 = direction 0 read / 1 write). Fills the save-memory PI handle for that address (type 3, latency 5, pulse width 13, page size 2, release 12) with pi_handle_create, then runs sram_pi_transfer.",
+      "evidence": "0x80091b14: constants 13, 2, 12 stored as stack arguments (0x80091b28-0x80091b38) and 3, 1, 5 in a1-a3 (0x80091b40-0x80091b48) before pi_handle_create (0x80091b4c); then `jal 0x80091a88` with a1, a2, a3 shifted down (0x80091b54-0x80091b5c). 12 callers in the save-handling code 0x80090c80-0x80091894 pass a0 = 0x08000000 + a table offset (`lui at,0x800` at 0x80090c64 / 0x80090d4c): reads use a3 = 0 (0x80090d58 reads 0x8000 bytes into a buffer cleared with 0x80002ff0), writes use a3 = 1 with size 0x1450 (0x80090c74-0x80090c7c). The 0x08000000 base is the cartridge SRAM window, so saves go through the PI like any cartridge read.",
+      "match": {
+        "calls": [
+          "pi_handle_create",
+          "sram_pi_transfer"
+        ],
+        "callCount": [
+          2,
+          2
+        ]
+      }
+    },
+    {
       "id": "code_entry",
       "category": "boot",
       "image": "code",
@@ -2717,7 +2754,7 @@
       "id": "osFlashInit",
       "category": "flash",
       "summary": "FlashRAM access (not present).",
-      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or os_internal_e_pi_raw_write_io, whose only callers are osEPiWriteIo and os_internal_dev_mgr_main). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (osPiStartDma from 0x80091a88, device address 0x08000000 passed by the callers of 0x80091b14).",
+      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or os_internal_e_pi_raw_write_io, whose only callers are osEPiWriteIo and os_internal_dev_mgr_main). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (sram_pi_transfer 0x80091a88 calls osEPiStartDma; the callers of sram_transfer 0x80091b14 pass device address 0x08000000).",
       "absent": {
         "image": "code",
         "calls": [
@@ -2729,7 +2766,7 @@
       "id": "osFlashReadId",
       "category": "flash",
       "summary": "FlashRAM access (not present).",
-      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or os_internal_e_pi_raw_write_io, whose only callers are osEPiWriteIo and os_internal_dev_mgr_main). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (osPiStartDma from 0x80091a88, device address 0x08000000 passed by the callers of 0x80091b14).",
+      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or os_internal_e_pi_raw_write_io, whose only callers are osEPiWriteIo and os_internal_dev_mgr_main). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (sram_pi_transfer 0x80091a88 calls osEPiStartDma; the callers of sram_transfer 0x80091b14 pass device address 0x08000000).",
       "absent": {
         "image": "code",
         "calls": [
@@ -2741,7 +2778,7 @@
       "id": "osFlashReadStatus",
       "category": "flash",
       "summary": "FlashRAM access (not present).",
-      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or os_internal_e_pi_raw_write_io, whose only callers are osEPiWriteIo and os_internal_dev_mgr_main). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (osPiStartDma from 0x80091a88, device address 0x08000000 passed by the callers of 0x80091b14).",
+      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or os_internal_e_pi_raw_write_io, whose only callers are osEPiWriteIo and os_internal_dev_mgr_main). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (sram_pi_transfer 0x80091a88 calls osEPiStartDma; the callers of sram_transfer 0x80091b14 pass device address 0x08000000).",
       "absent": {
         "image": "code",
         "calls": [
@@ -2753,7 +2790,7 @@
       "id": "osFlashClearStatus",
       "category": "flash",
       "summary": "FlashRAM access (not present).",
-      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or os_internal_e_pi_raw_write_io, whose only callers are osEPiWriteIo and os_internal_dev_mgr_main). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (osPiStartDma from 0x80091a88, device address 0x08000000 passed by the callers of 0x80091b14).",
+      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or os_internal_e_pi_raw_write_io, whose only callers are osEPiWriteIo and os_internal_dev_mgr_main). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (sram_pi_transfer 0x80091a88 calls osEPiStartDma; the callers of sram_transfer 0x80091b14 pass device address 0x08000000).",
       "absent": {
         "image": "code",
         "calls": [
@@ -2765,7 +2802,7 @@
       "id": "osFlashAllErase",
       "category": "flash",
       "summary": "FlashRAM access (not present).",
-      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or os_internal_e_pi_raw_write_io, whose only callers are osEPiWriteIo and os_internal_dev_mgr_main). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (osPiStartDma from 0x80091a88, device address 0x08000000 passed by the callers of 0x80091b14).",
+      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or os_internal_e_pi_raw_write_io, whose only callers are osEPiWriteIo and os_internal_dev_mgr_main). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (sram_pi_transfer 0x80091a88 calls osEPiStartDma; the callers of sram_transfer 0x80091b14 pass device address 0x08000000).",
       "absent": {
         "image": "code",
         "calls": [
@@ -2777,7 +2814,7 @@
       "id": "osFlashSectorErase",
       "category": "flash",
       "summary": "FlashRAM access (not present).",
-      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or os_internal_e_pi_raw_write_io, whose only callers are osEPiWriteIo and os_internal_dev_mgr_main). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (osPiStartDma from 0x80091a88, device address 0x08000000 passed by the callers of 0x80091b14).",
+      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or os_internal_e_pi_raw_write_io, whose only callers are osEPiWriteIo and os_internal_dev_mgr_main). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (sram_pi_transfer 0x80091a88 calls osEPiStartDma; the callers of sram_transfer 0x80091b14 pass device address 0x08000000).",
       "absent": {
         "image": "code",
         "calls": [
@@ -2789,7 +2826,7 @@
       "id": "osFlashWriteBuffer",
       "category": "flash",
       "summary": "FlashRAM access (not present).",
-      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or os_internal_e_pi_raw_write_io, whose only callers are osEPiWriteIo and os_internal_dev_mgr_main). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (osPiStartDma from 0x80091a88, device address 0x08000000 passed by the callers of 0x80091b14).",
+      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or os_internal_e_pi_raw_write_io, whose only callers are osEPiWriteIo and os_internal_dev_mgr_main). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (sram_pi_transfer 0x80091a88 calls osEPiStartDma; the callers of sram_transfer 0x80091b14 pass device address 0x08000000).",
       "absent": {
         "image": "code",
         "calls": [
@@ -2801,7 +2838,7 @@
       "id": "osFlashWriteArray",
       "category": "flash",
       "summary": "FlashRAM access (not present).",
-      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or os_internal_e_pi_raw_write_io, whose only callers are osEPiWriteIo and os_internal_dev_mgr_main). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (osPiStartDma from 0x80091a88, device address 0x08000000 passed by the callers of 0x80091b14).",
+      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or os_internal_e_pi_raw_write_io, whose only callers are osEPiWriteIo and os_internal_dev_mgr_main). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (sram_pi_transfer 0x80091a88 calls osEPiStartDma; the callers of sram_transfer 0x80091b14 pass device address 0x08000000).",
       "absent": {
         "image": "code",
         "calls": [
@@ -2813,7 +2850,7 @@
       "id": "osFlashReadArray",
       "category": "flash",
       "summary": "FlashRAM access (not present).",
-      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or os_internal_e_pi_raw_write_io, whose only callers are osEPiWriteIo and os_internal_dev_mgr_main). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (osPiStartDma from 0x80091a88, device address 0x08000000 passed by the callers of 0x80091b14).",
+      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or os_internal_e_pi_raw_write_io, whose only callers are osEPiWriteIo and os_internal_dev_mgr_main). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (sram_pi_transfer 0x80091a88 calls osEPiStartDma; the callers of sram_transfer 0x80091b14 pass device address 0x08000000).",
       "absent": {
         "image": "code",
         "calls": [
