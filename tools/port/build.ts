@@ -72,7 +72,7 @@ export async function link(opts: BuildOptions, objects: string[]): Promise<strin
   const list = join(opts.objDir, 'objects.rsp');
   writeFileSync(list, objects.map((o) => `"${o.replaceAll('\\', '/')}"`).join('\n'));
   const r = await emcc(opts.toolchain, [
-    opts.optimize ?? '-O1', '-sENVIRONMENT=web,node', '-sALLOW_MEMORY_GROWTH=1', '-sEXIT_RUNTIME=1', '-sERROR_ON_UNDEFINED_SYMBOLS=1',
+    opts.optimize ?? '-O1', '-sENVIRONMENT=web,node', '-sALLOW_MEMORY_GROWTH=1', '-sEXIT_RUNTIME=1', '-sERROR_ON_UNDEFINED_SYMBOLS=1', '-sMODULARIZE=1', '-sEXPORT_ES6=1', '-sEXPORT_NAME=createOot',
     `@${list}`, '-o', out,
   ], repoRoot);
   if (r.code !== 0) throw new Error(`link failed:\n${r.output.slice(0, 4000)}`);
