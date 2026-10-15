@@ -544,6 +544,19 @@ TEST(a_task_completes_without_a_hook) {
   CHECK_EQ(rd32(QUEUE_A + MQ_VALID), 1);
 }
 
+TEST(a_halting_task_completes_on_the_sp_event_without_a_hook) {
+  seen_n = 0;
+  rt_set_gfx_hook(record_gfx);
+  rt_set_audio_hook(record_audio);
+  watch_rsp_events();
+  build_task(TASK_HALT);
+  os(&host, rt_osSpTaskStartGo, TASK, 0, 0, 0);
+  CHECK_EQ(seen_n, 0);
+  rt_run(HALT_TASK_CYCLES);
+  CHECK_EQ(rd32(QUEUE_A + MQ_VALID), 1);
+  CHECK_EQ(rd32(QUEUE_B + MQ_VALID), 0);
+}
+
 TEST(a_task_of_unknown_type_is_fatal) {
   build_task(9);
   EXPECT_FATAL(os(&host, rt_osSpTaskStartGo, TASK, 0, 0, 0), "unknown type 9");

@@ -334,7 +334,7 @@ export function recompileFunction(f: FuncInput, opts: EmitOptions = {}): Recompi
   const name = symbol(f.addr);
   return {
     name,
-    code: `void ${name}(Cpu *c) {\n${body.join('\n')}\n}\n`,
+    code: `void ${name}(Cpu *c) {\n  OOT_TRACE_ENTER(0x${hex8(f.addr)}u);\n${body.join('\n')}\n}\n`,
     callees: [...x.callees].sort((a, b) => a - b),
   };
 }

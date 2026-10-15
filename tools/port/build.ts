@@ -11,6 +11,8 @@ export interface BuildOptions {
   distDir: string;
   toolchain: Toolchain;
   optimize?: string;
+  /** Records every recompiled function's entry (see OOT_TRACE in runtime/cpu.h). */
+  traceCalls?: boolean;
   log: (msg: string) => void;
 }
 
@@ -19,6 +21,9 @@ export function runtimeSources(): string[] {
   const dir = join(repoRoot, 'runtime');
   return readdirSync(dir).filter((f) => f.endsWith('.c')).map((f) => join(dir, f));
 }
+
+/** Host entry points (runtime/headless.c) and the allocator the host copies the ROM through. */
+const EXPORTS = ['_main', '_malloc', '_free', '_oot_boot', '_oot_frame', '_oot_idle', '_oot_frames', '_oot_gfx_tasks', '_oot_audio_tasks', '_oot_retraces', '_oot_fatal_message', '_oot_rd32', '_oot_trace_count', '_oot_trace_at'];
 
 const COMPILE_FLAGS = ['-ffp-contract=off', '-Wall', '-Wno-unused-label', '-Wno-unused-variable', '-Wno-unused-but-set-variable', '-Wno-unused-function'];
 
@@ -51,7 +56,7 @@ export async function compileAll(opts: BuildOptions, extraSources: string[]): Pr
   const failures: string[] = [];
   let done = 0;
   const compileOne = async (job: { src: string; obj: string }) => {
-    const r = await emcc(opts.toolchain, [opts.optimize ?? '-O1', ...COMPILE_FLAGS, `-I${join(repoRoot, 'runtime')}`, `-I${opts.cDir}`, '-c', job.src, '-o', job.obj], repoRoot);
+    const r = await emcc(opts.toolchain, [opts.optimize ?? '-O1', ...COMPILE_FLAGS, ...(opts.traceCalls ? ['-DOOT_TRACE'] : []), `-I${join(repoRoot, 'runtime')}`, `-I${opts.cDir}`, '-c', job.src, '-o', job.obj], repoRoot);
     if (r.code !== 0) failures.push(`${job.src}:
 ${r.output}`);
     else if (/warning:/.test(r.output)) opts.log(`${job.src}:
@@ -78,7 +83,8 @@ export async function link(opts: BuildOptions, objects: string[]): Promise<strin
   const list = join(opts.objDir, 'objects.rsp');
   writeFileSync(list, objects.map((o) => `"${o.replaceAll('\\', '/')}"`).join('\n'));
   const r = await emcc(opts.toolchain, [
-    opts.optimize ?? '-O1', '-sENVIRONMENT=web,node', '-sALLOW_MEMORY_GROWTH=1', '-sASYNCIFY', '-sEXIT_RUNTIME=1', '-sERROR_ON_UNDEFINED_SYMBOLS=1', '-sMODULARIZE=1', '-sEXPORT_ES6=1', '-sEXPORT_NAME=createOot',
+    opts.optimize ?? '-O1', '-sENVIRONMENT=web,node', '-sALLOW_MEMORY_GROWTH=1', '-sASYNCIFY', '-sEXIT_RUNTIME=0', '-sERROR_ON_UNDEFINED_SYMBOLS=1', '-sMODULARIZE=1', '-sEXPORT_ES6=1', '-sEXPORT_NAME=createOot',
+    `-sEXPORTED_FUNCTIONS=${EXPORTS.join(',')}`, '-sEXPORTED_RUNTIME_METHODS=HEAPU8,UTF8ToString',
     `@${list}`, '-o', out,
   ], repoRoot);
   if (r.code !== 0) throw new Error(`link failed:\n${r.output.slice(0, 4000)}`);

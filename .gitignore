@@ -7,3 +7,4 @@ rea-work/
 generated/
 node_modules/
 dist/
+dist-trace/

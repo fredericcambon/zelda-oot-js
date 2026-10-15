@@ -9,7 +9,7 @@ import { writeElf, type ElfReloc, type ElfSpec } from './elf.ts';
 export interface WrappedImage {
   /** File name stem: `boot`, `code` or `ovl_<file index>`. */
   name: string;
-  kind: 'boot' | 'code' | 'overlay';
+  kind: 'boot' | 'code' | 'segment' | 'overlay';
   fileIndex?: number;
   elf: Uint8Array;
   /**
@@ -94,6 +94,20 @@ export function wrapAll(rom: Uint8Array, files: FileEntry[], layout: RomLayout):
   });
 
   const byIndex = new Map(files.map((f) => [f.index, f]));
+  for (const g of layout.segments) {
+    const bytes = readFile(rom, byIndex.get(g.fileIndex)!);
+    const spec: ElfSpec = {
+      entry: g.entry,
+      sections: [
+        { name: '.text', addr: g.ramStart, data: bytes, exec: true, write: true, align: 16 },
+        ...(g.bss.size ? [{ name: '.bss', addr: g.bss.start, nobits: true, size: g.bss.size, write: true, align: 16 }] : []),
+      ],
+    };
+    out.push({
+      name: `seg_${g.ramStart.toString(16)}`, kind: 'segment', fileIndex: g.fileIndex, elf: writeElf(spec), elfPlain: writeElf(spec),
+      sections: spec.sections.map((x) => ({ name: x.name, addr: x.addr, size: x.nobits ? x.size! : x.data!.length, nobits: !!x.nobits })),
+    });
+  }
   for (const o of layout.overlays) out.push(wrapOverlay(readFile(rom, byIndex.get(o.fileIndex)!), o));
   return out;
 }

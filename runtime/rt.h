@@ -78,6 +78,7 @@ enum {
 #define SI_CYCLES 20000u         // one PIF transfer
 #define GFX_TASK_CYCLES 300000u  // from submitting a graphics task to the RSP interrupt
 #define AUDIO_TASK_CYCLES 100000u
+#define HALT_TASK_CYCLES 1000u   // a task whose microcode only halts
 #define DP_DELAY_CYCLES 2000u    // RDP completion after the RSP
 
 // ---- Host interface ----------------------------------------------------------------------------------
@@ -140,7 +141,9 @@ typedef struct RspTask {
 } RspTask;
 // Task types (the word at +0). 2 is the audio task (builder at 0x800bb124); the scheduler that submits tasks
 // (0x800a3758-0x800a37b4) separates exactly the types 2 and 1, and 1 is taken to be the graphics task.
-enum { TASK_GFX = 1, TASK_AUDIO = 2 };
+// Type 4 is submitted with the microcode at 0x800066c0, whose words are `ori at,zero,0x4000`, `mtc0 at,$4` (the RSP's
+// SP_STATUS) and `break` (0x800066c4-0x800066cc): a task that only halts, which the runtime completes at once.
+enum { TASK_GFX = 1, TASK_AUDIO = 2, TASK_HALT = 4 };
 typedef void (*RspHook)(const RspTask *task);
 void rt_set_gfx_hook(RspHook fn);
 void rt_set_audio_hook(RspHook fn);

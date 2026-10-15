@@ -74,7 +74,7 @@ export interface SectionCoverage {
 
 export interface InvImage {
   name: string;
-  kind: 'boot' | 'code' | 'overlay';
+  kind: 'boot' | 'code' | 'segment' | 'overlay';
   fileIndex: number | null;
   entry: number | null;
   sections: { name: string; start: number; end: number; kind: 'text' | 'data' | 'rodata' | 'bss' }[];

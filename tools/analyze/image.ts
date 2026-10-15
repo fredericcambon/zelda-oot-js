@@ -14,7 +14,7 @@ import type {
 
 export interface ImageSpec {
   name: string;
-  kind: 'boot' | 'code' | 'overlay';
+  kind: 'boot' | 'code' | 'segment' | 'overlay';
   fileIndex: number | null;
   base: number;
   /** Everything that is loaded from the file: text, data and rodata for overlays. */
@@ -31,7 +31,7 @@ export interface ImageSpec {
 }
 
 export function buildSpecs(ctx: RomContext): ImageSpec[] {
-  const { boot, code, overlays } = ctx.layout;
+  const { boot, code, overlays, segments } = ctx.layout;
   const specs: ImageSpec[] = [];
   specs.push({
     name: 'boot', kind: 'boot', fileIndex: null, base: boot.ramStart,
@@ -50,6 +50,14 @@ export function buildSpecs(ctx: RomContext): ImageSpec[] {
     textEnd: null, fixedSections: null, bss: { start: code.bss.start, end: code.bss.start + code.bss.size }, relocs: [],
     externalRefs: [],
   });
+  for (const g of segments) {
+    specs.push({
+      name: `seg_${g.ramStart.toString(16)}`, kind: 'segment', fileIndex: g.fileIndex, base: g.ramStart, bytes: ctx.fileBytes(g.fileIndex),
+      entries: [{ addr: g.entry, why: `called by the main code after it loaded the file at ${hex(g.ramStart)} (call at ${hex(g.loadCallAddr)})` }],
+      textEnd: null, fixedSections: null, bss: g.bss.size ? { start: g.bss.start, end: g.bss.start + g.bss.size } : null, relocs: [],
+      externalRefs: [],
+    });
+  }
   for (const o of overlays) {
     const file = ctx.fileBytes(o.fileIndex);
     const text = o.vramStart;

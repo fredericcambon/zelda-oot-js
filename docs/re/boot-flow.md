@@ -72,3 +72,14 @@ After the last start, `code_entry` calls `osSetThreadPri(0, 15)` (`0x800A26BC`â€
 - The low-memory words in section 1 before `boot_main` runs, and the boot stack pointer if it starts there.
 - Thread creation does not run anything; `osStartThread` from a context with no running thread dispatches immediately. The order above is observable only through priorities: 254 (VI manager) > 150 (PI manager) > 127 (id 2) > 16 (DMA manager) > 16 > 15 (thread 3 after `code_entry`) > 11 > 10 (thread 1 until it lowers itself) > 0 (thread 1 afterwards).
 - Thread 1 creates the VI and PI managers before thread 3 exists; thread 3 creates the DMA manager before its first file read, and that read goes through the DMA manager and the PI manager.
+
+## 7. Headless run
+
+`npm run headless -- --frames N [--trace]` runs the built game (`dist/oot.js`, from `npm run port`) in Node. It copies ROM offset `0x1000` (`0x6950` bytes) to `0x80000400`, writes the low-memory words of section 1, and starts `boot_main` (`0x80000498`) with `sp = 0x80007740`, as section 2 prescribes. Each step runs one 50 Hz retrace interval of the virtual clock. `--trace` lists the thread states after every frame; a build made with `npm run port -- --trace-calls --dist dist-trace` also prints the last 40 recompiled functions entered when the game stops.
+
+What a PAL boot does, as observed:
+
+- Frames 1-3 load the file table and the main code file (the DMA reads of `0x8000099c` and the decompression loop around `0x80001140`); `code_entry` runs in frame 4 and creates the threads of section 5, with the ids and entries listed there (2, 5, 19, 4, 7 and the DMA manager 18).
+- The routine at `0x800ADAE0` loads a second file with `rom_file_load` and constant arguments (`0x800ADB0C`: destination `0x801C4EC0`, ROM `0xB8A4F0`, size `0x12C90`, file 29 of the file table), clears `0xDC80` bytes from `0x801D7B50` (call at `0x800ADB24`) and calls `0x801C4EC0` (`0x800ADB34`). The file has no relocation footer, so it is recompiled as a fixed segment linked at that address (`seg_801c4ec0`).
+- The scheduler submits a task of type 4 (`osSpTaskStartGo` call at `0x800A37B8`, after `osSpTaskLoad` at `0x800A3750`). Its microcode pointer is `0x800066C0`, where the words are `34014000` (`ori at,zero,0x4000`), `40812000` (`mtc0 at,$4`) and `0000000D` (`break`): the RSP program only writes SP_STATUS and halts. The runtime completes it with the SP event and no renderer call.
+- From frame 26 on there is a graphics task (type 1) every retrace until about frame 256, then one every third retrace; audio tasks (type 2) run alongside.

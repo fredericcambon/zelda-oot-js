@@ -35,6 +35,14 @@ __attribute__((noreturn)) void rt_trap(Cpu *c, int kind, uint32_t pc, uint32_t c
 __attribute__((noreturn)) void rt_unimpl(Cpu *c, uint32_t pc, uint32_t word);
 // A direct transfer whose target lies in no recompiled file was reached.
 __attribute__((noreturn)) void rt_missing(Cpu *c, uint32_t addr);
+// Debug builds (-DOOT_TRACE) record the entry of every recompiled function in a ring that oot_trace_at reads.
+#ifdef OOT_TRACE
+void rt_trace_enter(uint32_t addr);
+#define OOT_TRACE_ENTER(addr) rt_trace_enter(addr)
+#else
+#define OOT_TRACE_ENTER(addr) ((void)0)
+#endif
+
 // Indirect call through the runtime's table of recompiled functions.
 void rt_call(Cpu *c, uint32_t addr);
 

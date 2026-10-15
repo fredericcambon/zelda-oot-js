@@ -19,6 +19,7 @@ async function main(): Promise<number> {
       dist: { type: 'string', default: 'dist' },
       'no-ghidra': { type: 'boolean', default: false },
       optimize: { type: 'string', default: '-O1' },
+      'trace-calls': { type: 'boolean', default: false },
     },
   });
   const log = (m: string) => console.log(m);
@@ -48,7 +49,7 @@ async function main(): Promise<number> {
     stage(4, 'compile with Emscripten');
     const toolchain = ensureToolchain(log);
     const opts = {
-      cDir, objDir: resolve(values.generated!, 'obj'), distDir: resolve(values.dist!), toolchain, optimize: values.optimize, log,
+      cDir, objDir: resolve(values.generated!, values['trace-calls'] ? 'obj-trace' : 'obj'), traceCalls: values['trace-calls'], distDir: resolve(values.dist!), toolchain, optimize: values.optimize, log,
     };
     const objects = await compileAll(opts, runtimeSources());
 

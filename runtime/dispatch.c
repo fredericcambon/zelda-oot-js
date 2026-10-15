@@ -79,9 +79,8 @@ void rt_call(Cpu *c, uint32_t addr) {
 }
 
 __attribute__((noreturn)) void rt_missing(Cpu *c, uint32_t addr) {
-  (void)c;
   log_missing(addr);
-  rt_fatal("missing function at 0x%08x", addr);
+  rt_fatal("missing function at 0x%08x (return address 0x%08x)", addr, (uint32_t)c->r[31]);
 }
 
 // ---- Overlay registry ------------------------------------------------------------------------------------

@@ -65,10 +65,26 @@ export interface OverlayLayout {
   relocs: OverlayReloc[];
 }
 
+/**
+ * A file the main code loads at a fixed address with the same loader call as the main code file itself, and then
+ * enters directly: code that is linked where it is loaded and has no relocation information.
+ */
+export interface SegmentLayout {
+  fileIndex: number;
+  ramStart: number;
+  size: number;
+  bss: Range;
+  entry: number;
+  /** Address of the call in the main code file that loads the file. */
+  loadCallAddr: number;
+  evidence: string[];
+}
+
 export interface RomLayout {
   boot: BootLayout;
   code: CodeLayout;
   overlays: OverlayLayout[];
+  segments: SegmentLayout[];
 }
 
 const hex = (n: number) => '0x' + (n >>> 0).toString(16);
@@ -235,12 +251,61 @@ export function findOverlays(rom: Uint8Array, code: Uint8Array, files: FileEntry
   return out.sort((a, b) => a.fileIndex - b.fileIndex);
 }
 
+/**
+ * Calls of the boot loader from the main code file whose destination is a constant address and whose source and
+ * size describe a whole file of the file table. The arguments are read by running the instructions of the
+ * enclosing routine in order, ignoring branches (the loads are straight-line code between them). A load counts
+ * as a segment when a call into the loaded file follows it.
+ */
+export function findSegments(code: Uint8Array, base: number, loaderAddr: number, files: FileEntry[]): SegmentLayout[] {
+  const insns = disassemble(code, base);
+  const byStart = new Map(files.map((f) => [f.virtualStart, f]));
+  const out: SegmentLayout[] = [];
+  insns.forEach((c, idx) => {
+    if (c.kind !== 'call' || c.target !== loaderAddr) return;
+    let start = idx;
+    while (start > 0 && insns[start - 1]!.kind !== 'return') start--;
+    const regs = freshRegs();
+    for (let k = start; k <= idx + 1 && k < insns.length; k++) if (k !== idx) step(regs, insns[k]!);
+    const [dest, src, size] = [regs[4], regs[5], regs[6]];
+    if (dest === undefined || src === undefined || size === undefined) return;
+    const f = byStart.get(src);
+    if (!f || f.virtualEnd - f.virtualStart !== size || dest < RAM_LOW || dest >= RAM_HIGH) return;
+    const end = dest + size;
+    let bss: Range | undefined;
+    let entry: number | undefined;
+    const run = freshRegs();
+    for (let j = idx + 2; j < Math.min(idx + 60, insns.length); j++) {
+      const n = insns[j]!;
+      if (n.kind === 'call' && n.target !== undefined) {
+        const args = [...run];
+        step(args, insns[j + 1]!);
+        if (args[4] === end && args[5] !== undefined && !bss) bss = { start: end, size: args[5] };
+        else if (n.target >= dest && n.target < end && entry === undefined) entry = n.target;
+      }
+      step(run, n);
+      if (n.kind === 'call') for (const r of [2, 3, 4, 5, 6, 7]) run[r] = undefined;
+    }
+    if (entry === undefined) return;
+    out.push({
+      fileIndex: f.index, ramStart: dest, size, bss: bss ?? { start: end, size: 0 }, entry, loadCallAddr: c.addr,
+      evidence: [
+        `${hex(c.addr)}: call ${hex(loaderAddr)}(dest=${hex(dest)}, rom=${hex(src)}, size=${hex(size)}); ${hex(src)}..${hex(src + size)} is file ${f.index} of the file table`,
+        ...(bss ? [`then a call with first argument ${hex(end)} (the end of the loaded file) and size ${hex(bss.size)}: BSS`] : []),
+        `then a call to ${hex(entry)}, inside the loaded file`,
+      ],
+    });
+  });
+  return out;
+}
+
 export function analyseLayout(rom: Uint8Array, files: FileEntry[]): RomLayout {
   const boot = analyseBoot(rom);
   const code = analyseCode(rom, boot, files);
   const codeFile = files.find((f) => f.index === code.fileIndex)!;
   const overlays = findOverlays(rom, readFile(rom, codeFile), files);
-  return { boot, code, overlays };
+  const segments = findSegments(readFile(rom, codeFile), code.ramStart, code.loaderAddr, files);
+  return { boot, code, overlays, segments };
 }
 
 export type { Insn };

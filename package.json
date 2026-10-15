@@ -15,7 +15,8 @@
     "analyze:setup": "node tools/analyze/setup.mjs",
     "rom:extract": "tsx tools/rom/cli.ts extract",
     "recomp": "tsx tools/recomp/cli.ts",
-    "port": "tsx tools/port/cli.ts"
+    "port": "tsx tools/port/cli.ts",
+    "headless": "tsx tools/headless/cli.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
