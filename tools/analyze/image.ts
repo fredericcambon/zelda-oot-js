@@ -202,10 +202,12 @@ function classifyRegion(
         else {
           // The tail of the object that precedes it, unless a table or string sits in between.
           const prev = out[out.length - 1];
-          const continues = prev !== undefined && prev.end === s && (prev.kind === 'referenced' || prev.kind === 'pointer-target' || prev.kind === 'section-start');
+          // A string embedded in an object does not end it: the object continues past the string.
+          const owner = prev?.kind === 'string' && out.length > 1 && out[out.length - 2]!.end === prev.start ? out[out.length - 2] : prev;
+          const continues = prev !== undefined && prev.end === s && owner !== undefined && (owner.kind === 'referenced' || owner.kind === 'pointer-target' || owner.kind === 'section-start');
           let allZero = true;
           for (let a = s; a < t && allZero; a++) if (bytes[a - base] !== 0) allZero = false;
-          if (continues) push(s, t, prev.kind);
+          if (continues) push(s, t, owner!.kind);
           else if (allZero) push(s, t, t - s < 16 ? 'padding' : 'zero-fill');
           else push(s, t, 'unreferenced');
         }
@@ -220,6 +222,48 @@ const isZeroWord = (code: Code, a: number) => code.word(a) === 0;
 
 export interface AnalyseOptions {
   ghidra?: GhidraFacts | null;
+}
+
+/**
+ * A function whose code runs on both sides of another function's entry (a subroutine placed inside a larger
+ * routine) is cut so that no two ranges overlap: the part before the inner function keeps the entry, the parts
+ * after it become fragments that the entry's code reaches by branching.
+ */
+function splitNested(fns: FoundFunction[], evidence: Map<number, string[]>): FoundFunction[] {
+  const out: FoundFunction[] = [];
+  const pending = [...fns];
+  while (pending.length) {
+    const f = pending.pop()!;
+    const inner = fns.filter((g) => g !== f && g.start > f.start && g.start < f.end).sort((a, b) => a.start - b.start)[0];
+    if (!inner) {
+      out.push(f);
+      continue;
+    }
+    const innerEnd = inner.end;
+    const inRange = (a: number) => a < inner.start;
+    const part = (keep: (a: number) => boolean): FoundFunction => {
+      const visited = new Set([...f.visited].filter(keep));
+      const addrs = [...visited].sort((a, b) => a - b);
+      return {
+        ...f, start: addrs[0]!, end: addrs[addrs.length - 1]! + 4, visited,
+        jumpTables: f.jumpTables.filter((j) => keep(j.site)),
+        indirect: f.indirect.filter((s) => keep(s.addr)),
+        calls: new Map([...f.calls].filter(([, site]) => keep(site))),
+      };
+    };
+    const head = part(inRange);
+    head.sources = f.sources;
+    const tail = part((a) => a >= innerEnd);
+    if (tail.visited.size) {
+      tail.sources = new Set(['fragment']);
+      tail.tailCalls = new Set();
+      tail.exits = 1;
+      evidence.set(tail.start, [...(evidence.get(tail.start) ?? []), `continuation of the function at ${hex(f.start)} after the function at ${hex(inner.start)}`]);
+      pending.push(tail);
+    }
+    pending.push(head);
+  }
+  return out.sort((a, b) => a.start - b.start);
 }
 
 export function seedAddresses(spec: ImageSpec): Map<number, Set<RootSource>> {
@@ -321,7 +365,7 @@ export function analyseImage(spec: ImageSpec, opts: AnalyseOptions = {}): InvIma
     };
   }
 
-  const fnList = [...result.functions.values()].sort((a, b) => a.start - b.start);
+  const fnList = splitNested([...result.functions.values()].sort((a, b) => a.start - b.start), evidence);
   const callerOf = new Map<number, number>();
   for (const f of fnList) for (const [t, site] of f.calls) if (!callerOf.has(t)) callerOf.set(t, site);
 

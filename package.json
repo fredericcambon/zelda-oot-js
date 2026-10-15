@@ -11,6 +11,8 @@
     "test": "vitest run",
     "lint": "eslint . && tsc --noEmit",
     "dev": "vite web",
+    "analyze": "tsx tools/analyze/cli.ts",
+    "analyze:setup": "node tools/analyze/setup.mjs",
     "rom:extract": "tsx tools/rom/cli.ts extract"
   },
   "devDependencies": {

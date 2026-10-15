@@ -1,10 +1,11 @@
 // The analysis pipeline: layout → ELF images → Ghidra → our discovery → OS identification → inventory.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { wrapAll } from '../elf-wrap/wrap.ts';
 import { loadContext } from './context.ts';
 import { ghidraInstalled, runGhidra, type GhidraFacts } from './ghidra.ts';
+import { renderCoverage, shortfalls } from './coverage.ts';
 import { analyseImage, buildSpecs } from './image.ts';
 import { identifyOs } from './os.ts';
 import { GHIDRA_VERSION, setup } from './setup.mjs';
@@ -24,6 +25,8 @@ export interface AnalyzeOptions {
   useGhidra: boolean;
   forceGhidra?: boolean;
   shards?: number;
+  /** Where to write the generated coverage report; skipped when unset. */
+  coverageDoc?: string;
   log?: (msg: string) => void;
 }
 
@@ -54,7 +57,7 @@ export async function analyze(opts: AnalyzeOptions): Promise<Inventory> {
     for (const spec of specs) {
       const pass1 = analyseImage(spec);
       const seeds = pass1.functions.filter((f) => f.sources.some((s) => s !== 'gap' && s !== 'jal')).map((f) => f.start.toString(16));
-      writeFileSync(join(seedsDir, `${spec.name}.seeds`), seeds.join('\n') + '\n');
+      writeIfChanged(join(seedsDir, `${spec.name}.seeds`), seeds.join('\n') + '\n');
     }
     log(`running Ghidra headless on ${specs.length} images`);
     const n = await runGhidra({
@@ -80,5 +83,11 @@ export async function analyze(opts: AnalyzeOptions): Promise<Inventory> {
   };
   writeFileSync(join(opts.outDir, 'inventory.json'), JSON.stringify(inventory));
   log(`wrote ${join(opts.outDir, 'inventory.json')}`);
+  if (opts.coverageDoc) {
+    mkdirSync(dirname(opts.coverageDoc), { recursive: true });
+    writeFileSync(opts.coverageDoc, renderCoverage(inventory));
+    const low = shortfalls(inventory);
+    log(`wrote ${opts.coverageDoc}; ${low.length} sections below target`);
+  }
   return inventory;
 }

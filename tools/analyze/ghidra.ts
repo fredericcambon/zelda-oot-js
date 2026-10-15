@@ -40,7 +40,11 @@ function javaHome(): string {
   return process.env.OOT_JAVA_HOME ?? (existsSync(join(JDK_DIR, 'Contents', 'Home')) ? join(JDK_DIR, 'Contents', 'Home') : JDK_DIR);
 }
 
-function runShard(index: number, dir: string, run: GhidraRun, logPath: string): Promise<number> {
+const BATCH_SIZE = 12;
+/** Wall-clock limit for one batch; Ghidra is killed past it and the batch's missing images are reported. */
+const BATCH_TIMEOUT_MS = 40 * 60 * 1000;
+
+function runBatch(index: number, dir: string, run: GhidraRun, logPath: string): Promise<number> {
   const project = join(tmpdir(), `oot-ghidra-${process.pid}-${index}`);
   rmSync(project, { recursive: true, force: true });
   mkdirSync(project, { recursive: true });
@@ -55,14 +59,21 @@ function runShard(index: number, dir: string, run: GhidraRun, logPath: string): 
   const log = createWriteStream(logPath);
   return new Promise((res, rej) => {
     const p = spawn(cmd, cmdArgs as string[], { env: { ...process.env, JAVA_HOME: javaHome() }, stdio: ['ignore', 'pipe', 'pipe'] });
-    const pipe = (d: Buffer) => {
-      log.write(d);
-      if (run.onLog) for (const l of d.toString().split(/\r?\n/)) if (/ExportFacts: wrote|ERROR/.test(l)) run.onLog(l);
-    };
+    const timer = setTimeout(() => {
+      log.write('\nbatch timed out\n');
+      // A .bat wrapper leaves the JVM running after cmd.exe is killed; kill the whole tree.
+      if (process.platform === 'win32' && p.pid) spawn('taskkill', ['/pid', String(p.pid), '/t', '/f'], { stdio: 'ignore' });
+      else p.kill('SIGKILL');
+    }, BATCH_TIMEOUT_MS);
+    const pipe = (d: Buffer) => log.write(d);
     p.stdout.on('data', pipe);
     p.stderr.on('data', pipe);
-    p.on('error', rej);
+    p.on('error', (e) => {
+      clearTimeout(timer);
+      rej(e);
+    });
     p.on('close', (code) => {
+      clearTimeout(timer);
       log.end();
       rmSync(project, { recursive: true, force: true });
       res(code ?? 1);
@@ -70,48 +81,68 @@ function runShard(index: number, dir: string, run: GhidraRun, logPath: string): 
   });
 }
 
-/** Analyses every ELF that has no fresh JSON yet. Resolves with the number of programs analysed. */
+/** Analyses every ELF that has no fresh JSON yet, in small batches. Resolves with the number of programs analysed. */
 export async function runGhidra(run: GhidraRun): Promise<number> {
   if (!ghidraInstalled()) throw new Error('Ghidra is not installed: run `npm run analyze:setup` (node tools/analyze/setup.mjs)');
   mkdirSync(run.outDir, { recursive: true });
   const todo = readdirSync(run.elfDir)
     .filter((f) => f.endsWith('.elf'))
     .filter((f) => {
-      const out = join(run.outDir, f.replace(/\.elf$/, '.json'));
+      const out = join(run.outDir, f.replace(/.elf$/, '.json'));
       if (run.force || !existsSync(out)) return true;
       const seeds = join(run.seedsDir, f.replace(/.elf$/, '.seeds'));
       const inputs = [join(run.elfDir, f), ...(existsSync(seeds) ? [seeds] : [])];
       return inputs.some((i) => statSync(i).mtimeMs > statSync(out).mtimeMs);
     });
   if (!todo.length) return 0;
-  const shards = Math.max(1, Math.min(run.shards ?? Math.floor(cpus().length / 2), todo.length, 6));
-  const shardRoot = join(run.workDir, 'shards');
-  rmSync(shardRoot, { recursive: true, force: true });
-  const dirs: string[] = [];
-  for (let s = 0; s < shards; s++) {
-    const d = join(shardRoot, String(s));
-    mkdirSync(d, { recursive: true });
-    dirs.push(d);
-  }
-  // Largest first so the shards finish together.
-  todo
-    .sort((a, b) => statSync(join(run.elfDir, b)).size - statSync(join(run.elfDir, a)).size)
-    .forEach((f, i) => {
-      const dst = join(dirs[i % shards]!, f);
-      try {
-        linkSync(join(run.elfDir, f), dst);
-      } catch {
-        copyFileSync(join(run.elfDir, f), dst);
+  const workers = Math.max(1, Math.min(run.shards ?? Math.floor(cpus().length / 2), 6));
+  const batchRoot = join(run.workDir, 'batches');
+  rmSync(batchRoot, { recursive: true, force: true });
+  // Largest first so the long files start early; each batch mixes sizes.
+  const sorted = todo.sort((a, b) => statSync(join(run.elfDir, b)).size - statSync(join(run.elfDir, a)).size);
+  const nBatches = Math.ceil(sorted.length / BATCH_SIZE);
+  const batches: string[][] = Array.from({ length: nBatches }, () => []);
+  sorted.forEach((f, i) => batches[i % nBatches]!.push(f));
+  let finished = 0;
+  const runPass = async (passBatches: string[][], concurrency: number): Promise<string[]> => {
+    let next = 0;
+    const failed: string[] = [];
+    const worker = async (w: number) => {
+      for (;;) {
+        const b = next++;
+        if (b >= passBatches.length) return;
+        const dir = join(batchRoot, String(w));
+        rmSync(dir, { recursive: true, force: true });
+        mkdirSync(dir, { recursive: true });
+        for (const f of passBatches[b]!) {
+          try {
+            linkSync(join(run.elfDir, f), join(dir, f));
+          } catch {
+            copyFileSync(join(run.elfDir, f), join(dir, f));
+          }
+        }
+        const t0 = Date.now();
+        const code = await runBatch(w, dir, run, join(run.workDir, `ghidra-batch-${w}.log`));
+        const missing = passBatches[b]!.filter((f) => !existsSync(join(run.outDir, f.replace(/.elf$/, '.json'))));
+        failed.push(...missing);
+        rmSync(dir, { recursive: true, force: true });
+        finished++;
+        run.onLog?.(`ghidra batch ${finished}/${passBatches.length}: ${passBatches[b]!.length - missing.length}/${passBatches[b]!.length} images in ${Math.round((Date.now() - t0) / 1000)}s${code !== 0 ? ` (exit ${code})` : ''}`);
       }
-    });
-  const codes = await Promise.all(dirs.map((d, i) => runShard(i, d, run, join(run.workDir, `ghidra-shard-${i}.log`))));
-  rmSync(shardRoot, { recursive: true, force: true });
-  const bad = codes.filter((c) => c !== 0).length;
-  if (bad) throw new Error(`Ghidra failed in ${bad} of ${shards} shards; see ${run.workDir}/ghidra-shard-*.log`);
-  const missing = todo.filter((f) => !existsSync(join(run.outDir, f.replace(/\.elf$/, '.json'))));
-  if (missing.length) {
-    writeFileSync(join(run.workDir, 'ghidra-missing.txt'), missing.join('\n'));
-    throw new Error(`Ghidra produced no output for ${missing.length} images (${missing.slice(0, 3).join(', ')}...)`);
+    };
+    await Promise.all(Array.from({ length: Math.min(concurrency, passBatches.length) }, (_, w) => worker(w)));
+    return failed;
+  };
+  let failed = await runPass(batches, workers);
+  if (failed.length) {
+    // Parallel JVM starts occasionally fail to read the shared language files; one image at a time is reliable.
+    run.onLog?.(`retrying ${failed.length} images one by one`);
+    failed = await runPass(failed.map((f) => [f]), 1);
+  }
+  rmSync(batchRoot, { recursive: true, force: true });
+  if (failed.length) {
+    writeFileSync(join(run.workDir, 'ghidra-missing.txt'), failed.join('\n'));
+    throw new Error(`Ghidra produced no output for ${failed.length} images (${failed.slice(0, 3).join(', ')}...); see ${run.workDir}/ghidra-batch-*.log`);
   }
   return todo.length;
 }

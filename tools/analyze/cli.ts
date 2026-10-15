@@ -10,6 +10,7 @@ async function main(): Promise<number> {
       work: { type: 'string', default: 'rea-work' },
       'no-ghidra': { type: 'boolean', default: false },
       'force-ghidra': { type: 'boolean', default: false },
+      'coverage-doc': { type: 'string', default: 'docs/re/coverage.md' },
       shards: { type: 'string' },
     },
   });
@@ -20,6 +21,7 @@ async function main(): Promise<number> {
       workDir: values.work!,
       useGhidra: !values['no-ghidra'],
       forceGhidra: values['force-ghidra'],
+      coverageDoc: values['coverage-doc'],
       shards: values.shards ? Number(values.shards) : undefined,
       log: (m) => console.log(m),
     });

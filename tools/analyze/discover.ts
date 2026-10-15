@@ -3,7 +3,7 @@
 
 import { decode, type Insn } from './mips.ts';
 
-export type RootSource = 'entry' | 'seed' | 'jal' | 'ghidra' | 'pointer' | 'address-taken' | 'tail-jump' | 'gap' | 'reloc-pointer';
+export type RootSource = 'entry' | 'seed' | 'jal' | 'ghidra' | 'pointer' | 'address-taken' | 'tail-jump' | 'gap' | 'reloc-pointer' | 'fragment';
 
 export interface ImageCode {
   base: number;
