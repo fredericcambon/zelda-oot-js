@@ -111,8 +111,6 @@ function texel(tex: DecodedTexture | null, tile: TileState | undefined, u: numbe
 export class SoftRenderer {
   /** Colour images by physical address, RGBA8, top row first. */
   readonly images = new Map<number, Uint8Array>();
-  /** The image most recently drawn into. */
-  last: Uint8Array | null = null;
   cullMode: 'normal' | 'swapped' | 'off' = 'normal';
   private readonly depth = new Float32Array(WIDTH * HEIGHT).fill(1);
 
@@ -120,9 +118,9 @@ export class SoftRenderer {
     for (const b of result.batches) this.drawBatch(b);
   }
 
-  /** The image at `address`, or the one drawn last. */
-  image(address?: number): Uint8Array | null {
-    return (address === undefined ? undefined : this.images.get(physical(address))) ?? this.last;
+  /** The image at `address`, or null when none was drawn there (and for 0, the blanked screen). */
+  image(address: number): Uint8Array | null {
+    return this.images.get(physical(address)) ?? null;
   }
 
   private target(address: number): Uint8Array {
@@ -133,7 +131,6 @@ export class SoftRenderer {
       for (let i = 3; i < img.length; i += 4) img[i] = 255;
       this.images.set(key, img);
     }
-    this.last = img;
     return img;
   }
 
@@ -325,4 +322,22 @@ function clipNear(poly: Vertex[]): Vertex[] {
     }
   }
   return out.filter((v) => v.pos[3] > 1e-6);
+}
+
+/** How much of an image is one flat colour: the share of pixels with the most common colour, and the number of rows of a single colour. */
+export function flatness(img: Uint8Array): { dominant: number; flatRows: number } {
+  const counts = new Map<number, number>();
+  let flatRows = 0;
+  for (let y = 0; y < HEIGHT; y++) {
+    const row = y * WIDTH * 4;
+    let same = true;
+    for (let x = 0; x < WIDTH; x++) {
+      const o = row + x * 4;
+      const v = (img[o]! << 16) | (img[o + 1]! << 8) | img[o + 2]!;
+      counts.set(v, (counts.get(v) ?? 0) + 1);
+      if (same && (img[o]! !== img[row]! || img[o + 1]! !== img[row + 1]! || img[o + 2]! !== img[row + 2]!)) same = false;
+    }
+    if (same) flatRows++;
+  }
+  return { dominant: Math.max(...counts.values()) / (WIDTH * HEIGHT), flatRows };
 }

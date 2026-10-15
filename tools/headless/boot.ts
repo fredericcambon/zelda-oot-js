@@ -1,4 +1,6 @@
 // Loads the built game into this process and steps it one video frame at a time.
+import { shownFramebuffer } from '../gfx/vi.ts';
+
 const RDRAM_SIZE = 0x800000;
 const OS_ALLTHREADS = 0x8000685c;
 const OS_SENTINEL = 0x80006850;
@@ -19,7 +21,6 @@ interface OotModule {
   _oot_frames(): number;
   _oot_rd32(addr: number): number;
   _oot_rdram(): number;
-  _oot_vi_framebuffer?(): number;
   _oot_fatal_message(): number;
   _oot_trace_count?(): number;
   _oot_trace_at?(back: number): number;
@@ -58,7 +59,7 @@ export interface Game {
   stats(): string;
   /** The last `n` recompiled functions entered, newest first; empty unless the build records calls (`npm run port -- --trace-calls`). */
   lastCalls(n: number): string[];
-  /** Address of the colour image the video interface shows; 0 when the build predates the export. */
+  /** Address of the colour image the video interface shows; 0 when the screen is blanked. */
   framebuffer(): number;
 }
 
@@ -113,7 +114,7 @@ export async function bootGame(moduleUrl: string, rom: Uint8Array, options: Boot
         audioTasks: mod._oot_audio_tasks(), newThreads, fatal,
       };
     },
-    framebuffer: () => (mod._oot_vi_framebuffer?.() ?? 0) >>> 0,
+    framebuffer: () => shownFramebuffer(rd32),
     lastCalls(n) {
       const total = mod._oot_trace_count?.() ?? 0;
       return Array.from({ length: Math.min(n, total) }, (_, k) => `0x${hex(mod._oot_trace_at!(k))}`);

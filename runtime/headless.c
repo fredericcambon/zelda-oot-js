@@ -69,7 +69,6 @@ EMSCRIPTEN_KEEPALIVE uint32_t oot_frames(void) { return frames_done; }
 EMSCRIPTEN_KEEPALIVE uint32_t oot_gfx_tasks(void) { return gfx_tasks; }
 EMSCRIPTEN_KEEPALIVE uint32_t oot_audio_tasks(void) { return audio_tasks; }
 EMSCRIPTEN_KEEPALIVE uint32_t oot_retraces(void) { RtVi v; rt_vi_get(&v); return v.retraces; }
-EMSCRIPTEN_KEEPALIVE uint32_t oot_vi_framebuffer(void) { RtVi v; rt_vi_get(&v); return v.framebuffer; }
 EMSCRIPTEN_KEEPALIVE const char *oot_fatal_message(void) { return fatal_message; }
 EMSCRIPTEN_KEEPALIVE const uint8_t *oot_rdram(void) { return rdram; }
 EMSCRIPTEN_KEEPALIVE uint32_t oot_rd32(uint32_t addr) { return rd32(addr); }

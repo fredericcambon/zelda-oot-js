@@ -23,7 +23,7 @@ export function runtimeSources(): string[] {
 }
 
 /** Host entry points (runtime/headless.c) and the allocator the host copies the ROM through. */
-const EXPORTS = ['_main', '_malloc', '_free', '_oot_boot', '_oot_frame', '_oot_idle', '_oot_frames', '_oot_gfx_tasks', '_oot_audio_tasks', '_oot_retraces', '_oot_vi_framebuffer', '_oot_fatal_message', '_oot_rd32', '_oot_rdram', '_oot_trace_count', '_oot_trace_at'];
+const EXPORTS = ['_main', '_malloc', '_free', '_oot_boot', '_oot_frame', '_oot_idle', '_oot_frames', '_oot_gfx_tasks', '_oot_audio_tasks', '_oot_retraces', '_oot_fatal_message', '_oot_rd32', '_oot_rdram', '_oot_trace_count', '_oot_trace_at'];
 
 const COMPILE_FLAGS = ['-ffp-contract=off', '-Wall', '-Wno-unused-label', '-Wno-unused-variable', '-Wno-unused-but-set-variable', '-Wno-unused-function'];
 
