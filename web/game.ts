@@ -14,7 +14,7 @@ interface OotModule {
   _oot_gfx_tasks(): number;
   _oot_retraces(): number;
   _oot_rdram(): number;
-  _oot_vi_framebuffer(): number;
+  _oot_vi_framebuffer?(): number;
   _oot_fatal_message(): number;
   UTF8ToString(ptr: number): string;
 }
@@ -55,7 +55,7 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, moduleUrl =
         throw new Error(message || (err instanceof Error ? err.message : String(err)), { cause: err });
       }
     },
-    framebuffer: () => mod._oot_vi_framebuffer() >>> 0,
+    framebuffer: () => (mod._oot_vi_framebuffer?.() ?? 0) >>> 0,
     info: () => ({ frames: mod._oot_frames(), retraces: mod._oot_retraces(), gfxTasks: mod._oot_gfx_tasks(), idle: mod._oot_idle() !== 0, renderError }),
   };
 }
