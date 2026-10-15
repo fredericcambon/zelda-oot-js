@@ -97,7 +97,7 @@ export function decode(word: number, addr: number): Insn {
     if (rt >= 8 && rt <= 0x0e) return set(name, `${r(rs)}, ${sx16(imm)}`);
     const target = (addr + 4 + sx16(imm) * 4) >>> 0;
     return set(name, `${r(rs)}, ${hex(target)}`, {
-      kind: rt >= 0x10 ? 'call' : 'branch', target, likely: name.endsWith('l'),
+      kind: rt >= 0x10 ? 'call' : 'branch', target, likely: name.endsWith('l') && !name.endsWith('al'),
     });
   }
   if (op === 2 || op === 3) {
