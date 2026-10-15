@@ -84,7 +84,8 @@ describe.skipIf(!rom || !existsSync(rom))('OS routines of the ROM', () => {
   }
 
   it('keeps the generated reference of os-routines.md current', () => {
-    const doc = readFileSync('docs/re/os-routines.md', 'utf8');
+    // A checkout with core.autocrlf turns the file's line ends into CRLF; the generator writes LF.
+    const doc = readFileSync('docs/re/os-routines.md', 'utf8').replace(/\r\n/g, '\n');
     expect(spliceDoc(doc, renderRoutines(result.routines))).toBe(doc);
   });
 
