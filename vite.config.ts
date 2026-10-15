@@ -15,7 +15,13 @@ function gameFiles(): Plugin {
         const url = decodeURIComponent((req.url ?? '').split('?')[0]!);
         const file = join(dist, url);
         const type = GAME_FILES[url] ?? (url.startsWith('/rom/') && !url.includes('..') ? 'application/octet-stream' : undefined);
-        if (!type || !existsSync(file) || !statSync(file).isFile()) return next();
+        if (!type) return next();
+        // Answer 404 here: left to Vite, a missing file would be served as the page itself.
+        if (!existsSync(file) || !statSync(file).isFile()) {
+          res.statusCode = 404;
+          res.end('not built: run npm run port -- --rom <path>');
+          return;
+        }
         res.setHeader('Content-Type', url.endsWith('.json') ? 'application/json' : type);
         createReadStream(file).pipe(res);
       });
