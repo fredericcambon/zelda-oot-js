@@ -115,6 +115,14 @@ Opcodes `04`, `08`–`0A`, `E0`, `E5` and the others never occur; the interprete
 - **Texture coordinate generation: not verified.** The game sets bits `0x40000` and `0x80000` (`D9FFFFFF 000E0400`) and passes two look-at vectors (`DC08000A`, `DC08030A`); the interpreter uses `dot(n, lookat) * 0.5 + 0.5` in 0..1, scaled as a normal coordinate is. Nothing in the binary's game code fixes the formula; it is a placeholder until a sphere-mapped surface is compared with footage.
 - `CULLDL`'s slot range is read as `w0[15:0]/2` to `w1[15:0]/2`: the samples (`0`, `0x1E`) cover the 16 vertices loaded just before.
 
+## Known issue: the bridge in the title attract sequence
+
+Reported from the browser: in the title attract sequence the shot with two figures on a bridge draws everything but the bridge. Not located yet: frames 26-4840 of the headless run were dumped every 40 frames (`--dump out/frames --dump-every 40 --dump-from N`) and none shows such a shot; the closest, around frame 3300 (a rider crossing a stream, no bridge under it), was analysed:
+
+- The frame has no unknown command and no interpreter problem. 23 `CULLDL` lists end their list; rendering the same display list with `CULLDL` ignored changes 11 pixels out of 76,800 (face culling, not list culling), so `CULLDL` does not hide anything there.
+- Batches whose vertices are all behind the camera (`w < 0`, world-space room mesh drawn with an identity model-view matrix loaded from `0x800FCD00`) are correctly not drawn.
+- Still unchecked: near-plane crossing meshes (the software renderer clips against the near plane, the interpreter does not), and the actual frame. To continue, take the `frame N` value of the overlay (`#debug` on the page URL) when the shot is on screen and dump that window.
+
 ## 6. Reproducing
 
 ```
