@@ -8,6 +8,8 @@ const status = document.getElementById('status')!;
 const overlay = document.getElementById('overlay') as HTMLPreElement;
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
 
+if (location.hash === '#debug') overlay.hidden = false;
+
 const setStatus = (text: string, error = false) => {
   status.textContent = text;
   status.classList.toggle('error', error);
