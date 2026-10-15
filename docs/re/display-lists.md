@@ -109,9 +109,9 @@ Opcodes `04`, `08`–`0A`, `E0`, `E5` and the others never occur; the interprete
 
 ## 5. Assumptions that still need footage to confirm
 
-- Lighting uses normalised normals and `max(0, dot)`; the real RSP may scale differently.
-- Texture coordinate generation: the formula is a placeholder in 0..1; the game uses it (`D9FFFFFF 000E0400`) for sphere-mapped surfaces.
-- Fog: the formula is the plain one from the two constants; bounds were not checked against footage.
+- **Fog constants: verified in the game's code.** The routine at `0x8007E250` (arguments: list pointer in `a0`, fog colour in `a1`-`a3` and the stack, near at `sp+0x1C`, far at `sp+0x20`; it emits an `F8` then a `DB08`) builds the `DB08` word from near and far. Near >= 1000 gives 0 (`0x8007E2B8`), near >= 997 gives `0x7FFF8100` (`0x8007E2E4`), near < 0 gives 255 (`0x8007E324`), otherwise `multiplier = 128000 / (far - near)` and `offset = (128000 - 256 * near) / (far - near)`, both truncated to 16 bits (`div` at `0x8007E358` and `0x8007E378`). The sample `DB080000 476DB993` is exactly near 993, far 1000: 128000 / 7 = 18285 = `0x476D`, (128000 - 254208) / 7 = -18029 = `0xB993`. With `fog = multiplier * z + offset` and z the projected depth in -1..1 this is `256 * (d - near) / (far - near)` for `d = 500 * (z + 1)` in 0..1000, and the game's own cut-offs at 1000 and 997 are the end of that range: the formula in section 4 is the one the constants are made for. The `0x8001A844`-`0x8001AC10` sites build another `DB08` word with equal halves, `128000 / (s16(float * k) + 1500)` (`k` read from `0x80103FC0`/`0x80103FC4`); the interpreter reads its halves as multiplier and offset like any other. What stays unverified is the RSP's fixed-point rounding and whether it clamps before or after the divide; the title and logo frames were checked by eye only.
+- **Lighting: data verified, arithmetic not.** Verified from the game's data: the light records (colour twice, then a signed direction byte triple), the ambient record after the lights, the count word (`NUMLIGHT` = 24 x lights plus the look-at pair), the vertex's normal-instead-of-colour layout when bit `0x20000` is set. Unverified, because it is done by microcode that is never run and its source is off limits: whether the RSP normalises the direction bytes (the sample `45 45 45` has length 0.94 of 127, so the effect is below 6%), whether it clamps the dot product at 0, and the scale of the ambient term. The renderer uses `clamp(ambient + sum(light * max(0, n . d)))` with `d = byte / 127`.
+- **Texture coordinate generation: not verified.** The game sets bits `0x40000` and `0x80000` (`D9FFFFFF 000E0400`) and passes two look-at vectors (`DC08000A`, `DC08030A`); the interpreter uses `dot(n, lookat) * 0.5 + 0.5` in 0..1, scaled as a normal coordinate is. Nothing in the binary's game code fixes the formula; it is a placeholder until a sphere-mapped surface is compared with footage.
 - `CULLDL`'s slot range is read as `w0[15:0]/2` to `w1[15:0]/2`: the samples (`0`, `0x1E`) cover the 16 vertices loaded just before.
 
 ## 6. Reproducing
@@ -120,5 +120,7 @@ Opcodes `04`, `08`–`0A`, `E0`, `E5` and the others never occur; the interprete
 npm run port -- --rom "$OOT_ROM"            # builds dist/oot.js
 npm run headless -- --frames 600 --dl       # parses every graphics task; exit code 4 on an unknown command
 ```
+
+`npm run headless -- --frames 800 --dump out/frames --dump-every 50` writes the frames the video interface shows as PNGs (`tools/gfx/raster.ts`, a software renderer with the same rules as `web/shader.ts`). Frames 50-250 show the Nintendo 64 logo fading in and turning; from frame 300 the moonlit field of the title scene fades in, with the rider on the horizon by frame 600.
 
 `tools/gfx/frames.test.ts` runs the same check as a ROM-gated test; the synthetic tests in `tools/gfx/dl.test.ts` and `decode.test.ts` need no ROM.
