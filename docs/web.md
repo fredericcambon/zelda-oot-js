@@ -1,0 +1,25 @@
+# Browser shell and renderer
+
+`web/` is the page that runs the built game (`dist/oot.js`, produced by `npm run port`). `npm run dev -- --port <p> --strictPort` serves it and serves `dist/oot.js` and `dist/oot.wasm` at the site root; `npm run build` writes `dist/web/` and copies the two files beside the page.
+
+- **ROM.** The file picker reads the `.z64` in the page, checks its SHA-1 (`328a1f1b…`, `web/rom.ts`) and copies it into the module's memory. No request carries it: the page has no `fetch` of its own, and its Content-Security-Policy allows `connect-src 'self'` only.
+- **Frame loop.** A `requestAnimationFrame` loop accumulates time and calls `oot_frame` once per 20 ms (50 Hz, at most three catch-up frames), then shows the colour image the video interface points at (`oot_vi_framebuffer`, `rt_vi_get().framebuffer`).
+- **Graphics tasks.** `Module.onGfxTask` runs `DisplayListInterpreter` over the memory as the game left it and hands the batches to `Renderer`. The canvas is 320×240 and scaled up by CSS without smoothing.
+- **Colour and depth images.** Each colour image address the game draws into (`SETCIMG`) is a 320×240 texture, so double buffering works; there is one depth buffer, cleared by the fill rectangles the game draws while `SETCIMG` names the depth image address.
+- **Debug overlay.** F3 toggles it: frame and task counters, command, batch and triangle counts of the last task, unknown commands and interpreter problems, program and texture counts. C cycles face culling (normal, swapped, off).
+
+## Shaders
+
+`web/shader.ts` builds one GLSL ES 3.00 fragment shader per `ShaderSpec`: the combiner inputs of both cycles, cycle type, filter mode, alpha compare, fog in shade alpha, and the blender selectors. Colours, tile sizes, masks and shifts are uniforms. Input selector numbering is the one `decodeCombine` already extracts; the meaning of each code, the blender selectors and the other-mode bit positions are from the RDP descriptions on n64brew.dev.
+
+- Blender: `(p·a + m·b) / (a + b)`. A cycle that does not read the framebuffer is computed in the shader (this is how fog works). The last cycle, when it reads the framebuffer and the force-blend bit is set, outputs `p` with weight `a / (a + b)` in alpha and the GL blend unit does the rest; the framebuffer alpha is taken as 1.
+- Texture sampling: tile origin subtracted, shift, clamp, mirror and mask in the shader; 3-point bilinear when the filter bits are not zero.
+- Depth: enabled by the geometry mode's z-buffer bit, compare and update by the other-mode bits, decal mode by a polygon offset.
+- Fill rectangles in fill mode clear the rectangle (inclusive corners); in the other cycle types they draw through the combiner.
+
+## Not verified against footage
+
+The ROM was not run in a browser for this work, so these are open:
+- front/back face orientation (`C` flips it);
+- whether the second cycle's first texel input is the first cycle's second lookup;
+- decal depth tolerance, coverage-based edge antialiasing (ignored), dithering (ignored), noise input (0.5).
