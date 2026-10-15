@@ -79,6 +79,7 @@ enum {
 #define GFX_TASK_CYCLES 300000u  // from submitting a graphics task to the RSP interrupt
 #define AUDIO_TASK_CYCLES 100000u
 #define HALT_TASK_CYCLES 1000u   // a task whose microcode only halts
+#define HALT_UCODE 0x800066C0u   // that microcode: it writes SP_STATUS and breaks (docs/re/boot-flow.md section 7)
 #define DP_DELAY_CYCLES 2000u    // RDP completion after the RSP
 
 // ---- Host interface ----------------------------------------------------------------------------------

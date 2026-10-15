@@ -80,7 +80,7 @@ void rt_osSpTaskStartGo(Cpu *c) {
     if (audio_hook) audio_hook(&task);
     done += AUDIO_TASK_CYCLES;
     rt_schedule(done, event_fn, EVENT_SP, 0);
-  } else if (task.type == TASK_HALT) {
+  } else if (task.type == TASK_HALT && (task.ucode == HALT_UCODE || task.ucode_boot == HALT_UCODE)) {
     rt_schedule(done + HALT_TASK_CYCLES, event_fn, EVENT_SP, 0);
   } else {
     rt_fatal("RSP task of unknown type %u (flags 0x%x, ucode 0x%08x, data 0x%08x+0x%x, called from 0x%08x)", task.type, task.flags, task.ucode, task.data_ptr, task.data_size, (uint32_t)c->r[31]);
