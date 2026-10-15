@@ -1,7 +1,7 @@
 {
   "rules": [
     {
-      "id": "__osDisableInt",
+      "id": "os_internal_disable_int",
       "category": "interrupts",
       "image": "boot",
       "summary": "Clears the interrupt-enable bit (bit 0) of COP0 Status and returns the previous value of that bit; also merges the global interrupt-mask word into Status.",
@@ -25,11 +25,11 @@
       }
     },
     {
-      "id": "__osRestoreInt",
+      "id": "os_internal_restore_int",
       "category": "interrupts",
       "image": "boot",
-      "summary": "ORs its argument back into COP0 Status (re-enables interrupts when the argument is the bit returned by __osDisableInt).",
-      "evidence": "Seven instructions at 0x80005350: mfc0 t0,$12; or t0,t0,a0; mtc0 t0,$12; nops; jr ra. Always called with the value __osDisableInt returned (0x80003190/0x800031b8 in thread creation).",
+      "summary": "ORs its argument back into COP0 Status (re-enables interrupts when the argument is the bit returned by os_internal_disable_int).",
+      "evidence": "Seven instructions at 0x80005350: mfc0 t0,$12; or t0,t0,a0; mtc0 t0,$12; nops; jr ra. Always called with the value os_internal_disable_int returned (0x80003190/0x800031b8 in thread creation).",
       "match": {
         "startsWith": [
           "40086000",
@@ -43,7 +43,7 @@
       }
     },
     {
-      "id": "__osSetSR",
+      "id": "os_internal_set_sr",
       "category": "interrupts",
       "image": "boot",
       "summary": "Writes COP0 Status from $a0.",
@@ -59,7 +59,7 @@
       }
     },
     {
-      "id": "__osGetSR",
+      "id": "os_internal_get_sr",
       "category": "interrupts",
       "image": "boot",
       "summary": "Returns COP0 Status.",
@@ -93,7 +93,7 @@
       }
     },
     {
-      "id": "__osSetCompare",
+      "id": "os_internal_set_compare",
       "category": "timers",
       "image": "boot",
       "summary": "Writes COP0 Compare from $a0 (arms the timer interrupt).",
@@ -110,7 +110,7 @@
       }
     },
     {
-      "id": "__osGetCause",
+      "id": "os_internal_get_cause",
       "category": "interrupts",
       "image": "boot",
       "summary": "Returns COP0 Cause.",
@@ -127,7 +127,7 @@
       }
     },
     {
-      "id": "__osSetFpcCsr",
+      "id": "os_internal_set_fpc_csr",
       "category": "interrupts",
       "image": "boot",
       "summary": "Writes the FPU control/status register (FCR31) from $a0 and returns the old value.",
@@ -144,7 +144,7 @@
       }
     },
     {
-      "id": "__osGetFpcCsr",
+      "id": "os_internal_get_fpc_csr",
       "category": "interrupts",
       "image": "boot",
       "summary": "Returns the FPU control/status register (FCR31).",
@@ -187,15 +187,15 @@
       }
     },
     {
-      "id": "__osSetGlobalIntMask",
+      "id": "os_internal_set_global_int_mask",
       "category": "interrupts",
       "image": "boot",
       "summary": "ORs $a0 into the global interrupt-mask word at 0x80006880 inside a disable/restore pair.",
-      "evidence": "0x80004f10: __osDisableInt; lw 0x80006880; or with a0 (0x80004f38); sw back; __osRestoreInt.",
+      "evidence": "0x80004f10: os_internal_disable_int; lw 0x80006880; or with a0 (0x80004f38); sw back; os_internal_restore_int.",
       "match": {
         "calls": [
-          "__osDisableInt",
-          "__osRestoreInt"
+          "os_internal_disable_int",
+          "os_internal_restore_int"
         ],
         "globalsAll": [
           "80006880"
@@ -217,15 +217,15 @@
       }
     },
     {
-      "id": "__osResetGlobalIntMask",
+      "id": "os_internal_reset_global_int_mask",
       "category": "interrupts",
       "image": "boot",
       "summary": "Clears the bits of $a0 (except bits 0 and 10) from the global interrupt-mask word at 0x80006880 inside a disable/restore pair.",
-      "evidence": "0x80005280: __osDisableInt; `addiu at,0,-1026; and t8,t7,at` (0x800052a0-0x800052a4) keeps all but bits 0 and 10 of the argument; nor, and with the word at 0x80006880, store back (0x800052b8); __osRestoreInt.",
+      "evidence": "0x80005280: os_internal_disable_int; `addiu at,0,-1026; and t8,t7,at` (0x800052a0-0x800052a4) keeps all but bits 0 and 10 of the argument; nor, and with the word at 0x80006880, store back (0x800052b8); os_internal_restore_int.",
       "match": {
         "calls": [
-          "__osDisableInt",
-          "__osRestoreInt"
+          "os_internal_disable_int",
+          "os_internal_restore_int"
         ],
         "globalsAll": [
           "80006880"
@@ -244,11 +244,11 @@
       }
     },
     {
-      "id": "__osExceptionVector",
+      "id": "os_internal_exception_vector",
       "category": "exceptions",
       "image": "boot",
       "summary": "Four-instruction stub copied to the CPU exception vectors; loads the address of the exception handler into $k0 and jumps to it.",
-      "evidence": "0x800025a0: lui k0,0x8000; addiu k0,k0,0x25b0; jr k0 (the target is __osException). osInitialize copies these words to 0x80000000, 0x80000080, 0x80000100 and 0x80000180.",
+      "evidence": "0x800025a0: lui k0,0x8000; addiu k0,k0,0x25b0; jr k0 (the target is os_internal_exception). osInitialize copies these words to 0x80000000, 0x80000080, 0x80000100 and 0x80000180.",
       "match": {
         "startsWith": [
           "3c1a8000",
@@ -262,11 +262,11 @@
       }
     },
     {
-      "id": "__osException",
+      "id": "os_internal_exception",
       "category": "exceptions",
       "image": "boot",
-      "summary": "General exception handler: saves the interrupted thread's registers into its OSThread context, reads Cause (mfc0 $13) and EPC, dispatches on the exception code and on the pending interrupt lines (count/compare, software interrupts, SP, SI, AI, VI, PI, DP through MI_INTR, the cartridge line through the hardware-interrupt table, pre-NMI), sends the event messages registered with osSetEventMesg and finishes in __osDispatchThread.",
-      "evidence": "0x800025b0: 342 instructions. Saves $at,$v0-$v1,$a0-$a3,$t0-$t9,$s0-$s7,$gp,$sp,$fp,$ra,HI,LO into the running thread and Status at +0x118, EPC at +0x11c (mfc0 $14 at 0x80002714), Cause at +0x120 (mfc0 $13 at 0x80002774); FPU registers when the thread flag +0x18 is set (0x8000271c-0x80002770). Exception code = Cause & 0x7c: 0x24 (break) -> 0x80002a40, 0x2c (coprocessor unusable) -> 0x80002b88, 0 (interrupt) -> pending-line loop at 0x800027b0 with a table jump (`jr t2` at 0x800027e0); any other code stops and faults the thread (0x80002aa4). Interrupt lines are acknowledged by writing SP_STATUS 0xA4040010 (0x8008), VI_CURRENT 0xA4400010, AI_LEN 0xA450000C, SI_STATUS 0xA4800018, PI_STATUS 0xA4600010 (2) and MI_MODE 0xA4300000 (0x800), each followed by a call to 0x80002ad4 with an event index. Ends with `j 0x80002d14` (__osDispatchThread) at 0x80002a84, 0x80002a9c and 0x80002acc.",
+      "summary": "General exception handler: saves the interrupted thread's registers into its OSThread context, reads Cause (mfc0 $13) and EPC, dispatches on the exception code and on the pending interrupt lines (count/compare, software interrupts, SP, SI, AI, VI, PI, DP through MI_INTR, the cartridge line through the hardware-interrupt table, pre-NMI), sends the event messages registered with osSetEventMesg and finishes in os_internal_dispatch_thread.",
+      "evidence": "0x800025b0: 342 instructions. Saves $at,$v0-$v1,$a0-$a3,$t0-$t9,$s0-$s7,$gp,$sp,$fp,$ra,HI,LO into the running thread and Status at +0x118, EPC at +0x11c (mfc0 $14 at 0x80002714), Cause at +0x120 (mfc0 $13 at 0x80002774); FPU registers when the thread flag +0x18 is set (0x8000271c-0x80002770). Exception code = Cause & 0x7c: 0x24 (break) -> 0x80002a40, 0x2c (coprocessor unusable) -> 0x80002b88, 0 (interrupt) -> pending-line loop at 0x800027b0 with a table jump (`jr t2` at 0x800027e0); any other code stops and faults the thread (0x80002aa4). Interrupt lines are acknowledged by writing SP_STATUS 0xA4040010 (0x8008), VI_CURRENT 0xA4400010, AI_LEN 0xA450000C, SI_STATUS 0xA4800018, PI_STATUS 0xA4600010 (2) and MI_MODE 0xA4300000 (0x800), each followed by a call to 0x80002ad4 with an event index. Ends with `j 0x80002d14` (os_internal_dispatch_thread) at 0x80002a84, 0x80002a9c and 0x80002acc.",
       "match": {
         "cop0Read": [
           8,
@@ -291,7 +291,7 @@
       }
     },
     {
-      "id": "__osExceptionSendEvent",
+      "id": "os_internal_exception_send_event",
       "category": "exceptions",
       "image": "boot",
       "summary": "Part of the exception handler: given an event index in $a0, sends the message registered for that event (table of {queue, message} pairs at 0x8000a410) to its queue if the queue has room, and wakes the first thread waiting on it.",
@@ -309,7 +309,7 @@
       }
     },
     {
-      "id": "__osEnqueueAndYield",
+      "id": "os_internal_enqueue_and_yield",
       "category": "threads",
       "image": "boot",
       "summary": "Saves the running thread's context (Status|2, resume PC = $ra, callee-saved registers, FPU state when the thread uses it), enqueues the thread on the queue in $a0 when that is non-null, and dispatches the next runnable thread.",
@@ -332,11 +332,11 @@
       }
     },
     {
-      "id": "__osEnqueueThread",
+      "id": "os_internal_enqueue_thread",
       "category": "threads",
       "image": "boot",
       "summary": "Inserts the thread in $a1 into the linked queue headed at *$a0, ordered by descending priority (field +4), and records the queue in thread +8.",
-      "evidence": "0x80002cbc: walks nodes comparing the priority at +4 with `slt` (0x80002ccc, 0x80002ce4) and stops at the first node of lower priority; links the thread in (sw at 0x80002cf4/0x80002cf8) and stores the queue address into thread +8 (0x80002d00). Called by __osEnqueueAndYield (0x80002cac) and osStartThread (0x8000622c, 0x80006270).",
+      "evidence": "0x80002cbc: walks nodes comparing the priority at +4 with `slt` (0x80002ccc, 0x80002ce4) and stops at the first node of lower priority; links the thread in (sw at 0x80002cf4/0x80002cf8) and stores the queue address into thread +8 (0x80002d00). Called by os_internal_enqueue_and_yield (0x80002cac) and osStartThread (0x8000622c, 0x80006270).",
       "match": {
         "insns": [
           14,
@@ -351,12 +351,12 @@
           0
         ],
         "calledBy": [
-          "__osEnqueueAndYield"
+          "os_internal_enqueue_and_yield"
         ]
       }
     },
     {
-      "id": "__osPopThread",
+      "id": "os_internal_pop_thread",
       "category": "threads",
       "image": "boot",
       "summary": "Removes and returns the first thread of the queue at *$a0.",
@@ -375,11 +375,11 @@
       }
     },
     {
-      "id": "__osDispatchThread",
+      "id": "os_internal_dispatch_thread",
       "category": "threads",
       "image": "boot",
       "summary": "Pops the highest-priority runnable thread from the run queue (0x80006858), marks it running (state 4) and records it at 0x80006860, loads its saved Status/EPC/registers and returns to it with eret; when the queue is empty it installs the idle-thread context.",
-      "evidence": "0x80002d14: calls __osPopThread on the queue at 0x80006858 (0x80002d18), mtc0 $12 and $14 write Status and EPC from the thread context, eret at the end, reads/writes MI_INTR_MASK (0xA430000C) to restore the thread's interrupt mask. The only function with eret.",
+      "evidence": "0x80002d14: calls os_internal_pop_thread on the queue at 0x80006858 (0x80002d18), mtc0 $12 and $14 write Status and EPC from the thread context, eret at the end, reads/writes MI_INTR_MASK (0xA430000C) to restore the thread's interrupt mask. The only function with eret.",
       "match": {
         "special": [
           "eret"
@@ -389,7 +389,7 @@
           14
         ],
         "calls": [
-          "__osPopThread"
+          "os_internal_pop_thread"
         ],
         "insns": [
           85,
@@ -398,7 +398,7 @@
       }
     },
     {
-      "id": "__osDequeueThread",
+      "id": "os_internal_dequeue_thread",
       "category": "threads",
       "image": "boot",
       "summary": "Unlinks the thread in $a1 from the queue whose head pointer is at $a0.",
@@ -423,11 +423,11 @@
       "category": "threads",
       "image": "boot",
       "summary": "Initialises the OSThread in a0: id a1 at +0x14, priority (6th argument) at +4, entry a2 as resume PC at +0x11c, argument a3 in the saved $a0 slot (+0x38/+0x3c), stack top (5th argument) minus 16 as saved $sp (+0xf0/+0xf4), the thread-exit stub 0x80002e90 as saved $ra (+0x100/+0x104), initial Status 0xff03 (+0x118), interrupt mask 0x3f (+0x128), initial FPCSR 0x01000800 (+0x12c), state 1 (stopped); links the thread into the all-threads list at 0x8000685c.",
-      "evidence": "0x80003090: `sw` of a1 at +0x14 (0x800030b4), of 60(sp) (the priority) at +4 (0x800030c0), of a2 at +0x11c (0x800030dc), of a3 sign-extended at +0x38/+0x3c (0x800030f0-0x800030f4), of stack-16 at +0xf0/+0xf4 (0x80003118/0x8000311c), of the constant 0x80002e90 at +0x100/+0x104 (0x80003124-0x80003134), Status 0xff03 (0x80003148-0x8000314c), 0x3f at +0x128 (0x80003164), 0x01000800 at +0x12c (0x80003170-0x80003174), state `sh 1,16` (0x80003188) and `sh 0,18` (0x80003194); then __osDisableInt (0x80003190), thread->next(+0xc) = *0x8000685c, *0x8000685c = thread (0x800031ac-0x800031bc), __osRestoreInt. Called by the boot main at 0x80000570 with priority 10.",
+      "evidence": "0x80003090: `sw` of a1 at +0x14 (0x800030b4), of 60(sp) (the priority) at +4 (0x800030c0), of a2 at +0x11c (0x800030dc), of a3 sign-extended at +0x38/+0x3c (0x800030f0-0x800030f4), of stack-16 at +0xf0/+0xf4 (0x80003118/0x8000311c), of the constant 0x80002e90 at +0x100/+0x104 (0x80003124-0x80003134), Status 0xff03 (0x80003148-0x8000314c), 0x3f at +0x128 (0x80003164), 0x01000800 at +0x12c (0x80003170-0x80003174), state `sh 1,16` (0x80003188) and `sh 0,18` (0x80003194); then os_internal_disable_int (0x80003190), thread->next(+0xc) = *0x8000685c, *0x8000685c = thread (0x800031ac-0x800031bc), os_internal_restore_int. Called by the boot main at 0x80000570 with priority 10.",
       "match": {
         "calls": [
-          "__osDisableInt",
-          "__osRestoreInt"
+          "os_internal_disable_int",
+          "os_internal_restore_int"
         ],
         "globalsAll": [
           "8000685c"
@@ -447,13 +447,13 @@
       "category": "threads",
       "image": "boot",
       "summary": "Starts a thread: a stopped thread (state 1) with no wait queue (or already on the run queue) becomes runnable (state 2) on the run queue 0x80006858; a thread in state 8 is also made runnable; afterwards dispatches when nothing is running, or yields when the head of the run queue outranks the running thread.",
-      "evidence": "0x800061e0: state (+0x10) tested against 1 (0x80006208) and 8 (0x8000620c); `sh 2,16` + __osEnqueueThread(0x80006858, thread) at 0x80006224-0x8000622c and 0x80006268-0x80006270; a thread whose queue (+8) is another queue is set to state 8, re-enqueued there and the queue head is popped (__osPopThread at 0x800062a0) onto the run queue; then reads the running thread 0x80006860: none -> __osDispatchThread (0x800062cc), else compares priorities (+4) with slt (0x800062f4) and calls __osEnqueueAndYield(0x80006858) after setting the running thread to state 2 (0x80006300-0x8000630c).",
+      "evidence": "0x800061e0: state (+0x10) tested against 1 (0x80006208) and 8 (0x8000620c); `sh 2,16` + os_internal_enqueue_thread(0x80006858, thread) at 0x80006224-0x8000622c and 0x80006268-0x80006270; a thread whose queue (+8) is another queue is set to state 8, re-enqueued there and the queue head is popped (os_internal_pop_thread at 0x800062a0) onto the run queue; then reads the running thread 0x80006860: none -> os_internal_dispatch_thread (0x800062cc), else compares priorities (+4) with slt (0x800062f4) and calls os_internal_enqueue_and_yield(0x80006858) after setting the running thread to state 2 (0x80006300-0x8000630c).",
       "match": {
         "calls": [
-          "__osEnqueueAndYield",
-          "__osEnqueueThread",
-          "__osPopThread",
-          "__osDispatchThread"
+          "os_internal_enqueue_and_yield",
+          "os_internal_enqueue_thread",
+          "os_internal_pop_thread",
+          "os_internal_dispatch_thread"
         ],
         "insns": [
           78,
@@ -466,11 +466,11 @@
       "category": "threads",
       "image": "boot",
       "summary": "Stops the thread in $a0, or the running thread when $a0 is 0: a running thread (state 4) becomes stopped and yields; a runnable (2) or waiting (8) thread is unlinked from its queue and becomes stopped.",
-      "evidence": "0x800020d0: a0==0 gives state 4 (0x800020f4-0x800020fc), otherwise state = thread +0x10; switch on 2, 4, 8 (0x80002110-0x80002124); state 4: `sh 1,16(running)` then __osEnqueueAndYield(0) (0x8000213c-0x80002148); states 2 and 8: `sh 1,16(thread)` then __osDequeueThread(thread->queue (+8), thread) (0x80002158-0x80002168).",
+      "evidence": "0x800020d0: a0==0 gives state 4 (0x800020f4-0x800020fc), otherwise state = thread +0x10; switch on 2, 4, 8 (0x80002110-0x80002124); state 4: `sh 1,16(running)` then os_internal_enqueue_and_yield(0) (0x8000213c-0x80002148); states 2 and 8: `sh 1,16(thread)` then os_internal_dequeue_thread(thread->queue (+8), thread) (0x80002158-0x80002168).",
       "match": {
         "calls": [
-          "__osDequeueThread",
-          "__osEnqueueAndYield"
+          "os_internal_dequeue_thread",
+          "os_internal_enqueue_and_yield"
         ],
         "callCount": [
           4,
@@ -487,11 +487,11 @@
       "category": "threads",
       "image": "boot",
       "summary": "Destroys the thread in $a0 (or the running thread when 0): removes it from the queue it waits on (unless stopped) and from the all-threads list at 0x8000685c, and dispatches when it was the running thread.",
-      "evidence": "0x80002ee0: __osDisableInt; a0==0 selects the running thread 0x80006860 (0x80002f0c); state != 1 -> __osDequeueThread(thread->queue, thread) (0x80002f20-0x80002f34); unlinks it from the list at 0x8000685c by walking the +0xc links (0x80002f3c-0x80002fa0; the walk ends at a node with priority -1, 0x80002f68); when it is the running thread calls __osDispatchThread (0x80002fbc); __osRestoreInt. Also the target of the exit stub 0x80002e90.",
+      "evidence": "0x80002ee0: os_internal_disable_int; a0==0 selects the running thread 0x80006860 (0x80002f0c); state != 1 -> os_internal_dequeue_thread(thread->queue, thread) (0x80002f20-0x80002f34); unlinks it from the list at 0x8000685c by walking the +0xc links (0x80002f3c-0x80002fa0; the walk ends at a node with priority -1, 0x80002f68); when it is the running thread calls os_internal_dispatch_thread (0x80002fbc); os_internal_restore_int. Also the target of the exit stub 0x80002e90.",
       "match": {
         "calls": [
-          "__osDequeueThread",
-          "__osDisableInt"
+          "os_internal_dequeue_thread",
+          "os_internal_disable_int"
         ],
         "insns": [
           60,
@@ -508,11 +508,11 @@
       "category": "threads",
       "image": "boot",
       "summary": "Sets the running thread runnable (state 2) and re-queues it behind equal-priority threads.",
-      "evidence": "0x80005bc0: __osDisableInt; `sh 2,16(running)` (0x80005bd8-0x80005bec); __osEnqueueAndYield(0x80006858); __osRestoreInt.",
+      "evidence": "0x80005bc0: os_internal_disable_int; `sh 2,16(running)` (0x80005bd8-0x80005bec); os_internal_enqueue_and_yield(0x80006858); os_internal_restore_int.",
       "match": {
         "calls": [
-          "__osEnqueueAndYield",
-          "__osDisableInt"
+          "os_internal_enqueue_and_yield",
+          "os_internal_disable_int"
         ],
         "insns": [
           16,
@@ -529,12 +529,12 @@
       "category": "threads",
       "image": "boot",
       "summary": "Sets the priority (a1) of thread a0 (0 = running thread) and re-sorts it in its queue; yields when the running thread no longer has the highest priority.",
-      "evidence": "0x800045e0: __osDisableInt; priority stored at thread +4; the thread is dequeued and re-enqueued in its queue; __osEnqueueAndYield on the run queue when needed; __osRestoreInt. Calls __osDequeueThread, __osEnqueueThread and __osEnqueueAndYield.",
+      "evidence": "0x800045e0: os_internal_disable_int; priority stored at thread +4; the thread is dequeued and re-enqueued in its queue; os_internal_enqueue_and_yield on the run queue when needed; os_internal_restore_int. Calls os_internal_dequeue_thread, os_internal_enqueue_thread and os_internal_enqueue_and_yield.",
       "match": {
         "calls": [
-          "__osDequeueThread",
-          "__osEnqueueThread",
-          "__osEnqueueAndYield"
+          "os_internal_dequeue_thread",
+          "os_internal_enqueue_thread",
+          "os_internal_enqueue_and_yield"
         ],
         "insns": [
           50,
@@ -589,11 +589,11 @@
       "category": "messages",
       "image": "boot",
       "summary": "Appends message a1 to queue a0. When the queue is full: returns -1 for a2==0, blocks the caller on the queue's fullqueue (+4) for a2==1 (OS_MESG_BLOCK) and retries. After storing, wakes the first thread waiting in mtqueue (+0).",
-      "evidence": "0x80001f80: compares validCount (+8) with msgCount (+0x10) (0x80001fac); blocking path sets running-thread state 8 and calls __osEnqueueAndYield with queue+4 (`addiu a0,a0,4` at 0x80001fe8); stores at msg[(first+validCount) mod msgCount] with div (0x80002038), validCount++ (0x80002078), pops a waiting receiver and calls osStartThread (0x800020a0).",
+      "evidence": "0x80001f80: compares validCount (+8) with msgCount (+0x10) (0x80001fac); blocking path sets running-thread state 8 and calls os_internal_enqueue_and_yield with queue+4 (`addiu a0,a0,4` at 0x80001fe8); stores at msg[(first+validCount) mod msgCount] with div (0x80002038), validCount++ (0x80002078), pops a waiting receiver and calls osStartThread (0x800020a0).",
       "match": {
         "calls": [
-          "__osEnqueueAndYield",
-          "__osPopThread",
+          "os_internal_enqueue_and_yield",
+          "os_internal_pop_thread",
           "osStartThread"
         ],
         "words": [
@@ -616,11 +616,11 @@
       "category": "messages",
       "image": "boot",
       "summary": "Removes the oldest message from queue a0 into *a1 (if a1 is non-null); when empty, returns -1 for a2==0 or blocks the caller on the queue's mtqueue for a2==1. After removing, wakes the first thread waiting in fullqueue (+4).",
-      "evidence": "0x800021a0: validCount==0 test (0x800021c8); blocking path calls __osEnqueueAndYield with queue (0x80002200); copies msg[first] to *a1 (0x80002238-0x8000223c); first=(first+1) mod msgCount with div (0x80002250), validCount-- (0x8000228c); pops a sender from queue+4 (`addiu a0,t9,4` at 0x800022a8) and restarts it.",
+      "evidence": "0x800021a0: validCount==0 test (0x800021c8); blocking path calls os_internal_enqueue_and_yield with queue (0x80002200); copies msg[first] to *a1 (0x80002238-0x8000223c); first=(first+1) mod msgCount with div (0x80002250), validCount-- (0x8000228c); pops a sender from queue+4 (`addiu a0,t9,4` at 0x800022a8) and restarts it.",
       "match": {
         "calls": [
-          "__osEnqueueAndYield",
-          "__osPopThread",
+          "os_internal_enqueue_and_yield",
+          "os_internal_pop_thread",
           "osStartThread"
         ],
         "words": [
@@ -643,8 +643,8 @@
       "evidence": "0x80004490: same full-queue test and blocking structure as osSendMesg, but writes the message at the decremented `first` index; called by osPiStartDma (0x80004220) to put a DMA request at the head of the PI command queue.",
       "match": {
         "calls": [
-          "__osEnqueueAndYield",
-          "__osPopThread",
+          "os_internal_enqueue_and_yield",
+          "os_internal_pop_thread",
           "osStartThread"
         ],
         "calledBy": [
@@ -669,11 +669,11 @@
       "category": "events",
       "image": "boot",
       "summary": "Registers queue a1 and message a2 for event a0 in the table at 0x8000a410 (8 bytes per event); event 14 additionally touches the global interrupt mask.",
-      "evidence": "0x80004110: __osDisableInt; index*8 added to 0x8000a410 (0x80004130-0x80004140); stores queue and message (0x80004148, 0x8000415c); compares the event with 14 (`addiu at,0,14` at 0x80004154); calls __osSetGlobalIntMask for it; __osRestoreInt.",
+      "evidence": "0x80004110: os_internal_disable_int; index*8 added to 0x8000a410 (0x80004130-0x80004140); stores queue and message (0x80004148, 0x8000415c); compares the event with 14 (`addiu at,0,14` at 0x80004154); calls os_internal_set_global_int_mask for it; os_internal_restore_int.",
       "match": {
         "calls": [
-          "__osDisableInt",
-          "__osRestoreInt"
+          "os_internal_disable_int",
+          "os_internal_restore_int"
         ],
         "words": [
           "2401000e"
@@ -689,15 +689,15 @@
       }
     },
     {
-      "id": "__osSetHWIntrRoutine",
+      "id": "os_internal_set_hw_intr_routine",
       "category": "events",
       "image": "boot",
       "summary": "Installs handler a1 and stack pointer a2 for hardware interrupt a0 in the table at 0x80006620 (8 bytes per entry).",
-      "evidence": "0x800064c0: __osDisableInt; `sll t8,a0,3` and stores a1/a2 into 0x80006620+index*8 (0x800064ec-0x80006508); __osRestoreInt. The exception handler loads the table entry at 0x80002824 and calls it with jalr (0x8000283c).",
+      "evidence": "0x800064c0: os_internal_disable_int; `sll t8,a0,3` and stores a1/a2 into 0x80006620+index*8 (0x800064ec-0x80006508); os_internal_restore_int. The exception handler loads the table entry at 0x80002824 and calls it with jalr (0x8000283c).",
       "match": {
         "calls": [
-          "__osDisableInt",
-          "__osRestoreInt"
+          "os_internal_disable_int",
+          "os_internal_restore_int"
         ],
         "insns": [
           24,
@@ -720,11 +720,11 @@
       "category": "timers",
       "image": "boot",
       "summary": "Returns the 64-bit CPU cycle count: the saved total at 0x8000a4b0/0x8000a4b4 plus the cycles elapsed since the count saved at 0x8000a4b8.",
-      "evidence": "0x80004a70: __osDisableInt; osGetCount; subtracts the saved count (0x80004aa8), reads the total (0x80004a90-0x80004aa4); __osRestoreInt; 64-bit addition with carry via sltu (0x80004ad0-0x80004af0).",
+      "evidence": "0x80004a70: os_internal_disable_int; osGetCount; subtracts the saved count (0x80004aa8), reads the total (0x80004a90-0x80004aa4); os_internal_restore_int; 64-bit addition with carry via sltu (0x80004ad0-0x80004af0).",
       "match": {
         "calls": [
-          "__osDisableInt",
-          "__osRestoreInt",
+          "os_internal_disable_int",
+          "os_internal_restore_int",
           "osGetCount"
         ],
         "insns": [
@@ -738,7 +738,7 @@
       }
     },
     {
-      "id": "__osTimerServicesInit",
+      "id": "os_internal_timer_services_init",
       "category": "timers",
       "image": "boot",
       "summary": "Clears the 64-bit total time, the saved count and the timer list and points the list head at itself.",
@@ -759,15 +759,15 @@
       }
     },
     {
-      "id": "__osInsertTimer",
+      "id": "os_internal_insert_timer",
       "category": "timers",
       "image": "boot",
       "summary": "Inserts an OSTimer into the list of pending timers headed at 0x800068d0, ordered by absolute expiry (64-bit compares).",
-      "evidence": "0x80004d78: __osDisableInt/__osRestoreInt around two loops over the list; reads the head at 0x800068d0.",
+      "evidence": "0x80004d78: os_internal_disable_int/os_internal_restore_int around two loops over the list; reads the head at 0x800068d0.",
       "match": {
         "calls": [
-          "__osDisableInt",
-          "__osRestoreInt"
+          "os_internal_disable_int",
+          "os_internal_restore_int"
         ],
         "globalsAll": [
           "800068d0"
@@ -787,15 +787,15 @@
       }
     },
     {
-      "id": "__osSetTimerIntr",
+      "id": "os_internal_set_timer_intr",
       "category": "timers",
       "image": "boot",
       "summary": "Programs COP0 Compare for now + the 64-bit interval in a0:a1 and records the count at which it was armed (0x8000a4c0).",
-      "evidence": "0x80004d04: __osDisableInt; osGetCount stored at 0x8000a4c0 (0x80004d1c-0x80004d24); count + interval (0x80004d3c-0x80004d54); __osSetCompare (0x80004d58); __osRestoreInt.",
+      "evidence": "0x80004d04: os_internal_disable_int; osGetCount stored at 0x8000a4c0 (0x80004d1c-0x80004d24); count + interval (0x80004d3c-0x80004d54); os_internal_set_compare (0x80004d58); os_internal_restore_int.",
       "match": {
         "calls": [
           "osGetCount",
-          "__osSetCompare"
+          "os_internal_set_compare"
         ],
         "callCount": [
           4,
@@ -808,16 +808,16 @@
       }
     },
     {
-      "id": "__osTimerInterrupt",
+      "id": "os_internal_timer_interrupt",
       "category": "timers",
       "image": "boot",
       "summary": "Compare-interrupt handler of the timer list: runs expired timers (sending each timer's message to its queue), re-inserts periodic ones and re-arms Compare.",
-      "evidence": "0x80004b8c: calls osGetCount, osSendMesg, __osInsertTimer, __osSetTimerIntr and __osSetCompare; reads the list head at 0x800068d0; called from __osViMgrMain.",
+      "evidence": "0x80004b8c: calls osGetCount, osSendMesg, os_internal_insert_timer, os_internal_set_timer_intr and os_internal_set_compare; reads the list head at 0x800068d0; called from os_internal_vi_mgr_main.",
       "match": {
         "calls": [
           "osSendMesg",
           "osGetCount",
-          "__osSetTimerIntr"
+          "os_internal_set_timer_intr"
         ],
         "insns": [
           88,
@@ -830,11 +830,11 @@
       "category": "timers",
       "image": "boot",
       "summary": "Starts timer a0 for the 64-bit interval a2:a3 (period a4:a5 when non-zero), sending its message to its queue on expiry.",
-      "evidence": "0x80005d80: 53 instructions; calls __osInsertTimer and __osSetTimerIntr only.",
+      "evidence": "0x80005d80: 53 instructions; calls os_internal_insert_timer and os_internal_set_timer_intr only.",
       "match": {
         "calls": [
-          "__osInsertTimer",
-          "__osSetTimerIntr"
+          "os_internal_insert_timer",
+          "os_internal_set_timer_intr"
         ],
         "insns": [
           45,
@@ -889,11 +889,11 @@
       "id": "osVirtualToPhysical",
       "category": "memory",
       "image": "boot",
-      "summary": "Converts a virtual address to a physical address: KSEG0/KSEG1 by masking with 0x1fffffff, TLB-mapped addresses through __osProbeTLB; returns -1 when unmapped.",
+      "summary": "Converts a virtual address to a physical address: KSEG0/KSEG1 by masking with 0x1fffffff, TLB-mapped addresses through os_internal_probe_tlb; returns -1 when unmapped.",
       "evidence": "0x80003cc0: compares with 0x80000000, 0xa0000000, 0xc0000000 (0x80003cd0-0x80003d0c) and masks with 0x1fffffff; the other case calls 0x80003f30.",
       "match": {
         "calls": [
-          "__osProbeTLB"
+          "os_internal_probe_tlb"
         ],
         "insns": [
           26,
@@ -906,7 +906,7 @@
       }
     },
     {
-      "id": "__osProbeTLB",
+      "id": "os_internal_probe_tlb",
       "category": "tlb",
       "image": "boot",
       "summary": "Looks up virtual address a0 in the TLB (tlbp), reads the matching entry (tlbr) and returns the physical address, or -1 when there is no valid mapping.",
@@ -1042,7 +1042,7 @@
       }
     },
     {
-      "id": "__osPiRawStartDma",
+      "id": "os_internal_pi_raw_start_dma",
       "category": "pi",
       "image": "boot",
       "summary": "Starts one PI DMA transfer: waits for PI_STATUS idle, translates the RAM address, writes PI_DRAM_ADDR, PI_CART_ADDR (device address ORed with the ROM base word 0x80000308) and the length register selected by direction.",
@@ -1065,10 +1065,10 @@
       }
     },
     {
-      "id": "__osEPiRawStartDma",
+      "id": "os_internal_e_pi_raw_start_dma",
       "category": "pi",
       "image": "boot",
-      "summary": "Starts a PI DMA like __osPiRawStartDma, for an OSPiHandle (a0): first reprograms the domain timing registers from the handle when they differ from the last handle used for the domain.",
+      "summary": "Starts a PI DMA like os_internal_pi_raw_start_dma, for an OSPiHandle (a0): first reprograms the domain timing registers from the handle when they differ from the last handle used for the domain.",
       "evidence": "0x80004890: waits on PI_STATUS (0x800048a8-0x800048c8); reads handle fields +4..+9 and compares with the previous handle; writes PI domain registers 0xA4600014-0xA4600030 and the DRAM/CART/length registers 0xA4600000-0xA460000C; one call (osVirtualToPhysical). No callers in the boot image.",
       "match": {
         "hwAll": [
@@ -1086,7 +1086,7 @@
       }
     },
     {
-      "id": "__osEPiRawReadIo",
+      "id": "os_internal_e_pi_raw_read_io",
       "category": "pi",
       "image": "boot",
       "summary": "Reads one 32-bit word from device address a1 through the PI bus into *a2, after programming the domain timing registers from OSPiHandle a0.",
@@ -1111,11 +1111,11 @@
       }
     },
     {
-      "id": "__osEPiRawWriteIo",
+      "id": "os_internal_e_pi_raw_write_io",
       "category": "pi",
       "image": "boot",
       "summary": "Writes the 32-bit value a2 to device address a1 through the PI bus, after programming the domain timing registers from OSPiHandle a0.",
-      "evidence": "0x80005c20: same set-up as __osEPiRawReadIo (0x80005c20-0x80005d5c), then `or t4,t3,0xa0000000; jr ra; sw a2,0(t4)` (0x80005d68-0x80005d74).",
+      "evidence": "0x80005c20: same set-up as os_internal_e_pi_raw_read_io (0x80005c20-0x80005d5c), then `or t4,t3,0xa0000000; jr ra; sw a2,0(t4)` (0x80005d68-0x80005d74).",
       "match": {
         "hwAll": [
           "a4600014",
@@ -1182,12 +1182,12 @@
       "id": "osEPiWriteIo",
       "category": "pi",
       "image": "boot",
-      "summary": "osPiGetAccess; __osEPiRawWriteIo; osPiRelAccess.",
-      "evidence": "0x80005b10 calls osPiGetAccess (0x80001f10), the raw write __osEPiRawWriteIo (0x80005c20, at 0x80005b30) and osPiRelAccess (0x80001f54).",
+      "summary": "osPiGetAccess; os_internal_e_pi_raw_write_io; osPiRelAccess.",
+      "evidence": "0x80005b10 calls osPiGetAccess (0x80001f10), the raw write os_internal_e_pi_raw_write_io (0x80005c20, at 0x80005b30) and osPiRelAccess (0x80001f54).",
       "match": {
         "calls": [
           "osPiGetAccess",
-          "__osEPiRawWriteIo",
+          "os_internal_e_pi_raw_write_io",
           "osPiRelAccess"
         ],
         "insns": [
@@ -1200,12 +1200,12 @@
       "id": "osEPiReadIo",
       "category": "pi",
       "image": "boot",
-      "summary": "osPiGetAccess; __osEPiRawReadIo; osPiRelAccess.",
-      "evidence": "0x800057e0 calls osPiGetAccess (0x80001f10), the raw read __osEPiRawReadIo (0x800046e0, at 0x80005800) and osPiRelAccess (0x80001f54); called by the boot code at 0x800013f4 to read the cartridge header.",
+      "summary": "osPiGetAccess; os_internal_e_pi_raw_read_io; osPiRelAccess.",
+      "evidence": "0x800057e0 calls osPiGetAccess (0x80001f10), the raw read os_internal_e_pi_raw_read_io (0x800046e0, at 0x80005800) and osPiRelAccess (0x80001f54); called by the boot code at 0x800013f4 to read the cartridge header.",
       "match": {
         "calls": [
           "osPiGetAccess",
-          "__osEPiRawReadIo",
+          "os_internal_e_pi_raw_read_io",
           "osPiRelAccess"
         ],
         "insns": [
@@ -1218,8 +1218,8 @@
       "id": "osCreatePiManager",
       "category": "pi",
       "image": "boot",
-      "summary": "Creates the PI manager: the access queue, the command and reply queues, the PI event registration and the PI manager thread (entry __osDevMgrMain), then starts it.",
-      "evidence": "0x80003670: tests the flag at 0x80006890 (the flag osPiGetCmdQueue reads) (0x80003678-0x80003690); calls the access-queue creator 0x80001ec0, osCreateMesgQueue, osSetEventMesg, osCreateThread with entry 0x800037e0, osSetThreadPri, __osDisableInt/__osRestoreInt, osStartThread.",
+      "summary": "Creates the PI manager: the access queue, the command and reply queues, the PI event registration and the PI manager thread (entry os_internal_dev_mgr_main), then starts it.",
+      "evidence": "0x80003670: tests the flag at 0x80006890 (the flag osPiGetCmdQueue reads) (0x80003678-0x80003690); calls the access-queue creator 0x80001ec0, osCreateMesgQueue, osSetEventMesg, osCreateThread with entry 0x800037e0, osSetThreadPri, os_internal_disable_int/os_internal_restore_int, osStartThread.",
       "match": {
         "calls": [
           "osCreateMesgQueue",
@@ -1237,11 +1237,11 @@
       }
     },
     {
-      "id": "__osDevMgrMain",
+      "id": "os_internal_dev_mgr_main",
       "category": "pi",
       "image": "boot",
       "summary": "Body of the PI manager thread: loops receiving requests from the command queue, performs them with the raw PI routines, adjusts interrupt masks and replies on each request's queue.",
-      "evidence": "0x800037e0: 245 instructions; loops around osRecvMesg (0x80003834) and osSendMesg; one table jump; calls __osEPiRawReadIo, __osEPiRawWriteIo, __osSetGlobalIntMask, __osResetGlobalIntMask and osYieldThread; touches PI_STATUS 0xA4600010.",
+      "evidence": "0x800037e0: 245 instructions; loops around osRecvMesg (0x80003834) and osSendMesg; one table jump; calls os_internal_e_pi_raw_read_io, os_internal_e_pi_raw_write_io, os_internal_set_global_int_mask, os_internal_reset_global_int_mask and osYieldThread; touches PI_STATUS 0xA4600010.",
       "match": {
         "calls": [
           "osRecvMesg"
@@ -1260,11 +1260,11 @@
       }
     },
     {
-      "id": "__osViInit",
+      "id": "os_internal_vi_init",
       "category": "vi",
       "image": "boot",
       "summary": "Initialises the two VI contexts at 0x800068e0 (0x60 bytes cleared), sets the current/next pointers 0x80006940/0x80006944 and selects the default VI mode and origin from the TV type.",
-      "evidence": "0x80005370: clears 0x60 bytes at 0x800068e0 with 0x80002ff0 (0x80005378-0x80005384); stores the pointers 0x80006940/0x80006944 = base and base+0x30 (0x80005394-0x800053a0); state halfwords set to 1 (0x800053a8-0x800053bc); reads osTvType 0x80000300; VI_ORIGIN/VI_CURRENT accesses at 0xA4400000/0xA4400010; calls __osViSwapContext.",
+      "evidence": "0x80005370: clears 0x60 bytes at 0x800068e0 with 0x80002ff0 (0x80005378-0x80005384); stores the pointers 0x80006940/0x80006944 = base and base+0x30 (0x80005394-0x800053a0); state halfwords set to 1 (0x800053a8-0x800053bc); reads osTvType 0x80000300; VI_ORIGIN/VI_CURRENT accesses at 0xA4400000/0xA4400010; calls os_internal_vi_swap_context.",
       "match": {
         "hwAll": [
           "a4400000",
@@ -1281,7 +1281,7 @@
       }
     },
     {
-      "id": "__osViSwapContext",
+      "id": "os_internal_vi_swap_context",
       "category": "vi",
       "image": "boot",
       "summary": "At retrace commits the next VI context to the VI registers and swaps current/next.",
@@ -1302,11 +1302,11 @@
       "category": "vi",
       "image": "boot",
       "summary": "Stores the OSViMode pointer a0 in the next VI context (+8), sets the context state to 1 and copies the mode's control word (mode +4) into the context (+0xc).",
-      "evidence": "0x80003ec0: __osDisableInt; `sw a0,8(next)` (0x80003ee8); `sh 1,0(next)` (0x80003ef8); `lw t1,8(next); lw t2,4(t1); sw t2,12(next)` (0x80003f04-0x80003f10); __osRestoreInt. `next` is the pointer at 0x80006944.",
+      "evidence": "0x80003ec0: os_internal_disable_int; `sw a0,8(next)` (0x80003ee8); `sh 1,0(next)` (0x80003ef8); `lw t1,8(next); lw t2,4(t1); sw t2,12(next)` (0x80003f04-0x80003f10); os_internal_restore_int. `next` is the pointer at 0x80006944.",
       "match": {
         "calls": [
-          "__osDisableInt",
-          "__osRestoreInt"
+          "os_internal_disable_int",
+          "os_internal_restore_int"
         ],
         "insns": [
           22,
@@ -1326,11 +1326,11 @@
       "category": "vi",
       "image": "boot",
       "summary": "Turns the video output black (a0 != 0) or back on by setting/clearing bit 0x20 in the next VI context's state.",
-      "evidence": "0x80003d40: __osDisableInt; `ori 0x20` on `*(u16*)next` (0x80003d70) when a0 != 0 else `and ~0x20` (addiu at,0,-33 at 0x80003d84); __osRestoreInt.",
+      "evidence": "0x80003d40: os_internal_disable_int; `ori 0x20` on `*(u16*)next` (0x80003d70) when a0 != 0 else `and ~0x20` (addiu at,0,-33 at 0x80003d84); os_internal_restore_int.",
       "match": {
         "calls": [
-          "__osDisableInt",
-          "__osRestoreInt"
+          "os_internal_disable_int",
+          "os_internal_restore_int"
         ],
         "words": [
           "2401ffdf"
@@ -1346,11 +1346,11 @@
       "category": "vi",
       "image": "boot",
       "summary": "Stores the framebuffer address a0 in the next VI context (+4) and sets the buffer-updated flag 0x10 in its state.",
-      "evidence": "0x80004840: __osDisableInt; `sw a0,4(next)` (0x80004864); `ori 0x10` on the state halfword (0x80004870-0x80004874); __osRestoreInt.",
+      "evidence": "0x80004840: os_internal_disable_int; `sw a0,4(next)` (0x80004864); `ori 0x10` on the state halfword (0x80004870-0x80004874); os_internal_restore_int.",
       "match": {
         "calls": [
-          "__osDisableInt",
-          "__osRestoreInt"
+          "os_internal_disable_int",
+          "os_internal_restore_int"
         ],
         "insns": [
           16,
@@ -1367,11 +1367,11 @@
       "category": "vi",
       "image": "boot",
       "summary": "Edits the next VI context's control word (+0xc) from the feature bits in a0 and sets state bit 8.",
-      "evidence": "0x80005830: __osDisableInt; tests bits of a0 with andi (first `andi t6,a0,1`) and sets or clears control bits (e.g. `ori t8,t7,8` at 0x80005864); __osRestoreInt; 87 instructions.",
+      "evidence": "0x80005830: os_internal_disable_int; tests bits of a0 with andi (first `andi t6,a0,1`) and sets or clears control bits (e.g. `ori t8,t7,8` at 0x80005864); os_internal_restore_int; 87 instructions.",
       "match": {
         "calls": [
-          "__osDisableInt",
-          "__osRestoreInt"
+          "os_internal_disable_int",
+          "os_internal_restore_int"
         ],
         "insns": [
           80,
@@ -1395,8 +1395,8 @@
       "evidence": "0x80006330: `swc1 f4,36(next)` (0x80006358), `ori 4` on the state (0x80006368).",
       "match": {
         "calls": [
-          "__osDisableInt",
-          "__osRestoreInt"
+          "os_internal_disable_int",
+          "os_internal_restore_int"
         ],
         "insns": [
           18,
@@ -1416,8 +1416,8 @@
       "evidence": "0x80006390: `swc1 f4,24(next)` (0x800063bc), `ori 2` on the state (0x800063cc); multiplies by the mode field masked with 0xfff (0x800063e4-0x80006408), converts back to an integer and stores it at +0x20 (0x80006498).",
       "match": {
         "calls": [
-          "__osDisableInt",
-          "__osRestoreInt"
+          "os_internal_disable_int",
+          "os_internal_restore_int"
         ],
         "insns": [
           68,
@@ -1434,11 +1434,11 @@
       "category": "vi",
       "image": "boot",
       "summary": "Returns the framebuffer address stored in the next VI context (+4).",
-      "evidence": "0x80003630: __osDisableInt; `lw t6,0x6944(0x8000)` (next context); `lw t7,4(t6)`; __osRestoreInt.",
+      "evidence": "0x80003630: os_internal_disable_int; `lw t6,0x6944(0x8000)` (next context); `lw t7,4(t6)`; os_internal_restore_int.",
       "match": {
         "calls": [
-          "__osDisableInt",
-          "__osRestoreInt"
+          "os_internal_disable_int",
+          "os_internal_restore_int"
         ],
         "globalsAll": [
           "80006944"
@@ -1454,7 +1454,7 @@
       }
     },
     {
-      "id": "__osViGetCurrentContext",
+      "id": "os_internal_vi_get_current_context",
       "category": "vi",
       "image": "boot",
       "summary": "Returns the pointer to the current VI context (word at 0x80006940).",
@@ -1475,11 +1475,11 @@
       "id": "osCreateViManager",
       "category": "vi",
       "image": "boot",
-      "summary": "Creates the VI manager: its message queues, the timer services and VI contexts, registers the VI and counter events, creates and starts the VI manager thread (entry __osViMgrMain) with temporarily changed priority.",
-      "evidence": "0x80005ec0: tests/sets the init flag at 0x80006a50 (0x80005ec8-0x80005edc); calls __osTimerServicesInit (0x80005ee4), osCreateMesgQueue, osSetEventMesg for the VI and counter events, __osViInit, osCreateThread with entry 0x80006040, osSetThreadPri around the set-up, __osDisableInt/__osRestoreInt, osStartThread.",
+      "summary": "Creates the VI manager: its message queues, the timer services and VI contexts, registers the VI and counter events, creates and starts the VI manager thread (entry os_internal_vi_mgr_main) with temporarily changed priority.",
+      "evidence": "0x80005ec0: tests/sets the init flag at 0x80006a50 (0x80005ec8-0x80005edc); calls os_internal_timer_services_init (0x80005ee4), osCreateMesgQueue, osSetEventMesg for the VI and counter events, os_internal_vi_init, osCreateThread with entry 0x80006040, osSetThreadPri around the set-up, os_internal_disable_int/os_internal_restore_int, osStartThread.",
       "match": {
         "calls": [
-          "__osViInit",
+          "os_internal_vi_init",
           "osCreateThread",
           "osStartThread",
           "osSetEventMesg"
@@ -1494,16 +1494,16 @@
       }
     },
     {
-      "id": "__osViMgrMain",
+      "id": "os_internal_vi_mgr_main",
       "category": "vi",
       "image": "boot",
-      "summary": "Body of the VI manager thread: receives retrace and counter messages; on retrace swaps the VI contexts with __osViSwapContext, on the counter message runs __osTimerInterrupt, and forwards messages to registered clients.",
-      "evidence": "0x80006040: calls osRecvMesg, __osViGetCurrentContext (0x8000606c), __osViSwapContext, __osTimerInterrupt, osGetCount and osSendMesg; three loops.",
+      "summary": "Body of the VI manager thread: receives retrace and counter messages; on retrace swaps the VI contexts with os_internal_vi_swap_context, on the counter message runs os_internal_timer_interrupt, and forwards messages to registered clients.",
+      "evidence": "0x80006040: calls osRecvMesg, os_internal_vi_get_current_context (0x8000606c), os_internal_vi_swap_context, os_internal_timer_interrupt, osGetCount and osSendMesg; three loops.",
       "match": {
         "calls": [
           "osRecvMesg",
-          "__osViGetCurrentContext",
-          "__osViSwapContext"
+          "os_internal_vi_get_current_context",
+          "os_internal_vi_swap_context"
         ],
         "insns": [
           78,
@@ -1516,7 +1516,7 @@
       "category": "init",
       "image": "boot",
       "summary": "System start-up: initialises Status, FPCSR, TLB and caches, records TV type and reset information in low memory, programs the AI rate registers and installs the exception vectors.",
-      "evidence": "0x800031e0: 170 instructions. Calls __osSetSR, __osGetSR, __osSetFpcCsr, __osGetCause, osUnmapTLBAll, osMapTLBRdb, osWritebackDCache, osInvalICache, the SI raw IO routines 0x80003db0/0x80005e60, the PI timing capture 0x80003488, bzero 0x80002ff0 and the 64-bit divide/multiply helpers; touches AI_CONTROL 0xA4500008, AI_DACRATE 0xA4500010, AI_BITRATE 0xA4500014.",
+      "evidence": "0x800031e0: 170 instructions. Calls os_internal_set_sr, os_internal_get_sr, os_internal_set_fpc_csr, os_internal_get_cause, osUnmapTLBAll, osMapTLBRdb, osWritebackDCache, osInvalICache, the SI raw IO routines 0x80003db0/0x80005e60, the PI timing capture 0x80003488, bzero 0x80002ff0 and the 64-bit divide/multiply helpers; touches AI_CONTROL 0xA4500008, AI_DACRATE 0xA4500010, AI_BITRATE 0xA4500014.",
       "match": {
         "hwAll": [
           "a4500010",
@@ -1534,7 +1534,7 @@
       }
     },
     {
-      "id": "__osSpGetStatus",
+      "id": "os_internal_sp_get_status",
       "category": "rsp",
       "image": "code",
       "summary": "Returns SP_STATUS (0xA4040010).",
@@ -1552,7 +1552,7 @@
       }
     },
     {
-      "id": "__osSpSetStatus",
+      "id": "os_internal_sp_set_status",
       "category": "rsp",
       "image": "code",
       "summary": "Writes $a0 to SP_STATUS (0xA4040010): set/clear halt, broke, interrupt and signal bits.",
@@ -1570,7 +1570,7 @@
       }
     },
     {
-      "id": "__osSpDeviceBusy",
+      "id": "os_internal_sp_device_busy",
       "category": "rsp",
       "image": "code",
       "summary": "Returns 1 while an RSP DMA or IO transfer is pending (SP_STATUS bits 0x1c), else 0.",
@@ -1594,7 +1594,7 @@
       }
     },
     {
-      "id": "__osSpSetPc",
+      "id": "os_internal_sp_set_pc",
       "category": "rsp",
       "image": "code",
       "summary": "Writes SP_PC (0xA4080000) from $a0 and returns 0 when the RSP is halted (SP_STATUS bit 0); returns -1 otherwise.",
@@ -1611,11 +1611,11 @@
       }
     },
     {
-      "id": "__osSpRawStartDma",
+      "id": "os_internal_sp_raw_start_dma",
       "category": "rsp",
       "image": "code",
-      "summary": "Starts an RSP DMA: returns -1 while __osSpDeviceBusy; otherwise writes SP_MEM_ADDR (0xA4040000) from a1, SP_DRAM_ADDR (0xA4040004) from the physical address of a2, and the length (a3-1) to SP_RD_LEN (0xA4040008) when a0 is 0 or SP_WR_LEN (0xA404000C) otherwise.",
-      "evidence": "0x800d0e40: calls __osSpDeviceBusy (0x800d0e4c) and osVirtualToPhysical (0x800d0e60); stores to 0xA4040000/04/08/0C.",
+      "summary": "Starts an RSP DMA: returns -1 while os_internal_sp_device_busy; otherwise writes SP_MEM_ADDR (0xA4040000) from a1, SP_DRAM_ADDR (0xA4040004) from the physical address of a2, and the length (a3-1) to SP_RD_LEN (0xA4040008) when a0 is 0 or SP_WR_LEN (0xA404000C) otherwise.",
+      "evidence": "0x800d0e40: calls os_internal_sp_device_busy (0x800d0e4c) and osVirtualToPhysical (0x800d0e60); stores to 0xA4040000/04/08/0C.",
       "match": {
         "hwAll": [
           "a4040000",
@@ -1625,7 +1625,7 @@
         ],
         "calls": [
           "osVirtualToPhysical",
-          "__osSpDeviceBusy"
+          "os_internal_sp_device_busy"
         ],
         "insns": [
           30,
@@ -1637,14 +1637,14 @@
       "id": "osSpTaskLoad",
       "category": "rsp",
       "image": "code",
-      "summary": "Loads an OSTask (a0) for the RSP: writes the task back from the data cache, converts its pointers to physical addresses (0x800cff10), then DMAs the microcode text into IMEM and the data into DMEM with __osSpRawStartDma and sets the RSP program counter (a resumed, yielded task restores its saved state first).",
-      "evidence": "0x800d002c: calls osWritebackDCache (0x800d0050), the task-copy/physical-address helper 0x800cff10, __osSpRawStartDma (two or more times, loops), __osSpSetStatus and __osSpSetPc; 100 instructions, four loops.",
+      "summary": "Loads an OSTask (a0) for the RSP: writes the task back from the data cache, converts its pointers to physical addresses (0x800cff10), then DMAs the microcode text into IMEM and the data into DMEM with os_internal_sp_raw_start_dma and sets the RSP program counter (a resumed, yielded task restores its saved state first).",
+      "evidence": "0x800d002c: calls osWritebackDCache (0x800d0050), the task-copy/physical-address helper 0x800cff10, os_internal_sp_raw_start_dma (two or more times, loops), os_internal_sp_set_status and os_internal_sp_set_pc; 100 instructions, four loops.",
       "match": {
         "calls": [
           "osWritebackDCache",
-          "__osSpRawStartDma",
-          "__osSpSetStatus",
-          "__osSpSetPc"
+          "os_internal_sp_raw_start_dma",
+          "os_internal_sp_set_status",
+          "os_internal_sp_set_pc"
         ],
         "insns": [
           92,
@@ -1661,11 +1661,11 @@
       "category": "rsp",
       "image": "code",
       "summary": "Starts the loaded RSP task: waits until the RSP DMA is idle, then clears the halt and broke bits (and interrupt-on-break handling) in SP_STATUS.",
-      "evidence": "0x800d01bc: loop on __osSpDeviceBusy then __osSpSetStatus; 16 instructions.",
+      "evidence": "0x800d01bc: loop on os_internal_sp_device_busy then os_internal_sp_set_status; 16 instructions.",
       "match": {
         "calls": [
-          "__osSpDeviceBusy",
-          "__osSpSetStatus"
+          "os_internal_sp_device_busy",
+          "os_internal_sp_set_status"
         ],
         "insns": [
           14,
@@ -1686,10 +1686,10 @@
       "category": "rsp",
       "image": "code",
       "summary": "Asks the running RSP task to yield by setting SP signal 0 (SP_STATUS write 0x400).",
-      "evidence": "0x800d0f80: `addiu a0,0,0x400` (0x800d0f8c) then __osSpSetStatus.",
+      "evidence": "0x800d0f80: `addiu a0,0,0x400` (0x800d0f8c) then os_internal_sp_set_status.",
       "match": {
         "calls": [
-          "__osSpSetStatus"
+          "os_internal_sp_set_status"
         ],
         "words": [
           "24040400"
@@ -1705,10 +1705,10 @@
       "category": "rsp",
       "image": "code",
       "summary": "Reports whether the RSP task has yielded: reads SP_STATUS and, when the yield signal is set, clears it and marks the task as yielded.",
-      "evidence": "0x800d2eb0: single call to __osSpGetStatus (0x800d2ec0), 32 instructions.",
+      "evidence": "0x800d2eb0: single call to os_internal_sp_get_status (0x800d2ec0), 32 instructions.",
       "match": {
         "calls": [
-          "__osSpGetStatus"
+          "os_internal_sp_get_status"
         ],
         "callCount": [
           1,
@@ -1842,7 +1842,7 @@
       }
     },
     {
-      "id": "__osSiRawStartDma",
+      "id": "os_internal_si_raw_start_dma",
       "category": "si",
       "image": "code",
       "summary": "Starts a transfer between RDRAM and the PIF RAM (a0 = 0 write to PIF, 1 read from PIF; a1 = RAM address): writes the data cache back before a write to the PIF and invalidates it after a read; writes SI_DRAM_ADDR (0xA4800000) and SI_PIF_ADDR_RD64B (0xA4800004) or SI_PIF_ADDR_WR64B (0xA4800010); returns -1 while SI_STATUS (0xA4800018) is busy.",
@@ -1866,7 +1866,7 @@
       }
     },
     {
-      "id": "__osSiCreateAccessQueue",
+      "id": "os_internal_si_create_access_queue",
       "category": "si",
       "image": "code",
       "summary": "Creates the SI access queue (a one-message queue, primed with one message) and sets the init flag at 0x80103bf0.",
@@ -1890,14 +1890,14 @@
       }
     },
     {
-      "id": "__osSiGetAccess",
+      "id": "os_internal_si_get_access",
       "category": "si",
       "image": "code",
       "summary": "Blocks until the SI is free: creates the access queue on first use (flag 0x80103bf0), then receives from it.",
-      "evidence": "0x800d0620: tests 0x80103bf0 (0x800d0620-0x800d0628); calls __osSiCreateAccessQueue when clear, then osRecvMesg(queue, &msg, 1).",
+      "evidence": "0x800d0620: tests 0x80103bf0 (0x800d0620-0x800d0628); calls os_internal_si_create_access_queue when clear, then osRecvMesg(queue, &msg, 1).",
       "match": {
         "calls": [
-          "__osSiCreateAccessQueue",
+          "os_internal_si_create_access_queue",
           "osRecvMesg"
         ],
         "callCount": [
@@ -1911,7 +1911,7 @@
       }
     },
     {
-      "id": "__osSiRelAccess",
+      "id": "os_internal_si_rel_access",
       "category": "si",
       "image": "code",
       "summary": "Releases the SI by sending a message to the access queue.",
@@ -1941,11 +1941,11 @@
       "category": "controller",
       "image": "code",
       "summary": "Initialises the controller interface: waits (with osSetTimer) until 0.5 s after reset have passed, sends a status request for all channels through the PIF and reads back which controllers are connected.",
-      "evidence": "0x800d0690: osGetTime and osSetTimer for the start-up delay (0x800d06a8-0x800d0750), __osSiCreateAccessQueue, __osPackRequestData (0x800d08d0), two __osSiRawStartDma transfers with osRecvMesg between them and __osContGetInitData (0x800d0800) to decode the answer.",
+      "evidence": "0x800d0690: osGetTime and osSetTimer for the start-up delay (0x800d06a8-0x800d0750), os_internal_si_create_access_queue, os_internal_pack_request_data (0x800d08d0), two os_internal_si_raw_start_dma transfers with osRecvMesg between them and os_internal_cont_get_init_data (0x800d0800) to decode the answer.",
       "match": {
         "calls": [
-          "__osSiCreateAccessQueue",
-          "__osSiRawStartDma",
+          "os_internal_si_create_access_queue",
+          "os_internal_si_raw_start_dma",
           "osGetTime",
           "osSetTimer"
         ],
@@ -1960,7 +1960,7 @@
       }
     },
     {
-      "id": "__osPackRequestData",
+      "id": "os_internal_pack_request_data",
       "category": "controller",
       "image": "code",
       "summary": "Fills the PIF command buffer at 0x80129c40 with one request packet per channel (bytes 0xFF, tx=1, rx=3, command a0, then 0xFF filler) and the 0xFE terminator.",
@@ -1981,7 +1981,7 @@
       }
     },
     {
-      "id": "__osPackReadData",
+      "id": "os_internal_pack_read_data",
       "category": "controller",
       "image": "code",
       "summary": "Fills the PIF command buffer with one read-buttons packet per channel (bytes 0xFF, tx=1, rx=4, command 1, then 0xFFFF and -1 -1 as the answer area) and the 0xFE terminator.",
@@ -2006,13 +2006,13 @@
       "category": "controller",
       "image": "code",
       "summary": "Starts reading all controllers: gets the SI, sends the read-buttons packet (rebuilding it only when the previous command was not a read) and starts the PIF-to-RAM transfer, completion is signalled on the queue in a0.",
-      "evidence": "0x800d09d0: calls __osSiGetAccess, __osPackReadData, __osSiRawStartDma (write to PIF, osRecvMesg, read from PIF) and __osSiRelAccess.",
+      "evidence": "0x800d09d0: calls os_internal_si_get_access, os_internal_pack_read_data, os_internal_si_raw_start_dma (write to PIF, osRecvMesg, read from PIF) and os_internal_si_rel_access.",
       "match": {
         "calls": [
-          "__osSiGetAccess",
-          "__osSiRelAccess",
-          "__osPackReadData",
-          "__osSiRawStartDma",
+          "os_internal_si_get_access",
+          "os_internal_si_rel_access",
+          "os_internal_pack_read_data",
+          "os_internal_si_raw_start_dma",
           "osRecvMesg"
         ],
         "callCount": [
@@ -2050,14 +2050,14 @@
       "id": "osContStartQuery",
       "category": "controller",
       "image": "code",
-      "summary": "Starts a status query of all controllers: like osContStartReadData but sends the request-status packet built by __osPackRequestData.",
-      "evidence": "0x800d1660: calls __osSiGetAccess, __osPackRequestData, __osSiRawStartDma, __osSiRelAccess and osRecvMesg.",
+      "summary": "Starts a status query of all controllers: like osContStartReadData but sends the request-status packet built by os_internal_pack_request_data.",
+      "evidence": "0x800d1660: calls os_internal_si_get_access, os_internal_pack_request_data, os_internal_si_raw_start_dma, os_internal_si_rel_access and osRecvMesg.",
       "match": {
         "calls": [
-          "__osSiGetAccess",
-          "__osSiRelAccess",
-          "__osPackRequestData",
-          "__osSiRawStartDma",
+          "os_internal_si_get_access",
+          "os_internal_si_rel_access",
+          "os_internal_pack_request_data",
+          "os_internal_si_raw_start_dma",
           "osRecvMesg"
         ],
         "callCount": [
@@ -2074,11 +2074,11 @@
       "id": "osContGetQuery",
       "category": "controller",
       "image": "code",
-      "summary": "Decodes the status-query answer into OSContStatus entries by calling __osContGetInitData.",
+      "summary": "Decodes the status-query answer into OSContStatus entries by calling os_internal_cont_get_init_data.",
       "evidence": "0x800d16e4: single call to 0x800d0800.",
       "match": {
         "calls": [
-          "__osContGetInitData"
+          "os_internal_cont_get_init_data"
         ],
         "callCount": [
           1,
@@ -2091,7 +2091,7 @@
       }
     },
     {
-      "id": "__osContGetInitData",
+      "id": "os_internal_cont_get_init_data",
       "category": "controller",
       "image": "code",
       "summary": "Reads the per-channel status answers from the PIF buffer into OSContStatus entries (type, status, error) and builds the bit pattern of connected channels.",
@@ -2111,15 +2111,15 @@
       }
     },
     {
-      "id": "__osContRamWrite",
+      "id": "os_internal_cont_ram_write",
       "category": "controller",
       "image": "code",
       "summary": "Writes a 32-byte block to a controller pak: builds the packet {255, tx=35, rx=1, command 3, address, data..., crc}, runs it through the PIF and checks the CRC byte.",
       "evidence": "0x800d3a50: PIF packet bytes 255, 35, 1, 3 (0x800d3b68-0x800d3b88) and 255/254 terminators (0x800d3b8c-0x800d3b94); two SI DMA transfers with osRecvMesg between them.",
       "match": {
         "calls": [
-          "__osSiGetAccess",
-          "__osSiRawStartDma"
+          "os_internal_si_get_access",
+          "os_internal_si_raw_start_dma"
         ],
         "insns": [
           140,
@@ -2132,15 +2132,15 @@
       }
     },
     {
-      "id": "__osContRamRead",
+      "id": "os_internal_cont_ram_read",
       "category": "controller",
       "image": "code",
       "summary": "Reads a 32-byte block from a controller pak: packet {255, tx=3, rx=33, command 2, address}, verifies the CRC of the answer.",
       "evidence": "0x800d4b70: PIF packet bytes 255, 3, 33, 2 (0x800d4c54-0x800d4c78), terminators 255/254; two SI DMA transfers.",
       "match": {
         "calls": [
-          "__osSiGetAccess",
-          "__osSiRawStartDma"
+          "os_internal_si_get_access",
+          "os_internal_si_raw_start_dma"
         ],
         "insns": [
           130,
@@ -2153,16 +2153,16 @@
       }
     },
     {
-      "id": "__osPfsSelectBank",
+      "id": "os_internal_pfs_select_bank",
       "category": "controller",
       "image": "code",
       "summary": "Selects a controller-pak bank: writes the bank number a1 into the 32-byte block used as the bank register through the PIF.",
       "evidence": "0x800d0200: stores the bank byte into every fourth word position of a 32-byte block (0x800d0280-0x800d0298), 0xFE terminator at 0x80129c80+, SI DMA write then read.",
       "match": {
         "calls": [
-          "__osSiGetAccess",
-          "__osSiRelAccess",
-          "__osSiRawStartDma",
+          "os_internal_si_get_access",
+          "os_internal_si_rel_access",
+          "os_internal_si_raw_start_dma",
           "osRecvMesg"
         ],
         "callCount": [
@@ -2180,14 +2180,14 @@
       }
     },
     {
-      "id": "__osPfsPakProbe",
+      "id": "os_internal_pfs_pak_probe",
       "category": "controller",
       "image": "code",
       "summary": "Controller-pak command exchange that stores the command byte 0xFA at 0x80103c64, packs and sends one packet, reads the answer back and reduces it to a small status code (0, 1, 2 or 4).",
       "evidence": "0x800d3ca0: stores 250 at 0x80103c64 (0x800d3cb0-0x800d3cbc), packs with 0x800d3d70, SI DMA write, osRecvMesg, SI DMA read, osRecvMesg, unpacks with 0x800d3e34 and returns 2/1/4 from the flag bits 0x1, 0x2, 0x4 of the answer (0x800d3d18-0x800d3d64).",
       "match": {
         "calls": [
-          "__osSiRawStartDma",
+          "os_internal_si_raw_start_dma",
           "osRecvMesg"
         ],
         "callCount": [
@@ -2201,15 +2201,15 @@
       }
     },
     {
-      "id": "__osPfsGetStatus",
+      "id": "os_internal_pfs_get_status",
       "category": "controller",
       "image": "code",
       "summary": "Probes the controller pak on a channel (up to 3 retries): sends a status packet, reads the answer and decodes the flag bits.",
       "evidence": "0x800d4f10: retry counter initialised to 3 (0x800d4f18), two SI DMA transfers with osRecvMesg, answer decoded with 0x50b0/0x5180 helpers.",
       "match": {
         "calls": [
-          "__osSiGetAccess",
-          "__osSiRawStartDma"
+          "os_internal_si_get_access",
+          "os_internal_si_raw_start_dma"
         ],
         "callCount": [
           6,
@@ -2504,12 +2504,12 @@
       "category": "timers",
       "image": "code",
       "summary": "Cancels the OSTimer in a0: returns -1 when it is not in the list; otherwise adds its remaining interval to the next timer, unlinks it and, when the list became empty, writes zero to COP0 Compare.",
-      "evidence": "0x800d1540: returns -1 when `*timer == 0` (0x800d1554-0x800d1564); __osDisableInt; compares the successor with the list head 0x800068d0 (0x800d1578-0x800d1584); 64-bit add into the successor (0x800d1590-0x800d15b8); unlinks (0x800d15c4-0x800d15dc); __osSetCompare(0) when the list is empty (0x800d15f4-0x800d1604); __osRestoreInt.",
+      "evidence": "0x800d1540: returns -1 when `*timer == 0` (0x800d1554-0x800d1564); os_internal_disable_int; compares the successor with the list head 0x800068d0 (0x800d1578-0x800d1584); 64-bit add into the successor (0x800d1590-0x800d15b8); unlinks (0x800d15c4-0x800d15dc); os_internal_set_compare(0) when the list is empty (0x800d15f4-0x800d1604); os_internal_restore_int.",
       "match": {
         "calls": [
-          "__osDisableInt",
-          "__osRestoreInt",
-          "__osSetCompare"
+          "os_internal_disable_int",
+          "os_internal_restore_int",
+          "os_internal_set_compare"
         ],
         "callCount": [
           3,
@@ -2526,11 +2526,11 @@
       "category": "vi",
       "image": "code",
       "summary": "Registers message queue a0 and message a1 with retrace count a2 in the next VI context, so the VI manager forwards each retrace to that queue.",
-      "evidence": "0x800d36c0: __osDisableInt; `sw a0,16(next)` (0x800d36f0), `sw a1,20(next)` (0x800d3704), `sh a2,2(next)` (0x800d3714); __osRestoreInt; `next` is the pointer at 0x80006944.",
+      "evidence": "0x800d36c0: os_internal_disable_int; `sw a0,16(next)` (0x800d36f0), `sw a1,20(next)` (0x800d3704), `sh a2,2(next)` (0x800d3714); os_internal_restore_int; `next` is the pointer at 0x80006944.",
       "match": {
         "calls": [
-          "__osDisableInt",
-          "__osRestoreInt"
+          "os_internal_disable_int",
+          "os_internal_restore_int"
         ],
         "words": [
           "ac000010/fc00ffff",
@@ -2548,11 +2548,11 @@
       "category": "vi",
       "image": "code",
       "summary": "Returns the framebuffer address of the current VI context (+4 of the structure at 0x80006940).",
-      "evidence": "0x800d63b0: __osDisableInt; `lw t6,0x6940(0x8000)`; `lw t7,4(t6)`; __osRestoreInt.",
+      "evidence": "0x800d63b0: os_internal_disable_int; `lw t6,0x6940(0x8000)`; `lw t7,4(t6)`; os_internal_restore_int.",
       "match": {
         "calls": [
-          "__osDisableInt",
-          "__osRestoreInt"
+          "os_internal_disable_int",
+          "os_internal_restore_int"
         ],
         "globalsAll": [
           "80006940"
@@ -2572,7 +2572,7 @@
       "category": "pi",
       "image": "code",
       "summary": "Creates or updates a PI device handle (OSPiHandle at 0x800fa010) for a cartridge address range: stores the type, the domain timing bytes (latency, pulse width, page size, release) and the KSEG1 base address (a0 | 0xA0000000), clears the 0x60-byte transfer area and links the handle into the handle list at 0x800068ac.",
-      "evidence": "0x800919b0: compares a0 | 0xa0000000 with the stored base at +0xc (0x800919e0-0x800919ec), stores type at +4, bytes at +5..+9, base at +0xc and a word at +0x10, bzero of 0x60 bytes at 0x800fa024 (0x80091a1c-0x80091a30), __osDisableInt, then updates the list head 0x800068ac (0x80091a40-0x80091a4c).",
+      "evidence": "0x800919b0: compares a0 | 0xa0000000 with the stored base at +0xc (0x800919e0-0x800919ec), stores type at +4, bytes at +5..+9, base at +0xc and a word at +0x10, bzero of 0x60 bytes at 0x800fa024 (0x80091a1c-0x80091a30), os_internal_disable_int, then updates the list head 0x800068ac (0x80091a40-0x80091a4c).",
       "match": {
         "startsWith": [
           "27bdffe0",
@@ -2580,8 +2580,8 @@
           "3c108010"
         ],
         "calls": [
-          "__osDisableInt",
-          "__osRestoreInt"
+          "os_internal_disable_int",
+          "os_internal_restore_int"
         ],
         "insns": [
           48,
@@ -2607,21 +2607,21 @@
       "id": "osEepromProbe",
       "category": "eeprom",
       "summary": "EEPROM access (not present).",
-      "evidence": "The only function that starts an SI DMA, the path to the PIF that carries EEPROM commands, is __osSiRawStartDma (0x800d0ed0). Its eight callers are osContInit, osContStartQuery, osContStartReadData, __osPfsSelectBank, __osPfsGetStatus, __osPfsPakProbe, __osContRamRead and __osContRamWrite. The packets they build use the command bytes 0 (the status request: __osPackRequestData is called with a0 = 0 at 0x800d0770 and 0x800d1688, and the two request builders at 0x800d3d70 and 0x800d50b0 receive 0 from 0x800d3cc4 and 0x800d4f38), 1 (__osPackReadData), 2 (0x800d4c60) and 3 (0x800d3b70..); none builds an EEPROM packet (commands 4 and 5 on channel 4).",
+      "evidence": "The only function that starts an SI DMA, the path to the PIF that carries EEPROM commands, is os_internal_si_raw_start_dma (0x800d0ed0). Its eight callers are osContInit, osContStartQuery, osContStartReadData, os_internal_pfs_select_bank, os_internal_pfs_get_status, os_internal_pfs_pak_probe, os_internal_cont_ram_read and os_internal_cont_ram_write. The packets they build use the command bytes 0 (the status request: os_internal_pack_request_data is called with a0 = 0 at 0x800d0770 and 0x800d1688, and the two request builders at 0x800d3d70 and 0x800d50b0 receive 0 from 0x800d3cc4 and 0x800d4f38), 1 (os_internal_pack_read_data), 2 (0x800d4c60) and 3 (0x800d3b70..); none builds an EEPROM packet (commands 4 and 5 on channel 4).",
       "absent": {
         "image": "code",
         "calls": [
-          "__osSiRawStartDma"
+          "os_internal_si_raw_start_dma"
         ],
         "except": [
           "osContInit",
           "osContStartQuery",
           "osContStartReadData",
-          "__osPfsSelectBank",
-          "__osPfsGetStatus",
-          "__osPfsPakProbe",
-          "__osContRamRead",
-          "__osContRamWrite"
+          "os_internal_pfs_select_bank",
+          "os_internal_pfs_get_status",
+          "os_internal_pfs_pak_probe",
+          "os_internal_cont_ram_read",
+          "os_internal_cont_ram_write"
         ]
       }
     },
@@ -2629,21 +2629,21 @@
       "id": "osEepromRead",
       "category": "eeprom",
       "summary": "EEPROM access (not present).",
-      "evidence": "The only function that starts an SI DMA, the path to the PIF that carries EEPROM commands, is __osSiRawStartDma (0x800d0ed0). Its eight callers are osContInit, osContStartQuery, osContStartReadData, __osPfsSelectBank, __osPfsGetStatus, __osPfsPakProbe, __osContRamRead and __osContRamWrite. The packets they build use the command bytes 0 (the status request: __osPackRequestData is called with a0 = 0 at 0x800d0770 and 0x800d1688, and the two request builders at 0x800d3d70 and 0x800d50b0 receive 0 from 0x800d3cc4 and 0x800d4f38), 1 (__osPackReadData), 2 (0x800d4c60) and 3 (0x800d3b70..); none builds an EEPROM packet (commands 4 and 5 on channel 4).",
+      "evidence": "The only function that starts an SI DMA, the path to the PIF that carries EEPROM commands, is os_internal_si_raw_start_dma (0x800d0ed0). Its eight callers are osContInit, osContStartQuery, osContStartReadData, os_internal_pfs_select_bank, os_internal_pfs_get_status, os_internal_pfs_pak_probe, os_internal_cont_ram_read and os_internal_cont_ram_write. The packets they build use the command bytes 0 (the status request: os_internal_pack_request_data is called with a0 = 0 at 0x800d0770 and 0x800d1688, and the two request builders at 0x800d3d70 and 0x800d50b0 receive 0 from 0x800d3cc4 and 0x800d4f38), 1 (os_internal_pack_read_data), 2 (0x800d4c60) and 3 (0x800d3b70..); none builds an EEPROM packet (commands 4 and 5 on channel 4).",
       "absent": {
         "image": "code",
         "calls": [
-          "__osSiRawStartDma"
+          "os_internal_si_raw_start_dma"
         ],
         "except": [
           "osContInit",
           "osContStartQuery",
           "osContStartReadData",
-          "__osPfsSelectBank",
-          "__osPfsGetStatus",
-          "__osPfsPakProbe",
-          "__osContRamRead",
-          "__osContRamWrite"
+          "os_internal_pfs_select_bank",
+          "os_internal_pfs_get_status",
+          "os_internal_pfs_pak_probe",
+          "os_internal_cont_ram_read",
+          "os_internal_cont_ram_write"
         ]
       }
     },
@@ -2651,21 +2651,21 @@
       "id": "osEepromWrite",
       "category": "eeprom",
       "summary": "EEPROM access (not present).",
-      "evidence": "The only function that starts an SI DMA, the path to the PIF that carries EEPROM commands, is __osSiRawStartDma (0x800d0ed0). Its eight callers are osContInit, osContStartQuery, osContStartReadData, __osPfsSelectBank, __osPfsGetStatus, __osPfsPakProbe, __osContRamRead and __osContRamWrite. The packets they build use the command bytes 0 (the status request: __osPackRequestData is called with a0 = 0 at 0x800d0770 and 0x800d1688, and the two request builders at 0x800d3d70 and 0x800d50b0 receive 0 from 0x800d3cc4 and 0x800d4f38), 1 (__osPackReadData), 2 (0x800d4c60) and 3 (0x800d3b70..); none builds an EEPROM packet (commands 4 and 5 on channel 4).",
+      "evidence": "The only function that starts an SI DMA, the path to the PIF that carries EEPROM commands, is os_internal_si_raw_start_dma (0x800d0ed0). Its eight callers are osContInit, osContStartQuery, osContStartReadData, os_internal_pfs_select_bank, os_internal_pfs_get_status, os_internal_pfs_pak_probe, os_internal_cont_ram_read and os_internal_cont_ram_write. The packets they build use the command bytes 0 (the status request: os_internal_pack_request_data is called with a0 = 0 at 0x800d0770 and 0x800d1688, and the two request builders at 0x800d3d70 and 0x800d50b0 receive 0 from 0x800d3cc4 and 0x800d4f38), 1 (os_internal_pack_read_data), 2 (0x800d4c60) and 3 (0x800d3b70..); none builds an EEPROM packet (commands 4 and 5 on channel 4).",
       "absent": {
         "image": "code",
         "calls": [
-          "__osSiRawStartDma"
+          "os_internal_si_raw_start_dma"
         ],
         "except": [
           "osContInit",
           "osContStartQuery",
           "osContStartReadData",
-          "__osPfsSelectBank",
-          "__osPfsGetStatus",
-          "__osPfsPakProbe",
-          "__osContRamRead",
-          "__osContRamWrite"
+          "os_internal_pfs_select_bank",
+          "os_internal_pfs_get_status",
+          "os_internal_pfs_pak_probe",
+          "os_internal_cont_ram_read",
+          "os_internal_cont_ram_write"
         ]
       }
     },
@@ -2673,21 +2673,21 @@
       "id": "osEepromLongRead",
       "category": "eeprom",
       "summary": "EEPROM access (not present).",
-      "evidence": "The only function that starts an SI DMA, the path to the PIF that carries EEPROM commands, is __osSiRawStartDma (0x800d0ed0). Its eight callers are osContInit, osContStartQuery, osContStartReadData, __osPfsSelectBank, __osPfsGetStatus, __osPfsPakProbe, __osContRamRead and __osContRamWrite. The packets they build use the command bytes 0 (the status request: __osPackRequestData is called with a0 = 0 at 0x800d0770 and 0x800d1688, and the two request builders at 0x800d3d70 and 0x800d50b0 receive 0 from 0x800d3cc4 and 0x800d4f38), 1 (__osPackReadData), 2 (0x800d4c60) and 3 (0x800d3b70..); none builds an EEPROM packet (commands 4 and 5 on channel 4).",
+      "evidence": "The only function that starts an SI DMA, the path to the PIF that carries EEPROM commands, is os_internal_si_raw_start_dma (0x800d0ed0). Its eight callers are osContInit, osContStartQuery, osContStartReadData, os_internal_pfs_select_bank, os_internal_pfs_get_status, os_internal_pfs_pak_probe, os_internal_cont_ram_read and os_internal_cont_ram_write. The packets they build use the command bytes 0 (the status request: os_internal_pack_request_data is called with a0 = 0 at 0x800d0770 and 0x800d1688, and the two request builders at 0x800d3d70 and 0x800d50b0 receive 0 from 0x800d3cc4 and 0x800d4f38), 1 (os_internal_pack_read_data), 2 (0x800d4c60) and 3 (0x800d3b70..); none builds an EEPROM packet (commands 4 and 5 on channel 4).",
       "absent": {
         "image": "code",
         "calls": [
-          "__osSiRawStartDma"
+          "os_internal_si_raw_start_dma"
         ],
         "except": [
           "osContInit",
           "osContStartQuery",
           "osContStartReadData",
-          "__osPfsSelectBank",
-          "__osPfsGetStatus",
-          "__osPfsPakProbe",
-          "__osContRamRead",
-          "__osContRamWrite"
+          "os_internal_pfs_select_bank",
+          "os_internal_pfs_get_status",
+          "os_internal_pfs_pak_probe",
+          "os_internal_cont_ram_read",
+          "os_internal_cont_ram_write"
         ]
       }
     },
@@ -2695,21 +2695,21 @@
       "id": "osEepromLongWrite",
       "category": "eeprom",
       "summary": "EEPROM access (not present).",
-      "evidence": "The only function that starts an SI DMA, the path to the PIF that carries EEPROM commands, is __osSiRawStartDma (0x800d0ed0). Its eight callers are osContInit, osContStartQuery, osContStartReadData, __osPfsSelectBank, __osPfsGetStatus, __osPfsPakProbe, __osContRamRead and __osContRamWrite. The packets they build use the command bytes 0 (the status request: __osPackRequestData is called with a0 = 0 at 0x800d0770 and 0x800d1688, and the two request builders at 0x800d3d70 and 0x800d50b0 receive 0 from 0x800d3cc4 and 0x800d4f38), 1 (__osPackReadData), 2 (0x800d4c60) and 3 (0x800d3b70..); none builds an EEPROM packet (commands 4 and 5 on channel 4).",
+      "evidence": "The only function that starts an SI DMA, the path to the PIF that carries EEPROM commands, is os_internal_si_raw_start_dma (0x800d0ed0). Its eight callers are osContInit, osContStartQuery, osContStartReadData, os_internal_pfs_select_bank, os_internal_pfs_get_status, os_internal_pfs_pak_probe, os_internal_cont_ram_read and os_internal_cont_ram_write. The packets they build use the command bytes 0 (the status request: os_internal_pack_request_data is called with a0 = 0 at 0x800d0770 and 0x800d1688, and the two request builders at 0x800d3d70 and 0x800d50b0 receive 0 from 0x800d3cc4 and 0x800d4f38), 1 (os_internal_pack_read_data), 2 (0x800d4c60) and 3 (0x800d3b70..); none builds an EEPROM packet (commands 4 and 5 on channel 4).",
       "absent": {
         "image": "code",
         "calls": [
-          "__osSiRawStartDma"
+          "os_internal_si_raw_start_dma"
         ],
         "except": [
           "osContInit",
           "osContStartQuery",
           "osContStartReadData",
-          "__osPfsSelectBank",
-          "__osPfsGetStatus",
-          "__osPfsPakProbe",
-          "__osContRamRead",
-          "__osContRamWrite"
+          "os_internal_pfs_select_bank",
+          "os_internal_pfs_get_status",
+          "os_internal_pfs_pak_probe",
+          "os_internal_cont_ram_read",
+          "os_internal_cont_ram_write"
         ]
       }
     },
@@ -2717,7 +2717,7 @@
       "id": "osFlashInit",
       "category": "flash",
       "summary": "FlashRAM access (not present).",
-      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or __osEPiRawWriteIo, whose only callers are osEPiWriteIo and __osDevMgrMain). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (osPiStartDma from 0x80091a88, device address 0x08000000 passed by the callers of 0x80091b14).",
+      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or os_internal_e_pi_raw_write_io, whose only callers are osEPiWriteIo and os_internal_dev_mgr_main). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (osPiStartDma from 0x80091a88, device address 0x08000000 passed by the callers of 0x80091b14).",
       "absent": {
         "image": "code",
         "calls": [
@@ -2729,7 +2729,7 @@
       "id": "osFlashReadId",
       "category": "flash",
       "summary": "FlashRAM access (not present).",
-      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or __osEPiRawWriteIo, whose only callers are osEPiWriteIo and __osDevMgrMain). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (osPiStartDma from 0x80091a88, device address 0x08000000 passed by the callers of 0x80091b14).",
+      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or os_internal_e_pi_raw_write_io, whose only callers are osEPiWriteIo and os_internal_dev_mgr_main). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (osPiStartDma from 0x80091a88, device address 0x08000000 passed by the callers of 0x80091b14).",
       "absent": {
         "image": "code",
         "calls": [
@@ -2741,7 +2741,7 @@
       "id": "osFlashReadStatus",
       "category": "flash",
       "summary": "FlashRAM access (not present).",
-      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or __osEPiRawWriteIo, whose only callers are osEPiWriteIo and __osDevMgrMain). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (osPiStartDma from 0x80091a88, device address 0x08000000 passed by the callers of 0x80091b14).",
+      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or os_internal_e_pi_raw_write_io, whose only callers are osEPiWriteIo and os_internal_dev_mgr_main). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (osPiStartDma from 0x80091a88, device address 0x08000000 passed by the callers of 0x80091b14).",
       "absent": {
         "image": "code",
         "calls": [
@@ -2753,7 +2753,7 @@
       "id": "osFlashClearStatus",
       "category": "flash",
       "summary": "FlashRAM access (not present).",
-      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or __osEPiRawWriteIo, whose only callers are osEPiWriteIo and __osDevMgrMain). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (osPiStartDma from 0x80091a88, device address 0x08000000 passed by the callers of 0x80091b14).",
+      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or os_internal_e_pi_raw_write_io, whose only callers are osEPiWriteIo and os_internal_dev_mgr_main). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (osPiStartDma from 0x80091a88, device address 0x08000000 passed by the callers of 0x80091b14).",
       "absent": {
         "image": "code",
         "calls": [
@@ -2765,7 +2765,7 @@
       "id": "osFlashAllErase",
       "category": "flash",
       "summary": "FlashRAM access (not present).",
-      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or __osEPiRawWriteIo, whose only callers are osEPiWriteIo and __osDevMgrMain). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (osPiStartDma from 0x80091a88, device address 0x08000000 passed by the callers of 0x80091b14).",
+      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or os_internal_e_pi_raw_write_io, whose only callers are osEPiWriteIo and os_internal_dev_mgr_main). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (osPiStartDma from 0x80091a88, device address 0x08000000 passed by the callers of 0x80091b14).",
       "absent": {
         "image": "code",
         "calls": [
@@ -2777,7 +2777,7 @@
       "id": "osFlashSectorErase",
       "category": "flash",
       "summary": "FlashRAM access (not present).",
-      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or __osEPiRawWriteIo, whose only callers are osEPiWriteIo and __osDevMgrMain). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (osPiStartDma from 0x80091a88, device address 0x08000000 passed by the callers of 0x80091b14).",
+      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or os_internal_e_pi_raw_write_io, whose only callers are osEPiWriteIo and os_internal_dev_mgr_main). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (osPiStartDma from 0x80091a88, device address 0x08000000 passed by the callers of 0x80091b14).",
       "absent": {
         "image": "code",
         "calls": [
@@ -2789,7 +2789,7 @@
       "id": "osFlashWriteBuffer",
       "category": "flash",
       "summary": "FlashRAM access (not present).",
-      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or __osEPiRawWriteIo, whose only callers are osEPiWriteIo and __osDevMgrMain). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (osPiStartDma from 0x80091a88, device address 0x08000000 passed by the callers of 0x80091b14).",
+      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or os_internal_e_pi_raw_write_io, whose only callers are osEPiWriteIo and os_internal_dev_mgr_main). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (osPiStartDma from 0x80091a88, device address 0x08000000 passed by the callers of 0x80091b14).",
       "absent": {
         "image": "code",
         "calls": [
@@ -2801,7 +2801,7 @@
       "id": "osFlashWriteArray",
       "category": "flash",
       "summary": "FlashRAM access (not present).",
-      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or __osEPiRawWriteIo, whose only callers are osEPiWriteIo and __osDevMgrMain). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (osPiStartDma from 0x80091a88, device address 0x08000000 passed by the callers of 0x80091b14).",
+      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or os_internal_e_pi_raw_write_io, whose only callers are osEPiWriteIo and os_internal_dev_mgr_main). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (osPiStartDma from 0x80091a88, device address 0x08000000 passed by the callers of 0x80091b14).",
       "absent": {
         "image": "code",
         "calls": [
@@ -2813,7 +2813,7 @@
       "id": "osFlashReadArray",
       "category": "flash",
       "summary": "FlashRAM access (not present).",
-      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or __osEPiRawWriteIo, whose only callers are osEPiWriteIo and __osDevMgrMain). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (osPiStartDma from 0x80091a88, device address 0x08000000 passed by the callers of 0x80091b14).",
+      "evidence": "FlashRAM is programmed with command words written to the cartridge through the PI IO write routine (osEPiWriteIo, 0x80005b10, or os_internal_e_pi_raw_write_io, whose only callers are osEPiWriteIo and os_internal_dev_mgr_main). osEPiWriteIo has no caller anywhere in the boot code, the main code file or the overlays' direct calls, so no flash command is ever issued; the save memory is read and written with PI DMA instead (osPiStartDma from 0x80091a88, device address 0x08000000 passed by the callers of 0x80091b14).",
       "absent": {
         "image": "code",
         "calls": [
@@ -2825,7 +2825,7 @@
       "id": "osMapTLB",
       "category": "tlb",
       "summary": "Maps a TLB entry from arguments (not present).",
-      "evidence": "The only functions that use TLB instructions or write COP0 EntryHi are __osProbeTLB (tlbp/tlbr), osUnmapTLBAll and osMapTLBRdb (tlbwi, called once at start-up from osInitialize); no function writes a TLB entry from arguments (osMapTLB), unmaps a single entry (osUnmapTLB) or sets the ASID (osSetTLBASID).",
+      "evidence": "The only functions that use TLB instructions or write COP0 EntryHi are os_internal_probe_tlb (tlbp/tlbr), osUnmapTLBAll and osMapTLBRdb (tlbwi, called once at start-up from osInitialize); no function writes a TLB entry from arguments (osMapTLB), unmaps a single entry (osUnmapTLB) or sets the ASID (osSetTLBASID).",
       "absent": {
         "special": [
           "tlbwi"
@@ -2840,7 +2840,7 @@
       "id": "osUnmapTLB",
       "category": "tlb",
       "summary": "Invalidates one TLB entry (not present).",
-      "evidence": "The only functions that use TLB instructions or write COP0 EntryHi are __osProbeTLB (tlbp/tlbr), osUnmapTLBAll and osMapTLBRdb (tlbwi, called once at start-up from osInitialize); no function writes a TLB entry from arguments (osMapTLB), unmaps a single entry (osUnmapTLB) or sets the ASID (osSetTLBASID).",
+      "evidence": "The only functions that use TLB instructions or write COP0 EntryHi are os_internal_probe_tlb (tlbp/tlbr), osUnmapTLBAll and osMapTLBRdb (tlbwi, called once at start-up from osInitialize); no function writes a TLB entry from arguments (osMapTLB), unmaps a single entry (osUnmapTLB) or sets the ASID (osSetTLBASID).",
       "absent": {
         "special": [
           "tlbwr"
@@ -2852,7 +2852,7 @@
       "id": "osSetTLBASID",
       "category": "tlb",
       "summary": "Sets the TLB ASID (not present).",
-      "evidence": "The only functions that use TLB instructions or write COP0 EntryHi are __osProbeTLB (tlbp/tlbr), osUnmapTLBAll and osMapTLBRdb (tlbwi, called once at start-up from osInitialize); no function writes a TLB entry from arguments (osMapTLB), unmaps a single entry (osUnmapTLB) or sets the ASID (osSetTLBASID).",
+      "evidence": "The only functions that use TLB instructions or write COP0 EntryHi are os_internal_probe_tlb (tlbp/tlbr), osUnmapTLBAll and osMapTLBRdb (tlbwi, called once at start-up from osInitialize); no function writes a TLB entry from arguments (osMapTLB), unmaps a single entry (osUnmapTLB) or sets the ASID (osSetTLBASID).",
       "absent": {
         "cop0Write": [
           10
@@ -2862,7 +2862,7 @@
           8
         ],
         "except": [
-          "__osProbeTLB"
+          "os_internal_probe_tlb"
         ]
       }
     }
