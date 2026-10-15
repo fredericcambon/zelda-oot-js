@@ -1,10 +1,9 @@
 import { startGame, type Game } from './game.ts';
 import { Renderer, type CullMode } from './renderer.ts';
-import { readRom } from './rom.ts';
+import { loadRomImage } from './rom.ts';
 
 const FRAME_MS = 20; // the video interface retraces at 50 Hz
 
-const picker = document.getElementById('rom') as HTMLInputElement;
 const status = document.getElementById('status')!;
 const overlay = document.getElementById('overlay') as HTMLPreElement;
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
@@ -23,7 +22,6 @@ try {
 }
 
 let game: Game | null = null;
-let running = false;
 let fps = 0;
 
 const CULL_MODES: CullMode[] = ['normal', 'swapped', 'off'];
@@ -85,22 +83,19 @@ async function loop(): Promise<void> {
     }
     updateOverlay();
   }
-  running = false;
   updateOverlay();
 }
 
-picker.addEventListener('change', async () => {
-  const file = picker.files?.[0];
-  if (!file || running) return;
+async function boot(): Promise<void> {
   try {
-    setStatus('Checking the ROM...');
-    const rom = await readRom(file);
+    const rom = await loadRomImage((done, total) => setStatus(`Loading game files: ${done} / ${total}`));
     setStatus('Starting...');
     game = await startGame(rom, renderer);
-    setStatus(`Running ${file.name}`);
-    running = true;
+    setStatus('Running');
     void loop();
   } catch (err) {
     setStatus(err instanceof Error ? err.message : String(err), true);
   }
-});
+}
+
+void boot();

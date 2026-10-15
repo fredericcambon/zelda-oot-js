@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <!-- The ROM stays in this page: only same-origin requests (the game's own files) are allowed. -->
+    <!-- Only same-origin requests (the game files built by npm run port) are allowed. -->
     <meta
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; form-action 'none'"
@@ -17,13 +17,10 @@
       #overlay[hidden] { display: none; }
       #status { min-height: 1.4em; }
       #status.error { color: #f88; }
-      label.pick { padding: 6px 12px; border: 1px solid #555; border-radius: 4px; cursor: pointer; }
-      input[type='file'] { display: none; }
     </style>
   </head>
   <body>
-    <label class="pick">Choose ROM (.z64)<input id="rom" type="file" accept=".z64" /></label>
-    <div id="status">Pick your own Ocarina of Time (PAL 1.0) ROM. It is read in this page and never uploaded.</div>
+    <div id="status">Loading the game files...</div>
     <div id="stage">
       <canvas id="screen"></canvas>
       <pre id="overlay" hidden></pre>

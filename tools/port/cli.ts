@@ -7,6 +7,7 @@ import { loadContext, romPathFromEnv } from '../analyze/context.ts';
 import { generate } from '../recomp/generate.ts';
 import { ensureToolchain } from '../recomp/toolchain.ts';
 import { extractRom } from '../rom/extract.ts';
+import { writeRomPieces } from '../rom/pieces.ts';
 import { compileAll, link, runtimeSources } from './build.ts';
 
 async function main(): Promise<number> {
@@ -30,6 +31,8 @@ async function main(): Promise<number> {
     stage(1, 'verify and extract');
     const index = extractRom(readFileSync(romPath), values.out!);
     log(`ROM verified (SHA-1 ${index.sha1}); wrote ${index.files.length} files to ${values.out}`);
+    const pieces = writeRomPieces(readFileSync(romPath), resolve(values.dist!, 'rom'));
+    log(`wrote ${pieces.pieces.length} ROM pieces to ${resolve(values.dist!, 'rom')} for the browser`);
 
     stage(2, 'analyse');
     const inventory = await analyze({

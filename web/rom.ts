@@ -1,18 +1,28 @@
-// Loads the ROM the user picked and checks it is the supported one. The bytes never leave the page.
-export const ROM_SHA1 = '328a1f1beba30ce5e178f031662019eb32c5f3b5';
-
-export async function sha1Hex(data: Uint8Array): Promise<string> {
-  if (!globalThis.crypto?.subtle) throw new Error('Hashing needs a secure context: open the page through localhost or https');
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-1', data as Uint8Array<ArrayBuffer>));
-  return Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('');
+// Rebuilds the cartridge image from the pieces `npm run port` wrote next to the game (dist/rom). The page never asks
+// for a ROM file: the index says which byte range each piece holds.
+interface PieceIndex {
+  size: number;
+  pieces: { start: number; end: number; path: string }[];
 }
 
-/** Reads the file and returns its bytes when its SHA-1 is the supported ROM's. */
-export async function readRom(file: File): Promise<Uint8Array> {
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  const hash = await sha1Hex(bytes);
-  if (hash !== ROM_SHA1) {
-    throw new Error(`This is not the supported ROM (Ocarina of Time, PAL 1.0, big-endian .z64). SHA-1 is ${hash}.`);
-  }
-  return bytes;
+const PARALLEL_FETCHES = 8;
+
+export async function loadRomImage(onProgress: (done: number, total: number) => void, base = '/rom/'): Promise<Uint8Array> {
+  const response = await fetch(`${base}index.json`);
+  if (!response.ok) throw new Error('The game files are missing: run `npm run port -- --rom <path>` first');
+  const index = (await response.json()) as PieceIndex;
+  const image = new Uint8Array(index.size);
+  const queue = [...index.pieces];
+  let done = 0;
+  onProgress(0, queue.length);
+  const worker = async () => {
+    for (let p = queue.shift(); p; p = queue.shift()) {
+      const r = await fetch(`${base}${p.path}`);
+      if (!r.ok) throw new Error(`could not load ${p.path} (${r.status})`);
+      image.set(new Uint8Array(await r.arrayBuffer()), p.start);
+      onProgress(++done, index.pieces.length);
+    }
+  };
+  await Promise.all(Array.from({ length: PARALLEL_FETCHES }, worker));
+  return image;
 }
