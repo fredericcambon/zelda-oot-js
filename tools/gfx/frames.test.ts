@@ -16,6 +16,8 @@ const rom = process.env.OOT_ROM;
 const FRAMES = 600;
 /** The title scene is on screen from here; the black gap between it and the logo ends before. */
 const TITLE_FROM = 300;
+/** The logo has faded out by here. */
+const FADE_FROM = 255;
 
 describe.skipIf(!rom || !existsSync(rom))('display lists of the booted game', () => {
   it('parses every graphics task of 600 frames with documented commands only', async () => {
@@ -46,6 +48,12 @@ describe.skipIf(!rom || !existsSync(rom))('display lists of the booted game', ()
       // What the video interface scans out must be a finished picture: not nothing, not a cleared buffer, not half a
       // frame (a quarter of the rows of one colour or most of the picture one colour).
       const shown = soft.image(game.framebuffer());
+      if (k >= FADE_FROM && k < TITLE_FROM) {
+        // The title scene fades in from black: a flat frame in this stretch is black, never a bright cleared buffer.
+        const f = shown ? flatness(shown) : null;
+        const brightest = f ? Math.max(f.colour >> 16, (f.colour >> 8) & 255, f.colour & 255) : 0;
+        if (!f || (f.dominant > 0.6 && brightest > 24)) flat.push(`frame ${k}: ${f ? `${(f.dominant * 100).toFixed(0)}% flat colour 0x${f.colour.toString(16)}` : 'nothing shown'}`);
+      }
       if (k >= TITLE_FROM) {
         const f = shown ? flatness(shown) : null;
         if (!f || f.dominant > 0.6 || f.flatRows >= 60) flat.push(`frame ${k}: ${f ? `${(f.dominant * 100).toFixed(0)}% one colour, ${f.flatRows} flat rows` : 'nothing shown'}`);

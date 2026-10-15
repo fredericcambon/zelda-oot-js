@@ -21,6 +21,7 @@ async function main(): Promise<number> {
       dl: { type: 'boolean', default: false },
       dump: { type: 'string' },
       'dump-every': { type: 'string', default: '1' },
+      'dump-from': { type: 'string', default: '0' },
     },
   });
   const frames = Number(values.frames);
@@ -31,6 +32,9 @@ async function main(): Promise<number> {
   const dumpDir = values.dump ? resolve(values.dump) : undefined;
   if (dumpDir) mkdirSync(dumpDir, { recursive: true });
   const dumpEvery = Math.max(1, Number(values['dump-every']));
+  // Frames before this one are not drawn: each frame is redrawn whole, so only the speed changes.
+  const dumpFrom = Number(values['dump-from']);
+  let frameNo = 0;
   let game: Game;
   try {
     game = await bootGame(pathToFileURL(resolve(values.dist!, 'oot.js')).href, rom, {
@@ -38,7 +42,7 @@ async function main(): Promise<number> {
         ? (task) => {
             const result = interpreter.run(task.ram, task.data);
             if (values.dl) totals.add(result);
-            soft?.drawTask(result);
+            if (frameNo >= dumpFrom - 2) soft?.drawTask(result);
           }
         : undefined,
     });
@@ -47,6 +51,7 @@ async function main(): Promise<number> {
     return 1;
   }
   for (let k = 0; k < frames; k++) {
+    frameNo++;
     const r = await game.frame();
     if (values.trace || r.newThreads.length > 0) {
       console.log(
@@ -59,7 +64,7 @@ async function main(): Promise<number> {
       const calls = game.lastCalls(40);
       if (calls.length > 0) console.error(`last calls, newest first: ${calls.join(' ')}`);
     }
-    if (soft && dumpDir && r.frame % dumpEvery === 0) {
+    if (soft && dumpDir && r.frame % dumpEvery === 0 && r.frame >= dumpFrom) {
       const img = soft.image(game.framebuffer());
       if (img) writeFileSync(join(dumpDir, `frame-${String(r.frame).padStart(5, '0')}.png`), encodePng(WIDTH, HEIGHT, img));
     }

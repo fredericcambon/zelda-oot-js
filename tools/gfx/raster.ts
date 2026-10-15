@@ -111,6 +111,8 @@ function texel(tex: DecodedTexture | null, tile: TileState | undefined, u: numbe
 export class SoftRenderer {
   /** Colour images by physical address, RGBA8, top row first. */
   readonly images = new Map<number, Uint8Array>();
+  /** Pixels written since construction (a rejected or culled primitive writes none). */
+  pixelsWritten = 0;
   cullMode: 'normal' | 'swapped' | 'off' = 'normal';
   private readonly depth = new Float32Array(WIDTH * HEIGHT).fill(1);
 
@@ -291,6 +293,7 @@ export class SoftRenderer {
     }
     for (let k = 0; k < 3; k++) img[dst + k] = Math.round(255 * (rgb[k]! * weight + (img[dst + k]! / 255) * (1 - weight)));
     img[dst + 3] = 255;
+    this.pixelsWritten++;
     return true;
   }
 }
@@ -324,8 +327,8 @@ function clipNear(poly: Vertex[]): Vertex[] {
   return out.filter((v) => v.pos[3] > 1e-6);
 }
 
-/** How much of an image is one flat colour: the share of pixels with the most common colour, and the number of rows of a single colour. */
-export function flatness(img: Uint8Array): { dominant: number; flatRows: number } {
+/** How much of an image is one flat colour: the share of pixels with the most common colour (and that colour as 0xRRGGBB), and the number of rows of a single colour. */
+export function flatness(img: Uint8Array): { dominant: number; colour: number; flatRows: number } {
   const counts = new Map<number, number>();
   let flatRows = 0;
   for (let y = 0; y < HEIGHT; y++) {
@@ -339,5 +342,6 @@ export function flatness(img: Uint8Array): { dominant: number; flatRows: number 
     }
     if (same) flatRows++;
   }
-  return { dominant: Math.max(...counts.values()) / (WIDTH * HEIGHT), flatRows };
+  const [colour, count] = [...counts].reduce((best, e) => (e[1] > best[1] ? e : best));
+  return { dominant: count / (WIDTH * HEIGHT), colour, flatRows };
 }
