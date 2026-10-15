@@ -1,8 +1,9 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { loadContext } from './context.ts';
 import { analyseImage, buildSpecs } from './image.ts';
 import { identifyOs, loadSignatures, type OsRoutine } from './os.ts';
+import { renderRoutines, spliceDoc } from './os-doc.ts';
 
 const rom = process.env.OOT_ROM;
 
@@ -33,6 +34,15 @@ const REQUIRED: Record<string, { found: string[]; absent?: string[] }> = {
   interruptsAndExceptions: { found: ['os_internal_exception_vector', 'os_internal_exception', 'os_internal_disable_int', 'os_internal_restore_int', 'osSetIntMask'] },
   overlays: { found: ['overlay_load', 'overlay_relocate'] },
 };
+
+describe('reverse-engineering notes', () => {
+  for (const name of ['os-routines', 'boot-flow', 'overlays', 'analysis-tool', 'rea-howto']) {
+    it(`docs/re/${name}.md exists and cites addresses`, () => {
+      const text = readFileSync(`docs/re/${name}.md`, 'utf8');
+      expect(text).toMatch(/0x[0-9A-Fa-f]{8}/);
+    });
+  }
+});
 
 describe.skipIf(!rom || !existsSync(rom))('OS routines of the ROM', () => {
   const sigs = loadSignatures();
@@ -72,6 +82,11 @@ describe.skipIf(!rom || !existsSync(rom))('OS routines of the ROM', () => {
       }
     });
   }
+
+  it('keeps the generated reference of os-routines.md current', () => {
+    const doc = readFileSync('docs/re/os-routines.md', 'utf8');
+    expect(spliceDoc(doc, renderRoutines(result.routines))).toBe(doc);
+  });
 
   it('finds the boot routines at their documented addresses', () => {
     expect(byId.get('boot_entry')?.addr).toBe(0x80000400);
