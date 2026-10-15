@@ -207,6 +207,24 @@ describe('display list interpreter', () => {
     expect(Array.from(tex.rgba).filter((_, i) => i % 4 === 0).slice(0, 4)).toEqual([10, 20, 30, 40]);
   });
 
+  it('decodes a tile from where its load put the upper-left texel, whatever the tile bounds are', () => {
+    const ram = new Ram();
+    ram.triangleVertices(0x2000);
+    ram.bytes.set([0, 1, 2, 3, 10, 11, 12, 13, 20, 21, 22, 23, 30, 31, 32, 33], 0x5000);
+    const bounds = (1 << 2) << 12 | (1 << 2);
+    const end = (2 << 2) << 12 | (2 << 2);
+    ram.list(0x1000,
+      [0xfd000000 | (4 << 21) | (1 << 19) | 3, 0x5000],
+      [0xf5000000 | (4 << 21) | (1 << 19) | (1 << 9), 7 << 24],
+      [0xf4000000 | bounds, (7 << 24) | end],
+      [0xf5000000 | (4 << 21) | (1 << 19) | (1 << 9), 0],
+      [0xf2000000 | bounds, end],
+      vtx(3, 0, 0x2000), tri(0, 1, 2), END);
+    const tex = (run(ram, 0x1000).batches[0] as TriangleBatch).state.textures[0]!;
+    expect([tex.width, tex.height]).toEqual([2, 2]);
+    expect(Array.from(tex.rgba).filter((_, i) => i % 4 === 0)).toEqual([11, 12, 21, 22]);
+  });
+
   it('resolves a CI texture through the palette loaded by LOADTLUT', () => {
     const ram = new Ram();
     ram.triangleVertices(0x2000);

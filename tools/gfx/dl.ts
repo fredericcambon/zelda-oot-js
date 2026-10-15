@@ -720,12 +720,10 @@ export class DisplayListInterpreter {
     height = Math.max(0, Math.min(height, maxHeight));
     let out: DecodedTexture | null = null;
     if (height > 0) {
-      const x0 = t.sized ? t.uls >> 2 : 0;
-      const y0 = t.sized ? t.ult >> 2 : 0;
       const pal = t.fmt === Fmt.CI ? { data: this.tmem, offset: (256 + (t.siz === Siz.B4 ? t.palette * 16 : 0)) * 8, ia } : undefined;
       const img = decodeTexture({
         fmt: t.fmt, siz: t.siz, width, height, rowBytes, data: this.tmem,
-        offset: t.tmem * 8 + y0 * rowBytes + this.rowBytesOf(x0, t.siz), palette: pal,
+        offset: t.tmem * 8, palette: pal,
       });
       out = { ...img, tile: index };
     }
