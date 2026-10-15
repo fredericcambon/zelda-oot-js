@@ -1,4 +1,5 @@
 // Loads the built game into this process and steps it one video frame at a time.
+const RDRAM_SIZE = 0x800000;
 const OS_ALLTHREADS = 0x8000685c;
 const OS_SENTINEL = 0x80006850;
 const TH_NEXT_ALL = 0x0c;
@@ -17,6 +18,7 @@ interface OotModule {
   _oot_retraces(): number;
   _oot_frames(): number;
   _oot_rd32(addr: number): number;
+  _oot_rdram(): number;
   _oot_fatal_message(): number;
   _oot_trace_count?(): number;
   _oot_trace_at?(back: number): number;
@@ -35,6 +37,21 @@ export interface FrameResult {
   fatal?: string;
 }
 
+/** A graphics task as the game submitted it; `ram` is the guest memory at that moment, big-endian, indexed by physical address. */
+export interface GfxTask {
+  /** Address of the task record. */
+  task: number;
+  /** Start and size in bytes of the display list. */
+  data: number;
+  size: number;
+  ram: Uint8Array;
+}
+
+export interface BootOptions {
+  /** Called synchronously when the game starts a graphics task, before it can touch the memory again. */
+  onGfxTask?: (task: GfxTask) => void;
+}
+
 export interface Game {
   frame(): Promise<FrameResult>;
   stats(): string;
@@ -42,9 +59,17 @@ export interface Game {
   lastCalls(n: number): string[];
 }
 
-export async function bootGame(moduleUrl: string, rom: Uint8Array): Promise<Game> {
+export async function bootGame(moduleUrl: string, rom: Uint8Array, options: BootOptions = {}): Promise<Game> {
   const factory = (await import(moduleUrl)).default as (opts?: object) => Promise<OotModule>;
-  const mod = await factory({ print: () => {}, printErr: (m: string) => console.error(m) });
+  const mod = await factory({
+    print: () => {},
+    printErr: (m: string) => console.error(m),
+    onGfxTask: (data: number, size: number, task: number) => {
+      data >>>= 0; size >>>= 0; task >>>= 0;
+      const ram = mod.HEAPU8.subarray(mod._oot_rdram(), mod._oot_rdram() + RDRAM_SIZE);
+      options.onGfxTask?.({ task, data, size, ram });
+    },
+  });
   const copy = mod._malloc(rom.length);
   mod.HEAPU8.set(rom, copy);
   mod._oot_boot(copy, rom.length);

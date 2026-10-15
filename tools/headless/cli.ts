@@ -5,6 +5,8 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { romPathFromEnv } from '../analyze/context.ts';
+import { DisplayListInterpreter } from '../gfx/dl.ts';
+import { DlTotals } from '../gfx/totals.ts';
 import { bootGame, type Game } from './boot.ts';
 
 async function main(): Promise<number> {
@@ -14,13 +16,18 @@ async function main(): Promise<number> {
       dist: { type: 'string', default: 'dist' },
       frames: { type: 'string', default: '300' },
       trace: { type: 'boolean', default: false },
+      dl: { type: 'boolean', default: false },
     },
   });
   const frames = Number(values.frames);
   const rom = readFileSync(romPathFromEnv(values.rom));
+  const interpreter = new DisplayListInterpreter();
+  const totals = new DlTotals();
   let game: Game;
   try {
-    game = await bootGame(pathToFileURL(resolve(values.dist!, 'oot.js')).href, rom);
+    game = await bootGame(pathToFileURL(resolve(values.dist!, 'oot.js')).href, rom, {
+      onGfxTask: values.dl ? (task) => totals.add(interpreter.run(task.ram, task.data)) : undefined,
+    });
   } catch (err) {
     console.error(`error: ${err instanceof Error ? err.message : String(err)}`);
     return 1;
@@ -48,7 +55,9 @@ async function main(): Promise<number> {
     }
   }
   console.log(`booted ${frames} frames: ${game.stats()}`);
-  return 0;
+  if (!values.dl) return 0;
+  console.log(totals.summary());
+  return totals.unknown.length > 0 ? 4 : 0;
 }
 
 process.exitCode = await main();

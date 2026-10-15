@@ -20,7 +20,15 @@ static char fatal_message[256];
 static uint64_t frame_end;
 static int idle;
 
-static void on_gfx(const RspTask *t) { (void)t; gfx_tasks++; }
+// The host sees a graphics task while the memory it points into is still as the game left it.
+EM_JS(void, host_gfx_task, (uint32_t type, uint32_t data, uint32_t size, uint32_t task), {
+  if (Module.onGfxTask) Module.onGfxTask(data, size, task);
+});
+
+static void on_gfx(const RspTask *t) {
+  gfx_tasks++;
+  host_gfx_task(t->type, t->data_ptr, t->data_size, t->addr);
+}
 static void on_audio(const RspTask *t) { (void)t; audio_tasks++; }
 
 static void on_fatal(const char *message) {
@@ -62,6 +70,7 @@ EMSCRIPTEN_KEEPALIVE uint32_t oot_gfx_tasks(void) { return gfx_tasks; }
 EMSCRIPTEN_KEEPALIVE uint32_t oot_audio_tasks(void) { return audio_tasks; }
 EMSCRIPTEN_KEEPALIVE uint32_t oot_retraces(void) { RtVi v; rt_vi_get(&v); return v.retraces; }
 EMSCRIPTEN_KEEPALIVE const char *oot_fatal_message(void) { return fatal_message; }
+EMSCRIPTEN_KEEPALIVE const uint8_t *oot_rdram(void) { return rdram; }
 EMSCRIPTEN_KEEPALIVE uint32_t oot_rd32(uint32_t addr) { return rd32(addr); }
 
 // ---- Call trace (debug builds) --------------------------------------------------------------------------------
