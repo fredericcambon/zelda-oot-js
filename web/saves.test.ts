@@ -61,4 +61,25 @@ describe('SaveSync', () => {
     await sync.flush();
     expect(store.writes).toBe(1);
   });
+
+  it('keeps saving after a failed write', async () => {
+    const store = memoryStore();
+    const realStore = store.store;
+    let failNext = true;
+    store.store = async (b) => {
+      if (failNext) {
+        failNext = false;
+        throw new Error('quota');
+      }
+      await realStore(b);
+    };
+    const game = fakeGame();
+    const sync = new SaveSync(game, store);
+    game.dirty = true;
+    await expect(sync.flush()).rejects.toThrow('quota');
+    game.dirty = true;
+    await sync.flush();
+    expect(store.writes).toBe(1);
+    await expect(sync.flush()).resolves.toBeUndefined();
+  });
 });

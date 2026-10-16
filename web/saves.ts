@@ -70,10 +70,13 @@ export class SaveSync {
     return bytes !== null;
   }
 
-  /** Call once per frame; queues a write when the game has written the memory. Resolves when all queued writes are done. */
+  /** Call once per frame; queues a write when the game has written the memory. Resolves when the queued writes are done. */
   flush(): Promise<void> {
     const bytes = this.memory.takeIfDirty();
-    if (bytes) this.pending = this.pending.then(() => this.saves.store(bytes));
-    return this.pending;
+    if (!bytes) return this.pending;
+    // A failed write must not block the later ones: each write starts from a settled chain, and only its own failure is reported.
+    const write = this.pending.catch(() => {}).then(() => this.saves.store(bytes));
+    this.pending = write.catch(() => {});
+    return write;
   }
 }
