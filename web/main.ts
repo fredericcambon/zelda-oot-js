@@ -5,6 +5,7 @@ import { loadCartridge } from './cartridge.ts';
 import { Input } from './input.ts';
 import { indexedDbStore, SaveSync, serverHasSaves, serverStore } from './saves.ts';
 import { indexedDbStates, SaveStates, serverStates } from './savestate.ts';
+import { migrateToServer } from './migrate.ts';
 import { FastForward } from './fastforward.ts';
 
 const FAST_BUDGET_MS = 12;
@@ -173,6 +174,14 @@ async function boot(): Promise<void> {
     const rom = await loadCartridge((done, total) => setStatus(`Loading game files: ${done} / ${total}`));
     setStatus('Starting...');
     const started = await startGame(rom, renderer, sound);
+    if (onServer) {
+      const moved = await migrateToServer(
+        { sram: indexedDbStore(), states: indexedDbStates() },
+        { sram: serverStore(), states: serverStates() },
+        (what, err) => console.error(`could not move ${what} to the saves folder:`, err),
+      );
+      if (moved.length > 0) showNotice(`Moved saves to the saves folder: ${moved.join(', ')}`);
+    }
     const sync = new SaveSync(started.saveMemory, onServer ? serverStore() : indexedDbStore());
     await sync.restore();
     saves = sync;
