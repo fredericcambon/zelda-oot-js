@@ -57,6 +57,13 @@ describe('saves endpoint', () => {
     expect((await page('/api/saves/state/3', { method: 'PUT', body: new Uint8Array([1]) })).status).toBe(400);
   });
 
+  it('keeps the video rate of a state, 50 Hz when none is given', async () => {
+    await page('/api/saves/state/2', { method: 'PUT', headers: { 'X-Build': BUILD, 'X-Hz': '60' }, body: new Uint8Array([1]) });
+    expect((await page('/api/saves/state/2')).headers.get('X-Hz')).toBe('60');
+    await page('/api/saves/state/2', { method: 'PUT', headers: { 'X-Build': BUILD }, body: new Uint8Array([1]) });
+    expect((await page('/api/saves/state/2')).headers.get('X-Hz')).toBe('50');
+  });
+
   it('refuses paths that are not a save, and writes nothing outside its folder', async () => {
     for (const path of ['../../x', '..%2F..%2Fx', 'state/..%2Fsram', 'state/5', 'state/1/../../x', 'sram.bin', '%00', '%zz']) {
       for (const method of ['GET', 'PUT']) {
@@ -118,5 +125,15 @@ describe('saves through the endpoint', () => {
     const other = source();
     expect(await new SaveStates(other, serverStates(page), 'c'.repeat(64)).load()).toContain('another build');
     expect(other.value).toBe(0);
+  });
+
+  it('refuses a state saved at the other video rate', async () => {
+    const game = { value: 3, capture: async () => new Uint8Array([3]), apply: async () => { throw new Error('must not load'); } };
+    await new SaveStates(game, serverStates(page), 'd'.repeat(64), 60).save();
+    expect(await new SaveStates(game, serverStates(page), 'd'.repeat(64), 50).load()).toContain('saved in 60 Hz mode');
+    const loaded: number[] = [];
+    const target = { capture: async () => new Uint8Array(), apply: async (d: Uint8Array) => void loaded.push(d[0]!) };
+    expect(await new SaveStates(target, serverStates(page), 'd'.repeat(64), 60).load()).toBe('Loaded slot 1');
+    expect(loaded).toEqual([3]);
   });
 });

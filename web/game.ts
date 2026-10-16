@@ -4,6 +4,7 @@ import { DisplayListInterpreter } from '../tools/gfx/dl.ts';
 import { shownFramebuffer } from '../tools/gfx/vi.ts';
 import { RDRAM_SIZE, startModule } from '../tools/runtime/instance.ts';
 import type { AudioSink } from './audio.ts';
+import type { Hz } from './mode.ts';
 import type { PadState } from './input.ts';
 import type { Renderer } from './renderer.ts';
 import type { SaveMemory } from './saves.ts';
@@ -26,7 +27,7 @@ export interface Game {
   info(): { frames: number; retraces: number; gfxTasks: number; audioTasks: number; idle: boolean; renderError: string; audioError: string };
 }
 
-export async function startGame(rom: Uint8Array, renderer: Renderer, audio: AudioSink, moduleUrl = '/oot.js'): Promise<Game> {
+export async function startGame(rom: Uint8Array, renderer: Renderer, audio: AudioSink, moduleUrl = '/oot.js', hz: Hz = 50): Promise<Game> {
   let renderError = '';
   let audioError = '';
   const synth = new Synth();
@@ -52,7 +53,7 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
       const at = addr & 0x7fffff;
       audio.push(guestRam().slice(at, at + length), hz);
     },
-  });
+  }, hz);
   const view = () => new DataView(mod.HEAPU8.buffer, mod._oot_rdram(), RDRAM_SIZE);
   const sram = () => mod.HEAPU8.subarray(mod._oot_sram(), mod._oot_sram() + mod._oot_sram_size());
   return {

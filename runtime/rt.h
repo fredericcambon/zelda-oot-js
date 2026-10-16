@@ -69,7 +69,9 @@ enum {
 
 // Count ticks per second (osClockRate * 3 / 4, as osInitialize derives it).
 #define RT_CPU_COUNTER 46875000ull
-#define RT_VI_HZ 50u
+// Retraces per second of the video interface: 50 for the PAL console, 60 when the cartridge is booted as an NTSC one.
+#define RT_VI_HZ_PAL 50u
+#define RT_VI_HZ_NTSC 60u
 
 // Device timing of the model, in Count ticks. Only the order in which things complete matters to the game; the
 // values are those of a plausible machine, not measurements.
@@ -92,6 +94,10 @@ enum { RT_RUN_TIME = 0, RT_RUN_IDLE = 1 };
 void rt_reset(void);
 // Writes the values the IPL leaves in low memory for a PAL cartridge.
 void rt_boot_state(void);
+// The retrace rate (RT_VI_HZ_PAL or RT_VI_HZ_NTSC). It decides the TV type that rt_boot_state writes, so set it before booting;
+// a reset leaves it alone.
+void rt_set_vi_hz(uint32_t hz);
+uint32_t rt_vi_hz(void);
 // Runs `entry` as the boot context (a function of the dispatch tables) with the given stack pointer. It runs
 // until it starts the first thread, which is when the real boot code is abandoned for good.
 void rt_start(uint32_t entry, uint32_t sp);
@@ -158,6 +164,7 @@ void rt_set_audio_hook(RspHook fn);
 typedef void (*AiHook)(uint32_t addr, uint32_t length);
 void rt_set_ai_hook(AiHook fn);
 uint32_t rt_ai_rate(void);
+uint32_t rt_ai_gaps(void);
 void rt_ai_set_rate(uint32_t hz);
 
 // Video state for the renderer.

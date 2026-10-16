@@ -1,6 +1,7 @@
 // The RSP, RDP and audio interface. Tasks are not executed: a graphics task goes to the renderer's hook and an
 // audio task to the mixer's, and their completion is reported through the same events the interrupts would raise.
 #include <stdio.h>
+#include <string.h>
 #include <emscripten.h>
 #include "rt.h"
 
@@ -39,6 +40,8 @@ static uint32_t ai_hz = 32000;
 static uint64_t ai_end[2];
 static uint32_t ai_len[2];
 static int ai_count;
+// Buffers queued so far, and how many of them found the interface with nothing left to play (the sound broke off).
+static uint32_t ai_queued, ai_gaps;
 
 void rt_set_gfx_hook(RspHook fn) { gfx_hook = fn; }
 void rt_set_audio_hook(RspHook fn) { audio_hook = fn; }
@@ -64,7 +67,8 @@ EMSCRIPTEN_KEEPALIVE uint32_t oot_rsp_task_kind(uint32_t i, uint32_t field) {
   return field == 0 ? task_kinds[i].type : field == 1 ? task_kinds[i].ucode : task_kinds[i].count;
 }
 
-void rsp_reset(void) { ai_count = 0; task_kind_n = 0; }
+void rsp_reset(void) { ai_count = 0; ai_queued = ai_gaps = 0; task_kind_n = 0; }
+uint32_t rt_ai_gaps(void) { return ai_gaps; }
 
 static void decode_task(uint32_t t, RspTask *out) {
   *out = (RspTask){
@@ -138,10 +142,26 @@ static void ai_finished(uint32_t a, uint32_t b) {
   event_send(EVENT_AI);
 }
 
+// The sound engine's tempo divisor, the float 20.03042 stored at 0x80125fb0 by the audio init (0x800b8d80-0x800b8d90) and
+// read by the tempo set-up that follows osAiSetFrequency (0x800b5a68). The engine advances its sequences once per audio
+// task and assumes 50 tasks a second (its refresh rate is the constant 50, 0x800b8d84); at 60 retraces a second the music
+// would play 1.2 times too fast, so a 60 Hz boot divides the engine's tempo by 1.2 (docs/re/tv-type.md).
+#define AUDIO_TEMPO_DIVISOR 0x80125fb0u
+static void slow_sequencer(void) {
+  uint32_t w = rd32(AUDIO_TEMPO_DIVISOR);
+  float f;
+  memcpy(&f, &w, 4);
+  if (f != 20.03042f) return;
+  f = f * RT_VI_HZ_PAL / RT_VI_HZ_NTSC;
+  memcpy(&w, &f, 4);
+  wr32(AUDIO_TEMPO_DIVISOR, w);
+}
+
 // osAiSetFrequency(hz) (0x800d3120): the divisor is the video clock word at 0x80006878 over the rate, rounded to the
 // nearest integer (the float add of 0.5 at 0x800d3154-0x800d316c); below 132 the call fails with -1 (0x800d31ec).
 // The rate it returns is the clock over the divisor (0x800d3234).
 void rt_osAiSetFrequency(Cpu *c) {
+  if (rt_vi_hz() == RT_VI_HZ_NTSC) slow_sequencer();
   float clock = (float)rd32(OS_VI_CLOCK);
   float wanted = (float)ARG(0);
   uint32_t divisor = (uint32_t)(clock / wanted + 0.5f);
@@ -153,6 +173,8 @@ void rt_osAiSetFrequency(Cpu *c) {
 // osAiSetNextBuffer(address, length): -1 when both buffers are taken.
 void rt_osAiSetNextBuffer(Cpu *c) {
   if (ai_count == 2) { RET(-1); return; }
+  if (ai_count == 0 && ai_queued > 0) ai_gaps++;
+  ai_queued++;
   uint64_t start = ai_count ? ai_end[ai_count - 1] : rt_clock();
   uint32_t length = ARG(1);
   ai_end[ai_count] = start + buffer_cycles(length);

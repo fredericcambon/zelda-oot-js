@@ -12,7 +12,7 @@ caller's stack from `sp+16`, floats in `$f12`) and returns in `$v0` (`$v0:$v1` f
 | `sched.c` | threads on fibers, the run queue, message queues, events, interrupt state |
 | `clock.c` | virtual clock, timed device events, `osGetCount`/`osGetTime`, timers |
 | `pi.c` | cartridge ROM and save memory, PI DMA, word access |
-| `vi.c` | VI contexts and the 50 Hz retrace |
+| `vi.c` | VI contexts and the retrace (50 Hz, or 60 Hz when booted as an NTSC cartridge; `docs/re/tv-type.md`) |
 | `cont.c` | controllers |
 | `rsp.c` | RSP task submission, RDP status, audio interface |
 | `osinit.c` | `osInitialize`, cache and TLB no-ops, `rt_reset` |
