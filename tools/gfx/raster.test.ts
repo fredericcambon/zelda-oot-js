@@ -139,3 +139,43 @@ describe('the shadow under Link', () => {
     expect(Math.max(r, g, b)).toBeLessThan(20);
   });
 });
+
+describe('fog', () => {
+  const TWO_CYCLES = 0x182c10;
+  // First blender cycle mixes the fog colour in by the shade alpha, which is the fog factor; the second cycle outputs the pixel.
+  const FOG_BLEND = 0xc8112078;
+  const FOG = 0x10000;
+
+  // A floor triangle with one vertex behind the eye (w < 0, z / w = 2): the fog of a pixel follows its own depth, so the
+  // ground just in front of the eye stays unfogged although that vertex is as foggy as can be.
+  it('does not take the fog of a vertex behind the eye into the pixels in front of it', () => {
+    const soft = new SoftRenderer();
+    const s = state({
+      otherModeH: TWO_CYCLES, otherModeL: FOG_BLEND, geometryMode: FOG, combine: combine([15, 15, 31, 3], [7, 7, 7, 6]),
+      primColor: { r: 0, g: 0, b: 0, a: 255, minLod: 0, lodFrac: 0 }, fogColor: { r: 255, g: 255, b: 255, a: 0 }, fog: { multiplier: 255, offset: 0 },
+    });
+    const batch: TriangleBatch = {
+      kind: 'triangles', state: s,
+      positions: Float32Array.of(-1, -1, -0.2, 1, 1, -1, -0.2, 1, 0, 2, -2, -1),
+      colors: new Float32Array(12).fill(1), uvs: new Float32Array(6), fog: Float32Array.of(0, 0, 1),
+    };
+    soft.drawTask(task(batch));
+    expect(pixel(soft.image(IMAGE)!, 160, 200)[0]).toBeLessThan(5);
+  });
+
+  it('fades to the fog colour with the depth of the pixel', () => {
+    const at = (z: number) => {
+      const soft = new SoftRenderer();
+      const s = state({
+        otherModeH: TWO_CYCLES, otherModeL: FOG_BLEND, geometryMode: FOG, combine: combine([15, 15, 31, 3], [7, 7, 7, 6]),
+        primColor: { r: 0, g: 0, b: 0, a: 255, minLod: 0, lodFrac: 0 }, fogColor: { r: 255, g: 255, b: 255, a: 0 }, fog: { multiplier: 255, offset: 0 },
+      });
+      soft.drawTask(task(screen(s, z)));
+      return pixel(soft.image(IMAGE)!, 160, 120)[0];
+    };
+    expect(at(0.5)).toBeGreaterThan(120);
+    expect(at(0.5)).toBeLessThan(135);
+    expect(at(-0.5)).toBe(0);
+    expect(at(1)).toBe(255);
+  });
+});

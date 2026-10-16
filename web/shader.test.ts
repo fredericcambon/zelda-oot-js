@@ -64,9 +64,9 @@ describe('shader generation', () => {
     expect(src).toContain('t1.rgb * vColor.rgb');
   });
 
-  it('uses the fog factor as shade alpha only with the fog geometry bit', () => {
+  it("uses the fog factor of the pixel's depth as shade alpha only with the fog geometry bit", () => {
     expect(fragmentSource(specOf(state()))).toContain('float shadeAlpha = vColor.a;');
-    expect(fragmentSource(specOf(state({ geometryMode: 0x10000 })))).toContain('float shadeAlpha = vFog;');
+    expect(fragmentSource(specOf(state({ geometryMode: 0x10000 })))).toContain('clamp(vDepth.x / vDepth.y * uFogLine.x + uFogLine.y, 0.0, 255.0) / 255.0');
   });
 
   it('turns on bilinear filtering, alpha test and framebuffer blending from the other modes', () => {

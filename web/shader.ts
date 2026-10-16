@@ -288,16 +288,15 @@ export const VERTEX_SHADER = `#version 300 es
 layout(location = 0) in vec4 aPos;
 layout(location = 1) in vec4 aColor;
 layout(location = 2) in vec2 aUv;
-layout(location = 3) in float aFog;
 out vec4 vColor;
 out vec2 vUv;
-out float vFog;
+out vec2 vDepth;
 void main() {
   // A vertex in front of the near plane is drawn at the nearest depth instead of being clipped away.
   gl_Position = vec4(aPos.xy, aPos.w > 0.0 ? max(aPos.z, -aPos.w) : aPos.z, aPos.w);
   vColor = aColor;
   vUv = aUv;
-  vFog = aFog;
+  vDepth = aPos.zw;
 }
 `;
 
@@ -308,12 +307,14 @@ precision highp int;
 ${spec.bilerp ? '#define BILERP 1' : ''}
 in vec4 vColor;
 in vec2 vUv;
-in float vFog;
+in vec2 vDepth;
 out vec4 outColor;
 uniform vec4 uPrim;
 uniform vec4 uEnv;
 uniform vec4 uFog;
 uniform vec4 uBlend;
+// Fog factor of a pixel: clamp(z / w * x + y, 0, 255) / 255.
+uniform vec2 uFogLine;
 uniform float uPrimLod;
 uniform sampler2D uTex0;
 uniform sampler2D uTex1;
@@ -327,7 +328,7 @@ ${WRAP_FUNCTION}
 ${textureFunction(0)}
 ${textureFunction(1)}
 void main() {
-  float shadeAlpha = ${spec.fogInShadeAlpha ? 'vFog' : 'vColor.a'};
+${spec.fogInShadeAlpha ? '  float shadeAlpha = vDepth.y > 0.0 ? clamp(vDepth.x / vDepth.y * uFogLine.x + uFogLine.y, 0.0, 255.0) / 255.0 : 0.0;' : '  float shadeAlpha = vColor.a;'}
   vec4 t0 = sample0(vUv);
   vec4 t1 = sample1(vUv);
 ${combinerSource(spec)}

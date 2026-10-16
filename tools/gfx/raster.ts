@@ -13,7 +13,6 @@ interface Vertex {
   pos: [number, number, number, number];
   color: [number, number, number, number];
   uv: [number, number];
-  fog: number;
 }
 
 interface Inputs {
@@ -194,7 +193,7 @@ export class SoftRenderer {
       verts.push({
         pos: [b.positions[i * 4]!, b.positions[i * 4 + 1]!, b.positions[i * 4 + 2]!, b.positions[i * 4 + 3]!],
         color: [b.colors[i * 4]!, b.colors[i * 4 + 1]!, b.colors[i * 4 + 2]!, b.colors[i * 4 + 3]!],
-        uv: [b.uvs[i * 2]!, b.uvs[i * 2 + 1]!], fog: b.fog[i]!,
+        uv: [b.uvs[i * 2]!, b.uvs[i * 2 + 1]!]
       });
     }
     for (let i = 0; i + 2 < n; i += 3) this.triangle(b.state, img, verts[i]!, verts[i + 1]!, verts[i + 2]!);
@@ -245,7 +244,7 @@ export class SoftRenderer {
         const qs = q0 + q1 + q2;
         const mix = (f: (v: Vertex) => number) => (q0 * f(a) + q1 * f(b) + q2 * f(c)) / qs;
         const color: [number, number, number, number] = [mix((v) => v.color[0]), mix((v) => v.color[1]), mix((v) => v.color[2]), mix((v) => v.color[3])];
-        const fog = mix((v) => v.fog);
+        const fog = Math.min(255, Math.max(0, z * state.fog.multiplier + state.fog.offset)) / 255;
         if (this.pixel(state, spec, img, x, y, color, mix((v) => v.uv[0]), mix((v) => v.uv[1]), fog) && depthOn && (l & OtherL.Z_UPDATE)) this.depth[di] = z;
       }
     }
@@ -324,7 +323,7 @@ function clipNear(poly: Vertex[]): Vertex[] {
       out.push({
         pos: cur.pos.map((v, k) => lerp(v, nxt.pos[k]!)) as Vertex['pos'],
         color: cur.color.map((v, k) => lerp(v, nxt.color[k]!)) as Vertex['color'],
-        uv: [lerp(cur.uv[0], nxt.uv[0]), lerp(cur.uv[1], nxt.uv[1])], fog: lerp(cur.fog, nxt.fog),
+        uv: [lerp(cur.uv[0], nxt.uv[0]), lerp(cur.uv[1], nxt.uv[1])]
       });
     }
   }
