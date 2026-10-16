@@ -166,7 +166,7 @@ Low-half bits used below (from the RDP descriptions on n64brew.dev): bit 0 alpha
 
 ### Floor brightening: what was checked after the report that it covers a large area
 
-- Link's house (frames 19000-19400, Link walking): the floor pixels sampled at six screen points stay `0,70,0` in every frame, so nothing there changes the floor's colour; the room draws without the background and without lit floor geometry.
+- Link's house (frames 19000-19400, Link walking): the floor pixels sampled at six screen points stay `0,70,0` in every frame, so nothing there changes the floor's colour; the room drew without its background picture (section 8) and without lit floor geometry.
 - Lights of the lit draws from frame 13000 on (forest): always two directional records (`46465A`/`FFFFFF`, directions `00 88 EC` and `00 78 14`, i.e. (0,-120,-20) and (0,120,20)) and an ambient `505050`; no light carries a position or an attenuation, and the pad byte of each light varies from draw to draw without effect on the directions. No Navi light appears as an extra light record. The sum `ambient + light * max(0, n.d)` is clamped at 1 by the interpreter, which is unverified against hardware (section 5).
 - Not found: a draw that lightens the floor in the frames reachable headless. The playable forest, where it was reported, cannot be reached.
 
@@ -176,3 +176,49 @@ Low-half bits used below (from the RDP descriptions on n64brew.dev): bit 0 alpha
 - **Cause found in the draws.** At frame 13700 of the new-game script, 534 of 2,181 triangles have a vertex with `w <= 0.5`; vertices behind the eye have `w < 0` and a clip `z` of the opposite sign, so `z / w` is slightly above 1 (1.02 to 3.0) and the interpreter's per-vertex fog, `clamp(z / w * multiplier + offset, 0, 255) / 255` with the game's `multiplier = 32000`, `offset = -31744`, comes out at 1.0 for every one of them. A floor triangle with such a vertex gets fog interpolated from 0 (front vertices) to 1 (that vertex): the part in front of the eye is tinted by the clip distance and changes as the vertex crosses the plane while Link walks.
 - **Microcode.** The per-vertex fog is the low byte of `max(v, 0x7F00)` for a saturated 16-bit depth value `v` (`vge` against `0x7F00` at `0x15D8`, stored into the vertex's alpha byte by `sbv` at `0x15F4`/`0x15FC` and the loop's tail at `0x1758`/`0x1760` when the geometry word has the fog bit), i.e. a clamp to 0..255 of a value linear in the depth, as the interpreter computes. What the microcode stores for a vertex with `w <= 0`, and what the clipper's new vertices at the `w` plane get, was not established: the scratch interpreter reproduced screen x within one unit but not the fog byte, so it was not used as evidence.
 - **Formula used.** The fog factor of a pixel is `clamp(z / w * multiplier + offset, 0, 255) / 255` from the interpolated clip `z` and `w` of that pixel (`web/shader.ts` varying `vDepth`, uniform `uFogLine`; `tools/gfx/raster.ts`), not an interpolation of per-vertex values. Since `z / w` is affine in screen space this equals the hardware's interpolation of per-vertex values whenever no vertex is clamped; it differs only on triangles that span the end of the fog range, where the per-pixel value is the one the fog range describes, and it never lets a vertex behind the eye colour the ground in front of it. `tools/gfx/raster.test.ts` has a floor triangle with a vertex at `z / w = 2` behind the eye: the pixels near the eye stay unfogged (the per-vertex version gives 51 of 255 there).
+
+## 8. Background pictures: the 2D microcode (`DD`, `E1`, `09`, `0A`)
+
+Link's house (scene 52) is a pre-rendered room: its picture is the JPEG that the RSP task of `runtime/jpeg.c` decodes (`docs/re/newgame.md`), and the display list draws it with commands the 3D microcode does not have. Before, the interpreter returned three unknown commands (`DD`, `0A`, `DD`) and two stray `E1` half-words per frame there.
+
+- **The list.** At frame 19002 (list around `0x8017AC00`), after the room's own list (`DE000000 030023A8`):
+
+  ```
+  E1000000 001127E0   data pointer of a microcode
+  DD0007FF 000E3250   microcode text; the game's builder converts both with 0x800AD11C / 0x800AD10C
+  DE010000 8017AC38   branch over the record that follows
+  <40 bytes>          the picture record
+  E7000000 00000000   pipe sync
+  EF200000 00000001   set other modes: cycle type bits 21:20 = 2, copy
+  0A000000 8017AC10   the picture command; w1 = address of the record
+  E7000000 00000000
+  E1000000 801123C0   data of the 3D microcode (the task record's data, section 1)
+  DD0007FF 800E1EC0   text of the 3D microcode (the task record's text)
+  ```
+
+  The builder is `0x80080264` (list pointer in `a0`, picture address in `a1`, size and frame arguments after); the E1/DD pairs are written at `0x80080730`-`0x80080770` and `0x8008082C`-`0x80080868`. `E1` carries the data pointer and `DD` the text pointer of the microcode to run for the commands that follow; the game switches to the 2D one for the picture and back after it.
+- **The microcode is S2DEX.** The data at `0x801127E0` holds `RSP Gfx[Safe] S2DEX fifo 2.05` at offset `0x138`; the interpreter takes `DD` as "2D microcode loaded" when the data announced by the last `E1` contains `S2DEX` in its first 1 KiB. Its text (`0x800E3250`, 4 KiB, IMEM `0x1080`; disassembled with `tools/audio/rspdis.ts`) dispatches like the 3D one (`0x11B4`-`0x11C8`: `lhu` of the halfword at data `0x370 + 2 * opcode`, then `jr`). Table entries: opcode `09` goes to `0x1B84`, `0A` to `0x1208`, `0B` to `0x10E8`. `0A`'s handler (`0x1208`) starts two DMAs and reads the record into data `0x3B0`-`0x3D7` (`addi $s3, $zero, 0x27` = 40 bytes at `0x1210`), and emits texture rectangles (`lui $t4, 0xE400` at `0x1384`) and tile settings (`0x35...` words at `0x1288`, `0x12C0`).
+- **Which opcode is which mode.** The builder uses `0A` after `EF` with cycle type 2 (copy) and no combiner write (`0x80080468`-`0x80080488`), and `09` after `EF ..CF0`, a combiner (`FCFFFFFF FFFCFC7E`) and `0B 0000000C` (`0x800804A0`-`0x80080530`), i.e. one-cycle mode with scaling fields (`0x400` written at record offsets 28 and 30). Only the copy form runs in the 19,060 frames checked (840 `0A`, no `09`); the one-cycle reading is from the builder only, and which of offsets 28 and 30 scales which axis is not observed (both are written with the same value).
+- **The record (40 bytes).** Offsets written by the builder, with the values of Link's house (dump at `0x8017AC10`, `0000 0500 0000 0500 0000 03C0 0000 03C0 0300 2480 FFF4 0002 ...`):
+
+  | Offset | Size | Field | House | Evidence |
+  | --- | --- | --- | --- | --- |
+  | 0 | u16 | image x, 10.5 | 0 | `sh $zero, 0($a0)` `0x800802E4` |
+  | 2 | u16 | image width, 10.2 | `0x500` = 320 px | `width << 2`, `0x800802F4`-`0x800802F8` |
+  | 4 | s16 | frame x, 10.2 | 0 | float argument x 4, `0x80080318`-`0x80080324` |
+  | 6 | u16 | frame width, 10.2 | `0x500` | same value as offset 2, `0x80080430` |
+  | 8 | u16 | image y, 10.5 | 0 | `sh $zero, 8($a0)` `0x80080300` |
+  | 10 | u16 | image height, 10.2 | `0x3C0` = 240 px | `height << 2`, `0x80080330`-`0x80080334` |
+  | 12 | s16 | frame y, 10.2 | 0 | float argument x 4, `0x80080344`-`0x80080360` |
+  | 14 | u16 | frame height, 10.2 | `0x3C0` | same value as offset 10, `0x80080434` |
+  | 16 | u32 | picture address (segmented) | `0x03002480` | argument `a1`, `0x8008033C` |
+  | 20 | u16 | load mode | `0xFFF4` | constant, `0x80080340`; the microcode tests the sign of the byte at 21 (`lb`, `0x139C`-`0x13A8`) |
+  | 22 | u8 | texel format | 0 (RGBA) | argument, `0x80080348`; microcode `lbu` of data `0x3C6` (`0x12A8`) |
+  | 23 | u8 | texel size | 2 (16-bit) | argument, `0x80080364`; microcode `lbu` of data `0x3C7` (`0x12AC`) |
+  | 24, 26 | u16 | palette, flip | 0 | `0x80080368`, `0x8008036C` |
+  | 28, 30 | u16 | scales, 5.10 | `0x400` in the one-cycle form only | `0x800804AC`-`0x800804B0` |
+
+  Bytes after offset 27 are not written in the copy form (the dump shows leftovers there: `0x0053`, `0x0018`), so the interpreter reads the scales only for opcode `09`. The picture at `0x03002480` is segment 3 (set by `DB06000C 80218950`, the room file) plus `0x2480` = `0x8021ADD0`; its first 32 bytes equal those at the decoded image `0x80129E80`, 320 x 240 RGBA16 with rows 640 bytes apart.
+- **Meaning (what the interpreter does).** The command draws the picture's window into the frame rectangle: one texture rectangle over `frame x, y, w, h` (10.2 units; a copy-mode rectangle includes its last pixel, so the corner is `frame + size - 4`), with the texture the whole `image width / 4 x image height / 4` picture decoded from the record's address and its start at image x, y. A copy-mode rectangle steps one texel per pixel (`dsdx = 4096` in the four-pixels-per-step convention of `TEXRECT`, `dtdy = 1024`); the one-cycle form steps `1024 / scale` (5.10). The cycle type, combiner, scissor and colour image are those the game set before the command. The strips the microcode splits the draw into (a band loaded into TMEM, then a rectangle) are not modelled: TMEM holds 4 KiB and the picture is 150 KiB, but the result on screen is the same window.
+- **Depth.** A copy-mode rectangle neither reads nor writes depth (the renderers' rule for rectangles). The picture comes after the room's list and before the actors, so it covers what was drawn before it, and Link, the objects and the HUD, drawn after, are in front. At frame 19000, 95% of the 76,800 pixels equal the decoded picture and the rest is Link, the furniture in front and the HUD; the headless test checks that share and that no unknown command or problem occurs in the house frames.
+- **Not covered.** `0B` (written only in the one-cycle form) is still an unknown command; no frame of the new-game run contains it. The other commands of the 2D microcode (object rectangles and sprites) never occur in the 19,060 frames of the script.

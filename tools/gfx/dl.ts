@@ -158,6 +158,17 @@ function mul(a: Mat, b: Mat): Mat {
 const MAX_DL_DEPTH = 32;
 const VERTEX_SLOTS = 32;
 const TMEM_BYTES = 4096;
+/** Text in the data segment of the 2D microcode, and how far into the segment it is searched for. */
+const S2DEX_SIGNATURE = 'S2DEX';
+const MICROCODE_DATA_SCAN = 0x400;
+const BG_RECORD_BYTES = 40;
+const BG_CACHE_ENTRIES = 8;
+
+function checksum(bytes: Uint8Array): number {
+  let h = 0;
+  for (let i = 0; i < bytes.length; i++) h = (Math.imul(h, 31) + bytes[i]!) | 0;
+  return h >>> 0;
+}
 
 interface Vertex {
   clip: [number, number, number, number];
@@ -221,6 +232,11 @@ export class DisplayListInterpreter {
   private snapshot: DrawState | null = null;
   private tmemVersion = 0;
   private textureCache = new Map<string, DecodedTexture | null>();
+  /** Decoded background pictures by address and checksum; kept across runs so a renderer can reuse its upload of an unchanged picture. */
+  private bgImages = new Map<string, DecodedTexture>();
+  /** Data pointer of the microcode the last RDPHALF_1 announced, and whether the loaded microcode is the 2D one. */
+  private ucodeData = 0;
+  private ucode2d = false;
   private result!: DisplayListResult;
   private current: { batch: TriangleBatch; pos: number[]; col: number[]; uv: number[]; fog: number[] } | null = null;
 
@@ -316,6 +332,8 @@ export class DisplayListInterpreter {
     this.snapshot = null;
     this.tmemVersion = 0;
     this.textureCache.clear();
+    this.ucodeData = 0;
+    this.ucode2d = false;
     this.current = null;
   }
 
@@ -360,7 +378,13 @@ export class DisplayListInterpreter {
       case Op.MTX: this.loadMatrix(w0, w1); break;
       case Op.MOVEWORD: this.moveWord(w0, w1); break;
       case Op.MOVEMEM: this.moveMem(w0, w1); break;
-      case Op.RDPHALF_1:
+      case Op.RDPHALF_1: this.ucodeData = w1; break;
+      case Op.LOAD_UCODE: this.ucode2d = this.hasSignature(this.ucodeData, S2DEX_SIGNATURE); break;
+      case Op.BG_1CYC:
+      case Op.BG_COPY:
+        if (!this.ucode2d) return false;
+        this.background(op, w1);
+        break;
       case Op.RDPHALF_2:
         this.problem(`stray rdp half-word 0x${op.toString(16)}`);
         break;
@@ -601,6 +625,59 @@ export class DisplayListInterpreter {
       kind: 'texrect', state: this.takeSnapshot(tile),
       xl: (w0 >>> 12) & 0xfff, yl: w0 & 0xfff, xh: (w1 >>> 12) & 0xfff, yh: w1 & 0xfff, tile,
       s: half1 >> 16, t: (half1 << 16) >> 16, dsdx: (half2 >> 16), dtdy: (half2 << 16) >> 16,
+    });
+  }
+
+  /** True when the 1 KiB at the segmented address holds the text `signature`. */
+  private hasSignature(a: number, signature: string): boolean {
+    const p = this.address(a);
+    if (p < 0) return false;
+    const text = Array.from(signature, (c) => c.charCodeAt(0));
+    const end = Math.min(this.ram.length, p + MICROCODE_DATA_SCAN) - text.length;
+    for (let i = p; i <= end; i++) if (text.every((c, k) => this.ram[i + k] === c)) return true;
+    return false;
+  }
+
+  /**
+   * A background picture command of the 2D microcode: `w1` addresses a 40-byte record (layout in docs/re/display-lists.md).
+   * The microcode answers with strips of texture rectangles; here the whole picture is one texture rectangle, whose
+   * cycle type is the one the game set.
+   */
+  private background(op: number, w1: number): void {
+    const at = this.address(w1);
+    if (at < 0 || at + BG_RECORD_BYTES > this.ram.length) return;
+    const u16 = (o: number) => this.dv.getUint16(at + o);
+    const s16 = (o: number) => this.dv.getInt16(at + o);
+    const imageX = u16(0), imageW = u16(2), frameX = s16(4), frameW = u16(6);
+    const imageY = u16(8), imageH = u16(10), frameY = s16(12), frameH = u16(14);
+    const fmt = this.dv.getUint8(at + 22), siz = this.dv.getUint8(at + 23);
+    const width = imageW >> 2, height = imageH >> 2;
+    const src = this.address(this.dv.getUint32(at + 16));
+    if (src < 0 || width === 0 || height === 0 || fmt === Fmt.CI || fmt === Fmt.YUV) {
+      if (src >= 0) this.problem(`background picture with unsupported format ${fmt}/${siz} or size ${width}x${height}`);
+      return;
+    }
+    const rowBytes = this.rowBytesOf(width, siz);
+    const bytes = Math.min(rowBytes * height, this.ram.length - src);
+    const sum = checksum(this.ram.subarray(src, src + bytes));
+    const key = `${src}:${width}x${height}:${fmt}${siz}:${sum}`;
+    let image = this.bgImages.get(key);
+    if (!image) {
+      image = { ...decodeTexture({ fmt, siz, width, height, rowBytes, data: this.ram, offset: src }), tile: 0 };
+      if (this.bgImages.size >= BG_CACHE_ENTRIES) this.bgImages.clear();
+      this.bgImages.set(key, image);
+    }
+    this.finishBatch();
+    const state = this.takeSnapshot(0);
+    const tiles = state.tiles.map((t, i) => (i === 0 ? { ...newTile(), fmt, siz, line: Math.ceil(rowBytes / 8) } : t));
+    this.snapshot = null;
+    // The copy-mode rectangle includes its last pixel and steps four pixels per texel step; the one-cycle one does not.
+    const copy = op === Op.BG_COPY;
+    const step = (scaleAt: number) => (copy ? 1024 : Math.round(1048576 / Math.max(1, this.dv.getUint16(at + scaleAt))));
+    this.result.batches.push({
+      kind: 'texrect', state: { ...state, tiles, textures: [image, null] },
+      xh: frameX, yh: frameY, xl: frameX + frameW - (copy ? 4 : 0), yl: frameY + frameH - (copy ? 4 : 0), tile: 0,
+      s: imageX, t: imageY, dsdx: copy ? 4096 : step(28), dtdy: step(30),
     });
   }
 

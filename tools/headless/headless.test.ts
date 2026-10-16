@@ -77,9 +77,13 @@ async function bootCapturing(capture: ReadonlySet<number>) {
   const interpreter = new DisplayListInterpreter();
   const soft = new SoftRenderer();
   let frame = 0;
+  const unknown: string[] = [];
   const game = await bootGame(moduleUrl, cartridge, {
     onGfxTask: (task) => {
-      if ([...capture].some((c) => frame <= c && frame > c - DRAW_LEAD)) soft.drawTask(interpreter.run(task.ram, task.data));
+      if (![...capture].some((c) => frame <= c && frame > c - DRAW_LEAD)) return;
+      const result = interpreter.run(task.ram, task.data);
+      unknown.push(...result.unknown.map((u) => `frame ${frame} 0x${u.w0.toString(16)}`), ...result.problems);
+      soft.drawTask(result);
     },
   });
   const shots = new Map<number, Uint8Array>();
@@ -100,7 +104,7 @@ async function bootCapturing(capture: ReadonlySet<number>) {
       }
     }
   };
-  return { game, play, shots, jpegTasks: () => jpegTasks };
+  return { game, play, shots, unknown, jpegTasks: () => jpegTasks };
 }
 
 function differingPixels(a: Uint8Array, b: Uint8Array): number {
@@ -251,6 +255,19 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
     });
     for (let a = 0; a < images.length; a++)
       for (let b = a + 1; b < images.length; b++) expect(differingPixels(images[a]!, images[b]!), `frames ${a} and ${b} differ`).toBeGreaterThan(300);
+
+    // The house is drawn with no unknown command and no interpreter problem, and the room's picture is on screen: most pixels
+    // of the frame under control are the decoded picture's, the rest being Link, the objects and the HUD in front of it.
+    expect(run.unknown).toEqual([]);
+    const picture = run.game.ram().subarray(at, at + 320 * 240 * 2);
+    const shot = run.shots.get(CONTROL_FRAME)!;
+    let same = 0;
+    for (let i = 0; i < 320 * 240; i++) {
+      const px = (picture[i * 2]! << 8) | picture[i * 2 + 1]!;
+      const [r, g, b] = [(px >>> 11) & 31, (px >>> 6) & 31, (px >>> 1) & 31].map((c) => (c << 3) | (c >> 2));
+      if (shot[i * 4] === r && shot[i * 4 + 1] === g && shot[i * 4 + 2] === b) same++;
+    }
+    expect(same / (320 * 240)).toBeGreaterThan(0.85);
   }, 3_600_000);
 
   it('restores a saved state into a fresh game and replays the same frames, pictures, sound, position and memory', async () => {
