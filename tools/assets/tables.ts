@@ -1,127 +1,89 @@
-// Finds, by structure, the tables in the main code file that name files of the file table: the object table, the
-// scene table and the audio index tables. Each is checked against the code that reads it by `classify.ts`.
-
+// Finds the tables of file ranges in the main code file's data: runs of records that each hold the virtual start and
+// end of a file of the file table, the way the game's loaders read them to fetch a file.
 import type { FileEntry } from '../rom/filetable.ts';
 
-export interface RecordTable {
-  /** RAM address of the first record. */
-  address: number;
+export interface TableMember {
+  /** Record number inside the table. */
+  record: number;
+  /** Byte offset of the pair inside the record. */
+  field: number;
+  file: number;
+}
+
+export interface RangeTable {
+  /** Offset of the first record in the code file. */
+  offset: number;
   stride: number;
-  /** Records, blank ones included. */
-  count: number;
+  /** Number of records, empty ones (a zero pair) included. */
+  records: number;
+  members: TableMember[];
 }
 
-export interface CodeData {
-  base: number;
-  bytes: Uint8Array;
-}
-
-const word = (dv: DataView, o: number) => dv.getUint32(o);
+const MAX_STRIDE = 64;
+/** A table needs this many records that name a file; shorter runs are coincidences of two adjacent words. */
+const MIN_MEMBERS = 3;
 
 /**
- * The longest run of records at one stride in which every record is either blank or names a file's exact virtual range.
- * Trailing blank records are not part of the run. `accept` is given the offset of a record and returns 'blank', 'valid' or false.
+ * A pair is two adjacent words equal to a file's virtual start and end. Records of one table sit `stride` bytes
+ * apart, so the pairs of a table form an arithmetic sequence; records that hold nothing do not break it.
  */
-function longestRun(code: CodeData, stride: number, step: number, accept: (dv: DataView, o: number) => 'blank' | 'valid' | false, minValid: number): RecordTable | undefined {
-  const dv = new DataView(code.bytes.buffer, code.bytes.byteOffset, code.bytes.byteLength);
-  let best: { start: number; count: number; valid: number } | undefined;
-  for (let start = 0; start + stride <= code.bytes.length; start += step) {
-    if (accept(dv, start) !== 'valid') continue;
-    // Skip starts that continue a run beginning one record earlier: the earlier start finds the same run.
-    if (start >= stride && accept(dv, start - stride) === 'valid') continue;
-    let count = 0, valid = 0, lastValid = 0;
-    for (let o = start; o + stride <= code.bytes.length; o += stride) {
-      const a = accept(dv, o);
-      if (a === false) break;
-      count++;
-      if (a === 'valid') { valid++; lastValid = count; }
-    }
-    if (valid >= minValid && (!best || valid > best.valid)) best = { start, count: lastValid, valid };
+export function findRangeTables(data: Uint8Array, from: number, files: FileEntry[]): RangeTable[] {
+  const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const byStart = new Map(files.filter((f) => f.virtualStart > 0).map((f) => [f.virtualStart, f]));
+  const pairAt = new Map<number, number>();
+  for (let o = from; o + 8 <= data.length; o += 4) {
+    const f = byStart.get(dv.getUint32(o));
+    if (f && dv.getUint32(o + 4) === f.virtualEnd) pairAt.set(o, f.index);
   }
-  return best && { address: code.base + best.start, stride, count: best.count };
-}
+  // An unused record is a zero pair, or a file's start twice (an empty range).
+  const isEmpty = (o: number) => o >= 0 && o + 8 <= data.length && dv.getUint32(o + 4) === dv.getUint32(o) && (dv.getUint32(o) === 0 || byStart.has(dv.getUint32(o)));
 
-function fileRange(byStart: Map<number, FileEntry>, start: number, end: number): boolean {
-  const f = byStart.get(start);
-  return f !== undefined && f.virtualEnd === end;
-}
-
-/**
- * Records of eight bytes, `{virtual start, virtual end}`, with a blank first record. The longest such run in the
- * main code file is the object table.
- */
-export function findObjectTable(code: CodeData, files: FileEntry[]): RecordTable | undefined {
-  const byStart = new Map(files.map((f) => [f.virtualStart, f]));
-  const table = longestRun(code, 8, 8, (dv, o) => {
-    const s = word(dv, o), e = word(dv, o + 4);
-    // An object removed from the ROM keeps its slot with an empty range.
-    if (s === e) return 'blank';
-    return fileRange(byStart, s, e) ? 'valid' : false;
-  }, 100);
-  if (!table) return undefined;
-  // The run's first record is id 0 and blank: the table starts one record earlier than the first named file.
-  const dv = new DataView(code.bytes.buffer, code.bytes.byteOffset, code.bytes.byteLength);
-  const first = table.address - code.base;
-  if (first >= 8 && word(dv, first - 8) === 0 && word(dv, first - 4) === 0) return { ...table, address: table.address - 8, count: table.count + 1 };
-  return table;
-}
-
-/**
- * Records of 20 bytes: `{scene start, scene end, title start, title end, four bytes}` where the title range is a file
- * or zero. The longest such run is the scene table.
- */
-export function findSceneTable(code: CodeData, files: FileEntry[]): RecordTable | undefined {
-  const byStart = new Map(files.map((f) => [f.virtualStart, f]));
-  return longestRun(code, 20, 4, (dv, o) => {
-    if (!fileRange(byStart, word(dv, o), word(dv, o + 4))) return false;
-    const ts = word(dv, o + 8), te = word(dv, o + 12);
-    return (ts === 0 && te === 0) || fileRange(byStart, ts, te) ? 'valid' : false;
-  }, 50);
-}
-
-export interface IndexTable {
-  address: number;
-  /** Records after the 16-byte header. */
-  count: number;
-  entries: { offset: number; size: number; medium: number; flags: number }[];
-  /** Highest `offset + size`. */
-  extent: number;
-  /** The file whose size the entries fill. */
-  file: FileEntry;
-}
-
-const MAX_INDEX_ENTRIES = 600;
-const MIN_INDEX_EXTENT = 0x10000;
-/** Entries end at the file's end, less padding up to this many bytes. */
-const INDEX_PADDING = 0x40;
-
-/**
- * Tables of `{u16 count, u16 medium, u32 base = 0, 8 bytes}` followed by 16-byte records `{offset, size, medium, ...}`
- * whose ranges fill one file of the file table (the audio loader adds the file's ROM address to every offset: the
- * routine at 0x800B77A8 stores `+4` and adds it to `+0x10` of each record).
- */
-export function findIndexTables(code: CodeData, files: FileEntry[]): IndexTable[] {
-  const dv = new DataView(code.bytes.buffer, code.bytes.byteOffset, code.bytes.byteLength);
-  const out: IndexTable[] = [];
-  for (let o = 0; o + 32 <= code.bytes.length; o += 4) {
-    const count = dv.getInt16(o);
-    if (count < 2 || count > MAX_INDEX_ENTRIES || dv.getUint16(o + 2) > 3 || word(dv, o + 4) !== 0) continue;
-    if (o + 16 + count * 16 > code.bytes.length) continue;
-    const entries: IndexTable['entries'] = [];
-    let extent = 0, ok = true;
-    for (let i = 0; i < count && ok; i++) {
-      const e = o + 16 + i * 16;
-      const offset = word(dv, e), size = word(dv, e + 4), medium = dv.getUint8(e + 8);
-      if (medium > 4 || size > 0x1000000 || offset > 0x1000000) ok = false;
-      entries.push({ offset, size, medium, flags: word(dv, e + 8) & 0xffffff });
-      extent = Math.max(extent, offset + size);
+  const taken = new Set<number>();
+  const tables: RangeTable[] = [];
+  const positions = [...pairAt.keys()].sort((a, b) => a - b);
+  // Longest run first, so that a table is not cut into pieces by a shorter stride that happens to fit part of it.
+  const runs: { start: number; stride: number; positions: number[]; end: number }[] = [];
+  for (const o of positions) {
+    for (let stride = 8; stride <= MAX_STRIDE; stride += 4) {
+      if (pairAt.has(o - stride) || (isEmpty(o - stride) && pairAt.has(o - 2 * stride))) continue;
+      const hit = [o];
+      let q = o + stride, end = o + 8;
+      for (;;) {
+        if (pairAt.has(q)) { hit.push(q); end = q + 8; } else if (!isEmpty(q)) break;
+        q += stride;
+        if (q + 8 > data.length) break;
+      }
+      if (hit.length >= MIN_MEMBERS) runs.push({ start: o, stride, positions: hit, end });
     }
-    if (!ok || extent < MIN_INDEX_EXTENT) continue;
-    const file = files.find((f) => {
-      const size = f.virtualEnd - f.virtualStart;
-      return size >= extent && size - extent <= INDEX_PADDING;
-    });
-    if (file) out.push({ address: code.base + o, count, entries, extent, file });
+  }
+  runs.sort((a, b) => b.positions.length - a.positions.length || a.stride - b.stride);
+  for (const run of runs) {
+    if (run.positions.some((p) => taken.has(p))) continue;
+    for (const p of run.positions) taken.add(p);
+    // Unused records in front of the first used one still count: the game indexes from the real start of the table.
+    let start = run.start;
+    while (start - run.stride >= from && isEmpty(start - run.stride)) start -= run.stride;
+    const members = run.positions.map((p) => ({ record: Math.round((p - start) / run.stride), field: 0, file: pairAt.get(p)! }));
+    tables.push({ offset: start, stride: run.stride, records: Math.round((run.end - start) / run.stride), members });
+  }
+  return mergeFields(tables.sort((a, b) => a.offset - b.offset));
+}
+
+/**
+ * Two runs of the same stride whose starts differ by less than the stride are two fields of one table (a record that
+ * holds two ranges): fold them into one table with the field offsets set.
+ */
+function mergeFields(tables: RangeTable[]): RangeTable[] {
+  const out: RangeTable[] = [];
+  for (const t of tables) {
+    const base = out.find((b) => b.stride === t.stride && t.offset > b.offset && t.offset < b.offset + b.stride && b.members.some((m) => m.field === 0));
+    if (!base) {
+      out.push({ ...t, members: [...t.members] });
+      continue;
+    }
+    const field = t.offset - base.offset;
+    for (const m of t.members) base.members.push({ ...m, field });
+    base.records = Math.max(base.records, t.records);
   }
   return out;
 }

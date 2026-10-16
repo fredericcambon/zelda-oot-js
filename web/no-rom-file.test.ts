@@ -10,7 +10,7 @@ const sources = readdirSync(__dirname)
 
 describe('web shell', () => {
   it('has sources to check', () => {
-    expect(sources.map((s) => s.name)).toEqual(expect.arrayContaining(['main.ts', 'rom.ts', 'index.html']));
+    expect(sources.map((s) => s.name)).toEqual(expect.arrayContaining(['main.ts', 'cartridge.ts', 'index.html']));
   });
 
   it.each([
@@ -21,7 +21,7 @@ describe('web shell', () => {
     for (const s of sources) expect(s.text, s.name).not.toMatch(pattern);
   });
 
-  it('requests only the game files under /rom/, /oot.js and the module it loads', () => {
+  it('requests only the game files under /assets/, /oot.js and the module it loads', () => {
     const fetched = sources.flatMap((s) => [...s.text.matchAll(/fetch\(\s*([^)]*)\)/g)].map((m) => m[1]!));
     for (const arg of fetched) expect(arg).toMatch(/base|index\.json/);
   });

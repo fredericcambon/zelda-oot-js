@@ -1,10 +1,10 @@
-// `npm run headless -- --frames N [--trace]`: boots the built game (dist/oot.js) in Node with no display and
-// reports what it did frame by frame.
+// `npm run headless -- --frames N [--trace]`: boots the built game (dist/oot.js) from dist/assets in Node with no
+// display and reports what it did frame by frame.
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { romPathFromEnv } from '../analyze/context.ts';
+import { readCartridge } from '../assets/write.ts';
 import { DisplayListInterpreter } from '../gfx/dl.ts';
 import { encodePng } from '../gfx/png.ts';
 import { HEIGHT, SoftRenderer, WIDTH } from '../gfx/raster.ts';
@@ -25,7 +25,8 @@ async function main(): Promise<number> {
     },
   });
   const frames = Number(values.frames);
-  const rom = readFileSync(romPathFromEnv(values.rom));
+  // The game runs from the assets `npm run port` wrote; a ROM file is only for comparing against them.
+  const rom = values.rom ? readFileSync(values.rom) : readCartridge(join(resolve(values.dist!), 'assets'));
   const interpreter = new DisplayListInterpreter();
   const totals = new DlTotals();
   const soft = values.dump ? new SoftRenderer() : undefined;

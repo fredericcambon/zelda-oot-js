@@ -1,13 +1,14 @@
-// `npm run port -- --rom <path>`: verify → extract → analyse → recompile → Emscripten, ending in dist/.
+// `npm run port -- --rom <path>`: verify → extract → analyse → assets → recompile → Emscripten, ending in dist/.
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { analyze } from '../analyze/run.ts';
+import { classify } from '../assets/classify.ts';
+import { buildManifest, writeAssets } from '../assets/write.ts';
 import { loadContext, romPathFromEnv } from '../analyze/context.ts';
 import { generate } from '../recomp/generate.ts';
 import { ensureToolchain } from '../recomp/toolchain.ts';
 import { extractRom } from '../rom/extract.ts';
-import { writeRomPieces } from '../rom/pieces.ts';
 import { compileAll, link, runtimeSources } from './build.ts';
 
 async function main(): Promise<number> {
@@ -24,23 +25,28 @@ async function main(): Promise<number> {
     },
   });
   const log = (m: string) => console.log(m);
-  const stage = (n: number, name: string) => log(`\n[${n}/5] ${name}`);
+  const stage = (n: number, name: string) => log(`\n[${n}/6] ${name}`);
   try {
     const romPath = romPathFromEnv(values.rom);
 
     stage(1, 'verify and extract');
     const index = extractRom(readFileSync(romPath), values.out!);
     log(`ROM verified (SHA-1 ${index.sha1}); wrote ${index.files.length} files to ${values.out}`);
-    const pieces = writeRomPieces(readFileSync(romPath), resolve(values.dist!, 'rom'));
-    log(`wrote ${pieces.pieces.length} ROM pieces to ${resolve(values.dist!, 'rom')} for the browser`);
 
     stage(2, 'analyse');
     const inventory = await analyze({
       romPath, outDir: values.out!, workDir: values.work!, useGhidra: !values['no-ghidra'], log,
     });
 
-    stage(3, 'recompile');
+    stage(3, 'classify and write the assets');
     const ctx = loadContext(romPath);
+    const manifest = buildManifest(ctx.sha1, ctx.rom.length, classify(ctx, inventory));
+    const assetsDir = resolve(values.dist!, 'assets');
+    writeAssets(ctx.rom, manifest, assetsDir);
+    const unknown = manifest.entries.filter((e) => e.type === 'unknown').length;
+    log(`wrote ${manifest.entries.length} assets to ${assetsDir} (${unknown} without a type, each with its reason in the manifest)`);
+
+    stage(4, 'recompile');
     const cDir = resolve(values.generated!, 'c');
     const gen = generate(ctx, inventory, cDir);
     log(`recompiled ${gen.functions} functions into ${gen.files.length} files in ${cDir}`);
@@ -49,14 +55,14 @@ async function main(): Promise<number> {
       throw new Error(`${gen.problems.length} problems while recompiling`);
     }
 
-    stage(4, 'compile with Emscripten');
+    stage(5, 'compile with Emscripten');
     const toolchain = ensureToolchain(log);
     const opts = {
       cDir, objDir: resolve(values.generated!, values['trace-calls'] ? 'obj-trace' : 'obj'), traceCalls: values['trace-calls'], distDir: resolve(values.dist!), toolchain, optimize: values.optimize, log,
     };
     const objects = await compileAll(opts, runtimeSources());
 
-    stage(5, 'link');
+    stage(6, 'link');
     log(`wrote ${await link(opts, objects)}`);
     return 0;
   } catch (err) {

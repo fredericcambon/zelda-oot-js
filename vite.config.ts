@@ -6,8 +6,8 @@ const dist = resolve(import.meta.dirname, 'dist');
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 const GAME_FILES: Record<string, string> = { '/oot.js': 'text/javascript', '/oot.wasm': 'application/wasm' };
 
-// The recompiled game and the pieces of the cartridge image (`npm run port`) live in dist/ next to the web build. The dev
-// server serves them from there (the pieces to loopback only); the build copies the game, never the pieces.
+// The recompiled game and the assets cut from the cartridge (`npm run port`) live in dist/ next to the web build. The dev
+// server serves them from there (the assets to loopback only); the build copies the game, never the assets.
 function gameFiles(): Plugin {
   return {
     name: 'oot-game-files',
@@ -15,10 +15,10 @@ function gameFiles(): Plugin {
       server.middlewares.use((req, res, next) => {
         const url = decodeURIComponent((req.url ?? '').split('?')[0]!);
         const file = join(dist, url);
-        const type = GAME_FILES[url] ?? (url.startsWith('/rom/') && !url.includes('..') ? 'application/octet-stream' : undefined);
+        const type = GAME_FILES[url] ?? (url.startsWith('/assets/') && !url.includes('..') ? 'application/octet-stream' : undefined);
         if (!type) return next();
-        // The cartridge pieces are for this machine only: refuse them to any other host (`--host`).
-        if (url.startsWith('/rom/') && !LOOPBACK.has(req.socket.remoteAddress ?? '')) {
+        // The assets are for this machine only: refuse them to any other host (`--host`).
+        if (url.startsWith('/assets/') && !LOOPBACK.has(req.socket.remoteAddress ?? '')) {
           res.statusCode = 403;
           res.end('the game files are served to this machine only');
           return;
@@ -44,6 +44,6 @@ function gameFiles(): Plugin {
 
 export default defineConfig({
   root: 'web',
-  build: { outDir: '../dist/web', emptyOutDir: true },
+  build: { outDir: '../dist/web', emptyOutDir: true, assetsDir: 'bundle' },
   plugins: [gameFiles()],
 });

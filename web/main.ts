@@ -1,6 +1,6 @@
 import { startGame, type Game } from './game.ts';
 import { Renderer, type CullMode } from './renderer.ts';
-import { loadRomImage } from './rom.ts';
+import { loadCartridge } from './cartridge.ts';
 
 const FRAME_MS = 20; // the video interface retraces at 50 Hz
 
@@ -98,7 +98,7 @@ async function loop(): Promise<void> {
 
 async function boot(): Promise<void> {
   try {
-    const rom = await loadRomImage((done, total) => setStatus(`Loading game files: ${done} / ${total}`));
+    const rom = await loadCartridge((done, total) => setStatus(`Loading game files: ${done} / ${total}`));
     setStatus('Starting...');
     game = await startGame(rom, renderer);
     setStatus('Running');
