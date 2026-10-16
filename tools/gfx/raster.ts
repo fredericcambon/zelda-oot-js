@@ -1,5 +1,5 @@
 // A software renderer for the draw batches of dl.ts, used to dump frames without a browser. It follows the same
-// rules as the WebGL path (web/shader.ts, web/renderer.ts) with nearest-texel sampling.
+// rules as the WebGL path (web/shader.ts, web/renderer.ts).
 import type { Batch, DecodedTexture, DisplayListResult, DrawState, RectBatch, TileState, TriangleBatch } from './dl.ts';
 import { Geo } from './opcodes.ts';
 import { CycleType, cycleTypeOf, MIN_COVERAGE_ALPHA, OtherL, shiftScale, specOf, type BlendCycle, type ShaderSpec } from '../../web/shader.ts';
@@ -28,6 +28,8 @@ interface Inputs {
 }
 
 const physical = (addr: number): number => addr & 0x1fffffff;
+/** Depth (of -1..1) a decal may sit behind the surface under it however flat its triangle is. */
+const DECAL_MIN_BIAS = 1e-6;
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 const unit = (c: { r: number; g: number; b: number; a: number }): [number, number, number, number] => [c.r / 255, c.g / 255, c.b / 255, c.a / 255];
 
@@ -98,13 +100,33 @@ function wrap(v: number, size: number, mask: number, mode: number): number {
   return Math.min(Math.max(v, 0), size - 1);
 }
 
-function texel(tex: DecodedTexture | null, tile: TileState | undefined, u: number, v: number): [number, number, number, number] {
-  if (!tex || !tile) return [1, 1, 1, 1];
-  const s = Math.floor(u * shiftScale(tile.shiftS) - tile.uls / 4);
-  const t = Math.floor(v * shiftScale(tile.shiftT) - tile.ult / 4);
+type Rgba = [number, number, number, number];
+
+function fetchTexel(tex: DecodedTexture, tile: TileState, s: number, t: number): Rgba {
   const x = wrap(s, tex.width, tile.maskS, tile.cmS), y = wrap(t, tex.height, tile.maskT, tile.cmT);
   const o = (y * tex.width + x) * 4;
   return [tex.rgba[o]! / 255, tex.rgba[o + 1]! / 255, tex.rgba[o + 2]! / 255, tex.rgba[o + 3]! / 255];
+}
+
+/** Samples a tile at texel coordinates (u, v): the nearest texel, or the console's three-point filter when `bilerp`. */
+function texel(tex: DecodedTexture | null, tile: TileState | undefined, u: number, v: number, bilerp: boolean): Rgba {
+  if (!tex || !tile) return [1, 1, 1, 1];
+  const s = u * shiftScale(tile.shiftS) - tile.uls / 4;
+  const t = v * shiftScale(tile.shiftT) - tile.ult / 4;
+  if (!bilerp) return fetchTexel(tex, tile, Math.floor(s), Math.floor(t));
+  const sx = s - 0.5, sy = t - 0.5;
+  const bx = Math.floor(sx), by = Math.floor(sy);
+  const fx = sx - bx, fy = sy - by;
+  const c00 = fetchTexel(tex, tile, bx, by);
+  const out: Rgba = [0, 0, 0, 0];
+  if (fx + fy <= 1) {
+    const c10 = fetchTexel(tex, tile, bx + 1, by), c01 = fetchTexel(tex, tile, bx, by + 1);
+    for (let k = 0; k < 4; k++) out[k] = c00[k]! + fx * (c10[k]! - c00[k]!) + fy * (c01[k]! - c00[k]!);
+  } else {
+    const c11 = fetchTexel(tex, tile, bx + 1, by + 1), c01 = fetchTexel(tex, tile, bx, by + 1), c10 = fetchTexel(tex, tile, bx + 1, by);
+    for (let k = 0; k < 4; k++) out[k] = c11[k]! + (1 - fx) * (c01[k]! - c11[k]!) + (1 - fy) * (c10[k]! - c11[k]!);
+  }
+  return out;
 }
 
 export class SoftRenderer {
@@ -181,7 +203,7 @@ export class SoftRenderer {
     for (let y = Math.max(sy0, Math.floor(y0)); y < y1; y++) {
       for (let x = Math.max(sx0, Math.floor(x0)); x < x1; x++) {
         const u = b.s / 32 + (x + 0.5 - x0) * stepS, v = b.t / 32 + (y + 0.5 - y0) * stepT;
-        this.pixel(state, spec, img, x, y, [1, 1, 1, 1], u, v, 0);
+        this.pixel(state, spec, img, x, y, [1, 1, 1, 1], u, v);
       }
     }
   }
@@ -230,6 +252,12 @@ export class SoftRenderer {
     const minY = Math.max(sy0, Math.floor(Math.min(p[0].y, p[1].y, p[2].y))), maxY = Math.min(sy1 - 1, Math.ceil(Math.max(p[0].y, p[1].y, p[2].y)));
     const l = state.otherModeL;
     const depthOn = (gm & Geo.ZBUFFER) !== 0;
+    // A decal passes the depth test where it is as deep as the surface it lies on, give or take the triangle's own depth
+    // slope: its depth is moved towards the eye by that slope before the comparison.
+    const decal = ((l >>> OtherL.ZMODE_SHIFT) & 3) === 3;
+    const dzdx = ((p[1].z - p[0].z) * (p[2].y - p[0].y) - (p[2].z - p[0].z) * (p[1].y - p[0].y)) / area;
+    const dzdy = ((p[2].z - p[0].z) * (p[1].x - p[0].x) - (p[1].z - p[0].z) * (p[2].x - p[0].x)) / area;
+    const decalBias = decal ? Math.max(Math.abs(dzdx), Math.abs(dzdy)) + DECAL_MIN_BIAS : 0;
     for (let y = minY; y <= maxY; y++) {
       for (let x = minX; x <= maxX; x++) {
         const px = x + 0.5, py = y + 0.5;
@@ -239,23 +267,24 @@ export class SoftRenderer {
         if (w0 < 0 || w1 < 0 || w2 < 0) continue;
         const z = w0 * p[0].z + w1 * p[1].z + w2 * p[2].z;
         const di = y * WIDTH + x;
-        if (depthOn && (l & OtherL.Z_COMPARE) && z > this.depth[di]!) continue;
+        if (depthOn && (l & OtherL.Z_COMPARE) && z - decalBias > this.depth[di]!) continue;
         const q0 = w0 * p[0].iw, q1 = w1 * p[1].iw, q2 = w2 * p[2].iw;
         const qs = q0 + q1 + q2;
+        // Texture coordinates are corrected for perspective; the shade (colour and fog factor) is linear in screen space.
         const mix = (f: (v: Vertex) => number) => (q0 * f(a) + q1 * f(b) + q2 * f(c)) / qs;
-        const color: [number, number, number, number] = [mix((v) => v.color[0]), mix((v) => v.color[1]), mix((v) => v.color[2]), mix((v) => v.color[3])];
-        const fog = Math.min(255, Math.max(0, z * state.fog.multiplier + state.fog.offset)) / 255;
-        if (this.pixel(state, spec, img, x, y, color, mix((v) => v.uv[0]), mix((v) => v.uv[1]), fog) && depthOn && (l & OtherL.Z_UPDATE)) this.depth[di] = z;
+        const linear = (f: (v: Vertex) => number) => w0 * f(a) + w1 * f(b) + w2 * f(c);
+        const color: [number, number, number, number] = [linear((v) => v.color[0]), linear((v) => v.color[1]), linear((v) => v.color[2]), linear((v) => v.color[3])];
+        if (this.pixel(state, spec, img, x, y, color, mix((v) => v.uv[0]), mix((v) => v.uv[1])) && depthOn && (l & OtherL.Z_UPDATE)) this.depth[di] = z;
       }
     }
   }
 
   /** Combines, tests and blends one pixel; returns whether it was written. */
-  private pixel(state: DrawState, spec: ShaderSpec, img: Uint8Array, x: number, y: number, shade: [number, number, number, number], u: number, v: number, fog = 0): boolean {
-    const t0 = texel(state.textures[0], state.tiles[state.textures[0]?.tile ?? 0], u, v);
-    const t1 = texel(state.textures[1], state.tiles[state.textures[1]?.tile ?? 0], u, v);
+  private pixel(state: DrawState, spec: ShaderSpec, img: Uint8Array, x: number, y: number, shade: [number, number, number, number], u: number, v: number): boolean {
+    const t0 = texel(state.textures[0], state.tiles[state.textures[0]?.tile ?? 0], u, v, spec.bilerp);
+    const t1 = texel(state.textures[1], state.tiles[state.textures[1]?.tile ?? 0], u, v, spec.bilerp);
     const inputs: Inputs = {
-      combined: [0, 0, 0], combinedA: 0, t0, t1, shade: [shade[0], shade[1], shade[2]], shadeA: spec.fogInShadeAlpha ? fog : shade[3],
+      combined: [0, 0, 0], combinedA: 0, t0, t1, shade: [shade[0], shade[1], shade[2]], shadeA: shade[3],
       prim: unit(state.primColor), env: unit(state.envColor), primLod: state.primColor.lodFrac / 255,
     };
     let rgb: V3, a: number;

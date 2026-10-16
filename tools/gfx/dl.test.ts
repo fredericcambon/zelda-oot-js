@@ -47,15 +47,15 @@ const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 describe('display list interpreter', () => {
   it('draws a triangle from loaded vertices', () => {
     const ram = new Ram();
-    ram.vertex(0x2000, 1, 2, 3, 32, 64, [255, 0, 0, 255]);
-    ram.vertex(0x2010, 4, 5, 6, 0, 0, [0, 255, 0, 128]);
-    ram.vertex(0x2020, 7, 8, 9, 0, 0, [0, 0, 255, 255]);
+    ram.vertex(0x2000, 1, 0, 0, 32, 64, [255, 0, 0, 255]);
+    ram.vertex(0x2010, 0, 1, 0, 0, 0, [0, 255, 0, 128]);
+    ram.vertex(0x2020, 0, 0, 1, 0, 0, [0, 0, 255, 255]);
     ram.list(0x1000, vtx(3, 0, 0x2000), tri(0, 1, 2), END);
     const r = run(ram, 0x1000);
     expect(r.unknown).toEqual([]);
     expect(r.problems).toEqual([]);
     const b = r.batches[0] as TriangleBatch;
-    expect(Array.from(b.positions.subarray(0, 8))).toEqual([1, 2, 3, 1, 4, 5, 6, 1]);
+    expect(Array.from(b.positions.subarray(0, 8))).toEqual([1, 0, 0, 1, 0, 1, 0, 1]);
     expect(Array.from(b.colors.subarray(4, 8)).map((v) => Math.round(v * 255))).toEqual([0, 255, 0, 128]);
   });
 
@@ -64,8 +64,9 @@ describe('display list interpreter', () => {
     for (let i = 0; i < 3; i++) ram.vertex(0x2000 + i * 16, i, 0, 0, 64, 96, [255, 255, 255, 255]);
     ram.list(0x1000, [0xd7000002, 0xffffffff], vtx(3, 0, 0x2000), tri(0, 1, 2), END);
     const b = run(ram, 0x1000).batches[0] as TriangleBatch;
-    expect(b.uvs[0]).toBeCloseTo((64 / 32) * (65535 / 65536), 5);
-    expect(b.uvs[1]).toBeCloseTo((96 / 32) * (65535 / 65536), 5);
+    // Coordinates are in 10.5 fixed point; the scaled value is rounded down to it.
+    expect(b.uvs[0]).toBe(Math.floor((64 * 65535) / 65536) / 32);
+    expect(b.uvs[1]).toBe(Math.floor((96 * 65535) / 65536) / 32);
   });
 
   it('follows segment addresses, calls and branches', () => {
@@ -98,7 +99,7 @@ describe('display list interpreter', () => {
     ram.vertex(0x2000, 1, 1, 0, 0, 0, [0, 0, 0, 255]);
     ram.vertex(0x2010, 0, 0, 0, 0, 0, [0, 0, 0, 255]);
     ram.vertex(0x2020, 0, 0, 0, 0, 0, [0, 0, 0, 255]);
-    ram.matrix(0x3000, IDENTITY);
+    ram.matrix(0x3000, [0.01, 0, 0, 0, 0, 0.01, 0, 0, 0, 0, 0.01, 0, 0, 0, 0, 1]);
     ram.matrix(0x3040, [2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1]);
     ram.matrix(0x3080, [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 10, 0, 0, 1]);
     // The parameter byte is stored with the push bit inverted: 0x07 loads the projection, 0x03 loads the model-view
@@ -114,8 +115,10 @@ describe('display list interpreter', () => {
     // Both triangles share a batch: neither the multiplication nor the pop changes the render state.
     const [batch] = r.batches as TriangleBatch[];
     // The multiplied matrix applies to the vertex first, then the scale.
-    expect(Array.from(batch!.positions.subarray(0, 4))).toEqual([22, 2, 0, 1]);
-    expect(Array.from(batch!.positions.subarray(12, 16))).toEqual([2, 2, 0, 1]);
+    // The projection scale 0.01 is held to 16 fractional bits.
+    const near = (got: Float32Array, want: number[]) => want.forEach((w, i) => expect(got[i]).toBeCloseTo(w, 3));
+    near(batch!.positions.subarray(0, 4), [0.22, 0.02, 0, 1]);
+    near(batch!.positions.subarray(12, 16), [0.02, 0.02, 0, 1]);
   });
 
   it('reports a matrix stack underflow', () => {
