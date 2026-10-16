@@ -1,23 +1,9 @@
 // Boots the recompiled game in the page and feeds each graphics task it submits to the renderer.
 import { DisplayListInterpreter } from '../tools/gfx/dl.ts';
 import { shownFramebuffer } from '../tools/gfx/vi.ts';
+import { RDRAM_SIZE, startModule, type OotCore } from '../tools/runtime/instance.ts';
 import type { Renderer } from './renderer.ts';
 
-const RDRAM_SIZE = 0x800000;
-
-interface OotModule {
-  HEAPU8: Uint8Array;
-  _malloc(n: number): number;
-  _oot_boot(rom: number, size: number): void;
-  _oot_frame(): void | Promise<void>;
-  _oot_idle(): number;
-  _oot_frames(): number;
-  _oot_gfx_tasks(): number;
-  _oot_retraces(): number;
-  _oot_rdram(): number;
-  _oot_fatal_message(): number;
-  UTF8ToString(ptr: number): string;
-}
 
 export interface Game {
   /** Runs the game for one video frame. Rejects with the game's own message when it stops. */
@@ -28,11 +14,8 @@ export interface Game {
 }
 
 export async function startGame(rom: Uint8Array, renderer: Renderer, moduleUrl = '/oot.js'): Promise<Game> {
-  const factory = (await import(/* @vite-ignore */ moduleUrl)).default as (opts?: object) => Promise<OotModule>;
   let renderError = '';
-  const mod = await factory({
-    print: () => {},
-    printErr: (m: string) => console.error(m),
+  const mod = await startModule<OotCore>(moduleUrl, rom, {
     onGfxTask: (data: number) => {
       try {
         const ram = mod.HEAPU8.subarray(mod._oot_rdram(), mod._oot_rdram() + RDRAM_SIZE);
@@ -43,9 +26,6 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, moduleUrl =
       }
     },
   });
-  const copy = mod._malloc(rom.length);
-  mod.HEAPU8.set(rom, copy);
-  mod._oot_boot(copy, rom.length);
   const view = () => new DataView(mod.HEAPU8.buffer, mod._oot_rdram(), RDRAM_SIZE);
   return {
     async frame() {

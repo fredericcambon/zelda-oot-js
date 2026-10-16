@@ -1,5 +1,4 @@
 // `npm run port -- --rom <path>`: verify → extract → analyse → assets → recompile → Emscripten, ending in dist/.
-import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { analyze } from '../analyze/run.ts';
@@ -8,7 +7,6 @@ import { buildManifest, writeAssets } from '../assets/write.ts';
 import { loadContext, romPathFromEnv } from '../analyze/context.ts';
 import { generate } from '../recomp/generate.ts';
 import { ensureToolchain } from '../recomp/toolchain.ts';
-import { extractRom } from '../rom/extract.ts';
 import { compileAll, link, runtimeSources } from './build.ts';
 
 async function main(): Promise<number> {
@@ -29,9 +27,9 @@ async function main(): Promise<number> {
   try {
     const romPath = romPathFromEnv(values.rom);
 
-    stage(1, 'verify and extract');
-    const index = extractRom(readFileSync(romPath), values.out!);
-    log(`ROM verified (SHA-1 ${index.sha1}); wrote ${index.files.length} files to ${values.out}`);
+    stage(1, 'verify');
+    const ctx = loadContext(romPath);
+    log(`ROM verified (SHA-1 ${ctx.sha1}); ${ctx.files.length} files in the file table`);
 
     stage(2, 'analyse');
     const inventory = await analyze({
@@ -39,7 +37,6 @@ async function main(): Promise<number> {
     });
 
     stage(3, 'classify and write the assets');
-    const ctx = loadContext(romPath);
     const manifest = buildManifest(ctx.sha1, ctx.rom.length, classify(ctx, inventory));
     const assetsDir = resolve(values.dist!, 'assets');
     writeAssets(ctx.rom, manifest, assetsDir);

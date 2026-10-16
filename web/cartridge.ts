@@ -1,13 +1,10 @@
 // Rebuilds the cartridge image from the asset files `npm run port` wrote next to the game (dist/assets). The page never
 // asks for a ROM file: the manifest says which byte range of the image each asset holds.
-interface Manifest {
-  rom: { size: number };
-  entries: { romStart: number; romEnd: number; path: string }[];
-}
+import type { Manifest } from '../tools/assets/write.ts';
 
 const PARALLEL_FETCHES = 8;
 
-export async function loadCartridge(onProgress: (done: number, total: number) => void, base = '/assets/'): Promise<Uint8Array> {
+export async function loadCartridge(onProgress: (done: number, total: number) => void, base = '/game-data/'): Promise<Uint8Array> {
   const response = await fetch(`${base}manifest.json`);
   if (!response.ok) throw new Error('The game files are missing: run `npm run port -- --rom <path>` first');
   const manifest = (await response.json()) as Manifest;

@@ -1,7 +1,7 @@
 // Loads the built game into this process and steps it one video frame at a time.
 import { shownFramebuffer } from '../gfx/vi.ts';
+import { RDRAM_SIZE, startModule, type OotCore } from '../runtime/instance.ts';
 
-const RDRAM_SIZE = 0x800000;
 const OS_ALLTHREADS = 0x8000685c;
 const OS_SENTINEL = 0x80006850;
 const TH_NEXT_ALL = 0x0c;
@@ -9,22 +9,11 @@ const TH_PRI = 0x04;
 const TH_ID = 0x14;
 const TH_ENTRY = 0x11c;
 
-interface OotModule {
-  HEAPU8: Uint8Array;
-  _malloc(n: number): number;
-  _oot_boot(rom: number, size: number): void;
-  _oot_frame(): void | Promise<void>;
-  _oot_idle(): number;
-  _oot_gfx_tasks(): number;
+interface OotModule extends OotCore {
   _oot_audio_tasks(): number;
-  _oot_retraces(): number;
-  _oot_frames(): number;
   _oot_rd32(addr: number): number;
-  _oot_rdram(): number;
-  _oot_fatal_message(): number;
   _oot_trace_count?(): number;
   _oot_trace_at?(back: number): number;
-  UTF8ToString(ptr: number): string;
 }
 
 export interface FrameResult {
@@ -64,19 +53,13 @@ export interface Game {
 }
 
 export async function bootGame(moduleUrl: string, rom: Uint8Array, options: BootOptions = {}): Promise<Game> {
-  const factory = (await import(moduleUrl)).default as (opts?: object) => Promise<OotModule>;
-  const mod = await factory({
-    print: () => {},
-    printErr: (m: string) => console.error(m),
+  const mod = await startModule<OotModule>(moduleUrl, rom, {
     onGfxTask: (data: number, size: number, task: number) => {
       data >>>= 0; size >>>= 0; task >>>= 0;
       const ram = mod.HEAPU8.subarray(mod._oot_rdram(), mod._oot_rdram() + RDRAM_SIZE);
       options.onGfxTask?.({ task, data, size, ram });
     },
   });
-  const copy = mod._malloc(rom.length);
-  mod.HEAPU8.set(rom, copy);
-  mod._oot_boot(copy, rom.length);
 
   const rd32 = (addr: number) => mod._oot_rd32(addr) >>> 0;
   const seen = new Set<number>();

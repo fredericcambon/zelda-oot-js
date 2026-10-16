@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -7,6 +7,8 @@ import { analyze } from '../analyze/run.ts';
 import { compileAll, link, runtimeSources } from '../port/build.ts';
 import { generate } from '../recomp/generate.ts';
 import { ensureToolchain } from '../recomp/toolchain.ts';
+import { classify } from '../assets/classify.ts';
+import { buildManifest, readCartridge, writeAssets } from '../assets/write.ts';
 import { bootGame } from './boot.ts';
 
 const rom = process.env.OOT_ROM;
@@ -22,7 +24,9 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
     const opts = { cDir, objDir: join(work, 'obj'), distDir: join(work, 'dist'), toolchain: ensureToolchain(), log: () => {} };
     const out = await link(opts, await compileAll(opts, runtimeSources()));
 
-    const game = await bootGame(pathToFileURL(out).href, new Uint8Array(readFileSync(rom!)));
+    const ctx = loadContext(rom!);
+    writeAssets(ctx.rom, buildManifest(ctx.sha1, ctx.rom.length, classify(ctx, inventory)), join(work, 'dist', 'assets'));
+    const game = await bootGame(pathToFileURL(out).href, readCartridge(join(work, 'dist', 'assets')));
     const gfxAt: number[] = [];
     let gfx = 0;
     let threads = 0;
