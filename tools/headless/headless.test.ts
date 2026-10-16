@@ -19,6 +19,7 @@ import { encodePng } from '../gfx/png.ts';
 import { HEIGHT, SoftRenderer, WIDTH } from '../gfx/raster.ts';
 import { bootGame } from './boot.ts';
 import { padAt, parseInput } from './input.ts';
+import { encodeThreads, parseThreads } from '../runtime/threads.ts';
 import { FILE_SELECT_INIT_LINKED, FILE_SELECT_RECORD, RECORD, fileSelectLoaded, linkPosition, playState } from './state.ts';
 
 const rom = process.env.OOT_ROM;
@@ -127,6 +128,46 @@ function dump(name: string, img: Uint8Array): void {
   const dir = resolve('out', 'input-frames');
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, `${name}.png`), encodePng(WIDTH, HEIGHT, img));
+}
+
+const sha = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
+
+/** A fresh game that draws the frames it plays into pictures and hashes: for each frame, the shown picture, the sound queued and Link's position. */
+async function startReplayable(moduleUrl: string, cartridge: Uint8Array) {
+  let soft = new SoftRenderer();
+  let interpreter = new DisplayListInterpreter();
+  let sound = createHash('sha256');
+  let drawing = false;
+  const game = await bootGame(moduleUrl, cartridge, {
+    onGfxTask: (task) => {
+      if (drawing) soft.drawTask(interpreter.run(task.ram, task.data));
+    },
+    onAiBuffer: (b) => {
+      if (drawing) sound.update(b.ram.subarray(b.addr & 0x7fffff, (b.addr & 0x7fffff) + b.length));
+    },
+  });
+  /** Plays the frames after `from`, hashing the shown picture, the sound queued and Link's position of each. */
+  const play = async (from: number, to: number): Promise<string[]> => {
+    soft = new SoftRenderer();
+    interpreter = new DisplayListInterpreter();
+    drawing = true;
+    const frames: string[] = [];
+    for (let frame = from + 1; frame <= to; frame++) {
+      const pad = padAt(SCRIPT, frame);
+      game.setPad(pad.buttons, pad.x, pad.y);
+      sound = createHash('sha256');
+      const r = await game.frame();
+      expect(r.fatal, `frame ${frame}`).toBeUndefined();
+      const img = soft.image(game.framebuffer());
+      const rd = (addr: number) => game.rd32(addr);
+      const state = playState(rd);
+      const pos = state ? linkPosition(rd, state) : undefined;
+      frames.push(`${frame} ${img ? sha(img) : 'no image'} ${sound.digest('hex')} ${pos ? `${pos.x},${pos.y},${pos.z}` : 'no link'}`);
+    }
+    drawing = false;
+    return frames;
+  };
+  return { game, play };
 }
 
 describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
@@ -274,44 +315,8 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
     const { moduleUrl, cartridge } = await buildGame();
     const SAVE_FRAME = CONTROL_FRAME - 10;
     const REPLAY_FRAMES = 180;
-    const sha = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 
-    const start = async () => {
-      let soft = new SoftRenderer();
-      let interpreter = new DisplayListInterpreter();
-      let sound = createHash('sha256');
-      let drawing = false;
-      const game = await bootGame(moduleUrl, cartridge, {
-        onGfxTask: (task) => {
-          if (drawing) soft.drawTask(interpreter.run(task.ram, task.data));
-        },
-        onAiBuffer: (b) => {
-          if (drawing) sound.update(b.ram.subarray(b.addr & 0x7fffff, (b.addr & 0x7fffff) + b.length));
-        },
-      });
-      /** Plays the frames after `from`, hashing the shown picture, the sound queued and Link's position of each. */
-      const play = async (from: number, to: number): Promise<string[]> => {
-        soft = new SoftRenderer();
-        interpreter = new DisplayListInterpreter();
-        drawing = true;
-        const frames: string[] = [];
-        for (let frame = from + 1; frame <= to; frame++) {
-          const pad = padAt(SCRIPT, frame);
-          game.setPad(pad.buttons, pad.x, pad.y);
-          sound = createHash('sha256');
-          const r = await game.frame();
-          expect(r.fatal, `frame ${frame}`).toBeUndefined();
-          const img = soft.image(game.framebuffer());
-          const rd = (addr: number) => game.rd32(addr);
-          const state = playState(rd);
-          const pos = state ? linkPosition(rd, state) : undefined;
-          frames.push(`${frame} ${img ? sha(img) : 'no image'} ${sound.digest('hex')} ${pos ? `${pos.x},${pos.y},${pos.z}` : 'no link'}`);
-        }
-        drawing = false;
-        return frames;
-      };
-      return { game, play };
-    };
+    const start = () => startReplayable(moduleUrl, cartridge);
 
     const first = await start();
     for (let frame = 1; frame <= SAVE_FRAME; frame++) {
@@ -345,7 +350,44 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
 
     // The same game goes back too.
     first.game.restore(state);
+    // Described here, not before the comparison of memory above: the buffer it uses is heap memory too.
+    const description = first.game.describeThreads();
     expect(await first.play(SAVE_FRAME, SAVE_FRAME + REPLAY_FRAMES)).toEqual(expected);
+
+    // The threads of the state, described in terms of the ROM's functions and call sites, are rebuilt in a fresh game.
+    const parsed = parseThreads(description);
+    expect(encodeThreads(parsed)).toEqual(description);
+    const started = parsed.threads.filter((t) => t.started);
+    expect(started.length).toBeGreaterThan(5);
+    expect(started.every((t) => t.blockingSite !== 0 && t.frames.length > 0 && t.frames.at(-1)!.kind === 'site')).toBe(true);
+    expect(parsed.running).toBe(0);
+
+    const third = await start();
+    third.game.restore(state);
+    third.game.writeSave(savedGames);
+    // A description that names a call site this build lacks is refused, and the game is as it was.
+    const unknown = structuredClone(parsed);
+    const frame = unknown.threads.find((t) => t.started)!.frames[0]!;
+    if (frame.kind !== 'site') throw new Error('the outermost frame is a call site');
+    frame.site += 2;
+    await expect(third.game.rebuildThreads(encodeThreads(unknown))).rejects.toThrow(/no call site/);
+    const wrongBuild = description.slice();
+    wrongBuild[0] = wrongBuild[0]! ^ 1;
+    await expect(third.game.rebuildThreads(wrongBuild)).rejects.toThrow(/not one this build reads/);
+    await third.game.rebuildThreads(description);
+    expect(third.game.describeThreads()).toEqual(description);
+    expect(await third.play(SAVE_FRAME, SAVE_FRAME + REPLAY_FRAMES)).toEqual(expected);
+    // The rebuilt fibers have stacks of their own, so the memory below the cartridge image is not byte for byte the old one,
+    // but the guest's RDRAM is.
+    expect(sha(third.game.ram())).toBe(sha(first.game.ram()));
+  }, 3_600_000);
+
+  it('describes no threads while the game boots', async () => {
+    const { moduleUrl, cartridge } = await buildGame();
+    const game = await bootGame(moduleUrl, cartridge, {});
+    expect(() => game.describeThreads()).toThrow(/booting/);
+    // The refusal leaves the game running.
+    expect((await game.frame()).fatal).toBeUndefined();
   }, 3_600_000);
 
   it('renders the title music to a WAV that is audible and not clipped', async () => {

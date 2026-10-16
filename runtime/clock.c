@@ -68,13 +68,13 @@ void timers_reset(void) {
 #define POLL_CYCLES 16
 
 void rt_osGetCount(Cpu *c) {
-  rt_poll(POLL_CYCLES);
+  rt_poll(c, BS_GETCOUNT, POLL_CYCLES);
   RET((uint32_t)now);
 }
 
 // 64-bit results come back in $v0 (high word) and $v1 (low word).
 void rt_osGetTime(Cpu *c) {
-  rt_poll(POLL_CYCLES);
+  rt_poll(c, BS_GETTIME, POLL_CYCLES);
   c->r[2] = SX32((uint32_t)(now >> 32));
   c->r[3] = SX32((uint32_t)now);
 }

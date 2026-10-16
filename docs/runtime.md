@@ -85,8 +85,136 @@ for it; mapping one over the RAM of another unloads that one. `rt_overlay_load` 
 `overlay_load` (`fn_800cd428`), which does the reading, relocating and clearing, then registers the overlay at the
 destination. Addresses that no image holds are logged (`rt_missing_get`) and end the run with a message.
 
+## Portable save states
+
+A raw dump of the module's memory is tied to the wasm file that made it: every guest thread runs on a fiber whose C stack
+and Asyncify stack hold host frames and wasm-internal indices (`runtime/sched.c`, `start_fiber`). Everything else the game
+depends on is data of the guest or of the runtime. This section covers the part that rebuilds the fibers from build-independent
+facts: which of the ROM's functions are active on each thread, and where the thread waits. The file around it (RDRAM,
+devices, clock) is described with the state format.
+
+### What is described
+
+`rt_threads_describe` (exported as `oot_threads_describe`) writes, between two `oot_frame()` calls, the words that
+`tools/runtime/threads.ts` reads and writes (`parseThreads`, `encodeThreads`):
+
+- `running` (always 0 between frames), `rt_status` and the interrupt mask;
+- for each thread record: its slot in the thread table, the `OSThread` address, the entry function, whether it has started and
+  whether it is parked (the idle loop); the guest registers (`r[32]`, `hi`, `lo`, `llbit`, `f[32]`, `fcsr`, `fir`, `fr`); the
+  blocking site; and the call chain, outermost frame first.
+
+A frame is a call in progress: the image (index in `oot_images`), the entry address of the function holding the call, and the
+address of the call instruction, all as linked, so that an overlay's frames do not depend on where it was loaded. The
+description contains no host address, no heap pointer and nothing about the wasm file.
+
+It is refused with a message (`oot_state_error`) when the boot code is still running (`boot_live`), when a thread is
+running or being destroyed, when a started thread waits anywhere but at a blocking site, or when its chain is not made of
+call sites that end in one. `rt_threads_rebuild` (`oot_threads_rebuild`, then `oot_threads_rebuilt`) checks the whole
+description against the build's tables before it touches anything: a wrong magic number, a short buffer, a duplicate
+thread, a blocking site or runtime frame the build lacks, or a function and call address that are not in `oot_sites` refuse it
+and leave the threads as they were.
+
+### Shadow stack
+
+The context of each thread (`Cpu`, `runtime/cpu.h`) holds a shadow stack of 1,024 words and its depth `shn`. A recompiled
+function that calls another pushes the key of the call site before the call and pops it after (`OOT_PUSH`, `OOT_POP`):
+
+| Call | Key pushed |
+|---|---|
+| `jal`, `bgezal`, `bltzal` and the likely forms, `j` or a branch to another function (a tail call), the fall into the next function | the call site |
+| `jalr`, `jr` that is not a return, the default case of a jump table | the call site; the target is not recorded, the next frame names the callee |
+
+A key is an index into `oot_sites` (generated `sites.c`): the function holding the site (`fn`), its entry address and the
+address of the call. Keys are assigned by the generator in the order of the images and functions, so they differ between
+builds; the description translates them (`find_site` and `oot_sites[key]`). A jump table's `jr` has one call site: a case that
+leaves the function takes the lookup of the default case. The fall into the next function has the address just past the
+function.
+
+A runtime routine that calls recompiled code and uses its own values afterwards keeps them in a frame on the same stack: a
+frame id at or above `RT_FRAME_BASE` (`0xF0000000`) and its payload words. Two do: `rt_overlay_load` (`RT_FRAME_OVERLAY_LOAD`, payload: link address and load address, which the loader below it overwrites in the registers),
+and `osContStartReadData`/`osContStartQuery` (`RT_FRAME_CONT_TRANSFER`, payload: the queue and whether it is a read), which wait in an `osRecvMesg`
+of their own and so are the routine the chain ends in; the blocking site is that receive's.
+
+**Calls without a frame.** A thread is parked only inside the routines of `blocking_routine` (below), so a call that cannot reach
+one leaves no host frame on a parked thread. The generator computes the functions that can suspend: those with a call through
+the dispatch tables, those that call a routine of `SUSPENDING_ROUTINES` (`tools/recomp/generate.ts`), and those that call such
+a function. A direct call to any other function pushes nothing. In the PAL ROM this leaves 11,268 of 53,023 call sites with a
+frame (`docs/re/gaps.md`). `tools/recomp/shadow.test.ts` checks that `SUSPENDING_ROUTINES` is the set of routines of
+`blocking_routine` plus the overlay loader. A routine added to `blocking_routine` has to be added to the list.
+
+### Blocking sites
+
+A thread that is not running waits at one of these sites. The numbers are part of the description (`BS_*` in `runtime/rt.h`);
+new sites take new numbers.
+
+| Id | Routine (address in the PAL ROM) | Site |
+|---|---|---|
+| 1, 2 | `osRecvMesg` (`0x800021a0`) | waiting for a message; preempted after receiving one |
+| 3, 4 | `osSendMesg` (`0x80001f80`) | waiting for room; preempted after sending |
+| 5, 6 | `osJamMesg` (`0x80004490`) | the same |
+| 7 | `osYieldThread` (`0x80005bc0`) | behind its equals |
+| 8 | `osStopThread` (`0x800020d0`) on the running thread | stopped |
+| 9 | `osStartThread` (`0x800061e0`) | preempted by the thread it made runnable |
+| 10, 11 | `osSetThreadPri` (`0x800045e0`) | lowered itself to 0 (the idle loop); preempted by the new order |
+| 12, 13, 14, 15 | `osGetCount` (`0x80004f00`), `osGetTime` (`0x80004a70`), `osAiGetLength` (`0x800d39a0`), `osViGetCurrentFramebuffer` (`0x800d63b0`) | preempted in `rt_poll` while charging time |
+| 16 | `osContInit` (`0x800d0690`) | sleeping until half a second after reset |
+
+The thread's own lists in RDRAM already say what it waits on (`TH_STATE`, `TH_QUEUE`, the run queue), so the site holds
+no further values: each routine takes its arguments again from the registers, which are those of the call. A blocking
+primitive (`block_on`, `leave_cpu`, `requeue_running`, `yield_if_preempted`, `thread_sleep_until`) records the site in
+`blk_id` before it swaps to the host and clears it when the thread runs again.
+
+### Resume mode
+
+`rt_threads_rebuild` starts a fresh fiber for each started thread with its shadow stack filled in, `resume` set, `rpos` at 0
+and `blk_id` at the recorded site, and runs it until it parks:
+
+1. The fiber calls the thread's entry function through `rt_call`. In resume mode `rt_call` ignores its address and calls the
+   function of the call site at `sh[rpos]` (`rt_resume_target`).
+2. A generated function with call sites begins with `if (c->resume) goto resume_entry`. There it takes the site at `sh[rpos++]`,
+   jumps to the code that re-issues that call (`Q_<key>`: `rt_resume_call(c, callee)`, or `rt_call(c, 0)` for an indirect
+   call) and, when the call returns, continues at the label right after it (`D_<key>`), which pops the frame.
+3. A runtime routine finds `c->resume` set and `blk_id` at one of its sites (`resuming_at`) and jumps to the blocking
+   primitive of that site, skipping the code before it. The primitive, seeing `blk_id` set, leaves the guest state alone and only
+   parks the fiber (`rebuilding`). `rt_overlay_load` reads its frame from the stack instead and calls the loader again.
+4. The thread is now where the original was, and runs on normally when the scheduler resumes it.
+
+Nothing of the guest state is touched on the way: the code that the chain skips has run already, and its results are in the
+registers, RDRAM and the lists.
+
+### No C local lives across a call
+
+Re-entering a function at a call site skips everything before it, so no value may be held in a C local across a call that has
+a frame. The emitter guarantees it by construction and checks it for every function it generates:
+
+- every guest register, `hi`/`lo`, the FPU registers and `llbit` live in `Cpu`; plain instructions use C locals only inside
+  their own braces (the result of a checked add, the address and result of `ll`/`sc`), and contain no call;
+- a delay slot runs before the call it belongs to, in the same statement; a slot that is also a jump target gets a standalone
+  copy that contains no call; a branch-likely runs its slot inside the taken branch before the call;
+- the condition of a branch (`cnd`) is read before the call, and nothing after it;
+- the target of `jalr`/`jr` (`t`) is read before the slot and is only the argument of the call; in resume mode the callee comes
+  from the next frame, not from `t`;
+- a jump table's `switch` calls only from its default case; the other cases are `goto` within the function;
+- code shared by two routines is a function of its own with its own call sites, and the fall into the next function is a call.
+
+`liveLocalsAfterCalls` (`tools/recomp/emit.ts`) scans the C text of each function: a local declared in a block and read after a
+call with a frame (the `D_<key>:` label) in the same or an enclosing block, or a local declared at function level, throws, and
+the generator reports the function. It passes for all 13,367 functions of the PAL ROM, and
+`tools/recomp/shadow.test.ts` runs it on each of the patterns above and on code that breaks the rule.
+
+### Adding a blocking site or a runtime frame
+
+- A new place where a thread can park gets a `BS_` id in `runtime/rt.h` (appended), calls its primitive with the id, and begins
+  with `resuming_at(c, id)` followed by a `goto` to the primitive's call; the routine goes into `blocking_routine`
+  and, in `SUSPENDING_ROUTINES`, the generator's list. Values that cannot be taken again from the registers or RDRAM go in
+  a runtime frame (`RT_FRAME_*` in `rt.h`, a case in `chain_next`, `rt_resume_target` and the frame cases of describe and
+  rebuild).
+- Tests: `runtime/tests/t_chain.c` has generated-style functions and the scenarios (blocked, preempted, sleeping, inside the
+  loader, refused descriptions); the ROM-gated test in `tools/headless/headless.test.ts` rebuilds the threads of the scripted
+  new game in a fresh game and replays 180 frames.
+
 ## Tests
 
 `runtime/tests/*.c` are built with Emscripten together with the runtime and run in Node by
 `tools/runtime/runtime.test.ts`, one vitest case per C test. They use no ROM; guest threads are C functions
-registered in a stand-in dispatch table.
+registered in a stand-in dispatch table (`oot_sites` stands in for the generated table in `t_chain.c`).

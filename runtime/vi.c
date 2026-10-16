@@ -139,7 +139,7 @@ void rt_osViSetEvent(Cpu *c) {
 void rt_osViGetNextFramebuffer(Cpu *c) { RET(rd32(nxt() + VC_FRAMEBUFFER)); }
 
 void rt_osViGetCurrentFramebuffer(Cpu *c) {
-  rt_poll(16);
+  rt_poll(c, BS_VIGETFB, 16);
   RET(rd32(cur() + VC_FRAMEBUFFER));
 }
 

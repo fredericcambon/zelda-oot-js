@@ -46,9 +46,9 @@ static void write_status(uint32_t status) {
 // osContInit(queue, bit pattern out, OSContStatus[4] out): waits until half a second after reset, then
 // reports the connected controllers. Only the first call does anything.
 void rt_osContInit(Cpu *c) {
-  if (initialised) { RET(0); return; }
+  if (initialised && !resuming_at(c, BS_CONTINIT_SLEEP)) { RET(0); return; }
   initialised = 1;
-  thread_sleep_until(RT_CPU_COUNTER / 2);
+  thread_sleep_until(c, RT_CPU_COUNTER / 2, BS_CONTINIT_SLEEP);
   write_status(ARG(2));
   if (ARG(1)) wr8(ARG(1), (uint8_t)connected);
   RET(0);
@@ -65,11 +65,23 @@ static void si_done(uint32_t queue, uint32_t unused) {
 // The original sends the request to the PIF and waits for the first completion on the queue, then starts the
 // read; the second completion is the one the game waits for.
 static void transfer(Cpu *c, uint32_t queue, int read) {
-  rt_schedule(rt_clock() + SI_CYCLES, si_done, queue, 0);
-  c->r[4] = SX32(queue);
-  c->r[5] = 0;
-  c->r[6] = OS_MESG_BLOCK;
+  if (c->resume) {
+    // Re-entered while a call chain is rebuilt: the receive below is where the thread waits, with its registers.
+    if (c->sh[c->rpos] != RT_FRAME_CONT_TRANSFER) rt_fatal("a rebuilt call chain enters a controller transfer without its frame");
+    queue = c->sh[c->rpos + 1];
+    read = (int)c->sh[c->rpos + 2];
+    c->rpos += 3;
+  } else {
+    rt_schedule(rt_clock() + SI_CYCLES, si_done, queue, 0);
+    c->r[4] = SX32(queue);
+    c->r[5] = 0;
+    c->r[6] = OS_MESG_BLOCK;
+    OOT_PUSH(RT_FRAME_CONT_TRANSFER);
+    OOT_PUSH(queue);
+    OOT_PUSH((uint32_t)read);
+  }
   rt_osRecvMesg(c);
+  c->shn -= 3;
   if (read) memcpy(latched, host_pad, sizeof latched);
   rt_schedule(rt_clock() + SI_CYCLES, si_done, queue, 0);
 }

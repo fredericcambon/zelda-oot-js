@@ -165,7 +165,7 @@ void rt_osAiSetNextBuffer(Cpu *c) {
 
 // Bytes of the playing buffer that are left.
 void rt_osAiGetLength(Cpu *c) {
-  rt_poll(16);
+  rt_poll(c, BS_AIGETLENGTH, 16);
   if (ai_count == 0) { RET(0); return; }
   uint64_t now = rt_clock();
   if (now >= ai_end[0]) { RET(0); return; }

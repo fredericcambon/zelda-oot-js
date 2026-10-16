@@ -24,6 +24,10 @@ interface OotModule extends SnapshotCore {
   _oot_cov_os_hits(i: number): number;
   _oot_cov_outside_count(): number;
   _oot_cov_outside(i: number, field: number): number;
+  _oot_threads_describe(buf: number, cap: number): number;
+  _oot_threads_rebuild(buf: number, len: number): void | Promise<void>;
+  _oot_threads_rebuilt(): number;
+  _oot_state_error(): number;
 }
 
 /** Bytes of address space, from 0x80000000, that the function bitmap of a coverage build spans (COVERAGE_WINDOW in runtime/cov.c). */
@@ -118,6 +122,16 @@ export interface Game {
   snapshot(): MemorySnapshot;
   /** Puts back a state taken from a game booted from the same build and cartridge image; the save memory is kept. */
   restore(state: MemorySnapshot): void;
+  /**
+   * Every guest thread as build-independent data: its registers, the functions and call sites of its call chain, and where it
+   * waits. Call between frames. Throws with the reason when a thread is somewhere a state cannot hold.
+   */
+  describeThreads(): Uint8Array;
+  /**
+   * Replaces the guest threads with those of a description. The guest memory and the runtime state have to be those of the
+   * moment the description was taken. Throws with the reason when the description is refused; the threads are then untouched.
+   */
+  rebuildThreads(description: Uint8Array): Promise<void>;
 }
 
 export async function bootGame(moduleUrl: string, rom: Uint8Array, options: BootOptions = {}): Promise<Game> {
@@ -190,6 +204,28 @@ export async function bootGame(moduleUrl: string, rom: Uint8Array, options: Boot
         addr: mod._oot_cov_outside(i, 0) >>> 0, hits: mod._oot_cov_outside(i, 1), function: mod._oot_cov_outside(i, 2) >>> 0,
       }));
       return { functions, osCalls, outsideRdram };
+    },
+    describeThreads() {
+      const message = () => mod.UTF8ToString(mod._oot_state_error());
+      const size = mod._oot_threads_describe(0, 0);
+      if (size === 0) throw new Error(message());
+      const buf = mod._malloc(size);
+      try {
+        if (mod._oot_threads_describe(buf, size) !== size) throw new Error(message());
+        return mod.HEAPU8.slice(buf, buf + size);
+      } finally {
+        mod._free(buf);
+      }
+    },
+    async rebuildThreads(description) {
+      const buf = mod._malloc(description.length);
+      try {
+        mod.HEAPU8.set(description, buf);
+        await mod._oot_threads_rebuild(buf, description.length);
+        if (!mod._oot_threads_rebuilt()) throw new Error(mod.UTF8ToString(mod._oot_state_error()));
+      } finally {
+        mod._free(buf);
+      }
     },
     snapshot: () => captureMemory(mod),
     restore: (state) => restoreMemory(mod, state),

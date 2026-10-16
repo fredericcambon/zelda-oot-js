@@ -73,10 +73,23 @@ GuestFn oot_lookup(uint32_t addr) {
 }
 
 void rt_call(Cpu *c, uint32_t addr) {
-  GuestFn fn = oot_lookup(addr);
+  GuestFn fn = OOT_RESUMING() ? rt_resume_target(c) : oot_lookup(addr);
   if (!fn) rt_missing(c, addr);
   fn(c);
 }
+
+// ---- Shadow stack ----------------------------------------------------------------------------------------
+
+__attribute__((noreturn)) void rt_sh_overflow(Cpu *c) {
+  (void)c;
+  rt_fatal("the guest call chain is deeper than %d calls", OOT_SH_MAX);
+}
+
+__attribute__((noreturn)) void rt_resume_bad(Cpu *c) {
+  rt_fatal("a rebuilt call chain names call site %u, which the function it entered does not have", c->sh[c->rpos - 1]);
+}
+
+__attribute__((noinline)) void rt_resume_call(Cpu *c, GuestFn fn) { fn(c); }
 
 __attribute__((noreturn)) void rt_missing(Cpu *c, uint32_t addr) {
   log_missing(addr);
@@ -115,10 +128,23 @@ void rt_overlay_unmap(uint32_t link_start) {
 extern void fn_800cd428(Cpu *c) __attribute__((weak));
 
 void rt_overlay_load(Cpu *c) {
-  uint32_t link_start = ARG(2);
-  uint32_t dst = STACK_ARG(4);
+  uint32_t link_start, dst;
+  if (c->resume) {
+    // Re-entered while a call chain is rebuilt: the arguments are in the routine's frame, since the loader below clobbered the registers.
+    if (c->sh[c->rpos] != RT_FRAME_OVERLAY_LOAD) rt_fatal("a rebuilt call chain enters the overlay loader without its frame");
+    link_start = c->sh[c->rpos + 1];
+    dst = c->sh[c->rpos + 2];
+    c->rpos += 3;
+  } else {
+    link_start = ARG(2);
+    dst = STACK_ARG(4);
+    OOT_PUSH(RT_FRAME_OVERLAY_LOAD);
+    OOT_PUSH(link_start);
+    OOT_PUSH(dst);
+  }
   if (!fn_800cd428) rt_missing(c, 0x800cd428);
   fn_800cd428(c);
+  c->shn -= 3;
   if (!rt_overlay_map(link_start, dst)) rt_fatal("overlay_load: no recompiled overlay links at 0x%08x", link_start);
 }
 

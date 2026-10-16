@@ -169,6 +169,54 @@ typedef struct RtVi {
 } RtVi;
 void rt_vi_get(RtVi *out);
 
+// ---- Call chains and blocking sites ------------------------------------------------------------------------
+// A thread that is not running waits in a runtime routine at a blocking site. The ids are part of the portable
+// state: new sites take new ids, and the existing ones keep theirs.
+enum BlockSite {
+  BS_NONE = 0,
+  BS_RECV_WAIT = 1,  // osRecvMesg, waiting for a message
+  BS_RECV_YIELD = 2, // osRecvMesg, preempted after it received one
+  BS_SEND_WAIT = 3,
+  BS_SEND_YIELD = 4,
+  BS_JAM_WAIT = 5,
+  BS_JAM_YIELD = 6,
+  BS_YIELD_THREAD = 7,  // osYieldThread
+  BS_STOP_SELF = 8,     // osStopThread on the running thread
+  BS_START_YIELD = 9,   // osStartThread made a higher priority thread runnable
+  BS_PRI_PARK = 10,     // osSetThreadPri to 0: the idle loop
+  BS_PRI_YIELD = 11,
+  BS_GETCOUNT = 12,     // osGetCount, preempted while it charges time
+  BS_GETTIME = 13,
+  BS_AIGETLENGTH = 14,
+  BS_VIGETFB = 15,      // osViGetCurrentFramebuffer
+  BS_CONTINIT_SLEEP = 16,
+};
+
+// A runtime routine that calls recompiled code and uses its own locals afterwards keeps them in a frame on the
+// shadow stack: the frame id, then its payload words. Frame ids are above every call site key.
+#define RT_FRAME_BASE 0xF0000000u
+#define RT_FRAME_OVERLAY_LOAD (RT_FRAME_BASE + 1) // payload: the link address and the load address
+#define RT_FRAME_CONT_TRANSFER (RT_FRAME_BASE + 2) // osContStartReadData/osContStartQuery waiting on the queue; payload: the queue and 1 for a read
+// A frame whose routine waits itself, so that a chain may end in it.
+static inline int rt_frame_blocks(uint32_t id) { return id == RT_FRAME_CONT_TRANSFER; }
+
+// True while the call chain of the thread behind `c` is being rebuilt and the thread waited at `site`.
+static inline int resuming_at(const Cpu *c, int site) { return c->resume && c->blk_id == (uint32_t)site; }
+
+// The function that a call in resume mode reaches next: the one holding the next call site of the chain, or the
+// routine of the blocking site at its end.
+GuestFn rt_resume_target(Cpu *c);
+
+// Describes every guest thread so that a fresh instance can rebuild them (see "Portable save states" in
+// docs/runtime.md). Call between two oot_frame() calls. Returns the size in bytes; with `buf` NULL nothing is
+// written. Returns 0 and sets rt_state_error() when the threads cannot be described.
+uint32_t rt_threads_describe(uint8_t *buf, uint32_t cap);
+// Replaces the threads with the described ones. The guest memory and the runtime's other state have to be those
+// of the description already. Returns 0 and sets rt_state_error() when the description is refused; the threads
+// are then untouched.
+int rt_threads_rebuild(const uint8_t *buf, uint32_t len);
+const char *rt_state_error(void);
+
 // ---- Shared by the runtime files ---------------------------------------------------------------------
 
 #define ARG(n) ((uint32_t)c->r[4 + (n)])
@@ -186,12 +234,12 @@ void timers_reset(void);
 // Sends `msg` to the queue when it has room, waking the first receiver; returns 0 when the queue is full.
 int mq_try_send(uint32_t q, uint32_t msg);
 void mq_init(uint32_t q, uint32_t buffer, uint32_t count);
-// Blocks the calling thread until the given time.
-void thread_sleep_until(uint64_t when);
+// Blocks the calling thread until the given time, at blocking site `site`.
+void thread_sleep_until(Cpu *c, uint64_t when, int site);
 // Sends the message registered for an event.
 void event_send(int event);
 // Advances the clock for a poll-style call and lets due events run.
-void rt_poll(uint32_t cycles);
+void rt_poll(Cpu *c, int site, uint32_t cycles);
 void clock_set(uint64_t now);
 extern uint32_t rt_status;
 void events_run_due(void);

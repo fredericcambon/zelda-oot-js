@@ -117,3 +117,15 @@ EMSCRIPTEN_KEEPALIVE uint32_t oot_trace_count(void) { return trace_total; }
 EMSCRIPTEN_KEEPALIVE uint32_t oot_trace_at(uint32_t back) {
   return back < TRACE_RING && back < trace_total ? trace_ring[(trace_total - 1 - back) % TRACE_RING] : 0;
 }
+
+// ---- Threads of a saved state ---------------------------------------------------------------------------------
+
+static int threads_rebuilt;
+
+// Describes the guest threads into `buf` (rt_threads_describe). Returns the size, or 0 with oot_state_error() set.
+EMSCRIPTEN_KEEPALIVE uint32_t oot_threads_describe(uint8_t *buf, uint32_t cap) { return rt_threads_describe(buf, cap); }
+// Rebuilds the threads from a description; oot_threads_rebuilt() tells whether it was accepted. Rebuilding switches
+// fibers, so the result is not the return value (see oot_frame).
+EMSCRIPTEN_KEEPALIVE void oot_threads_rebuild(const uint8_t *buf, uint32_t len) { threads_rebuilt = rt_threads_rebuild(buf, len); }
+EMSCRIPTEN_KEEPALIVE int oot_threads_rebuilt(void) { return threads_rebuilt; }
+EMSCRIPTEN_KEEPALIVE const char *oot_state_error(void) { return rt_state_error(); }
