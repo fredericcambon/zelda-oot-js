@@ -39,7 +39,7 @@ interface Target {
   framebuffer: WebGLFramebuffer;
 }
 
-const FLOATS_PER_VERTEX = 11;
+const FLOATS_PER_VERTEX = 10;
 const MAX_TEXTURES = 512;
 
 const PRESENT_FRAGMENT = `#version 300 es
@@ -94,8 +94,6 @@ export class Renderer {
     gl.vertexAttribPointer(1, 4, gl.FLOAT, false, stride, 16);
     gl.enableVertexAttribArray(2);
     gl.vertexAttribPointer(2, 2, gl.FLOAT, false, stride, 32);
-    gl.enableVertexAttribArray(3);
-    gl.vertexAttribPointer(3, 1, gl.FLOAT, false, stride, 40);
     this.depth = gl.createRenderbuffer()!;
     this.setScale(scale);
     this.white = this.upload(1, 1, Uint8Array.of(255, 255, 255, 255));
@@ -247,7 +245,6 @@ export class Renderer {
       v.set(b.colors.subarray(i * 4, i * 4 + 4), o + 4);
       v[o + 8] = b.uvs[i * 2]!;
       v[o + 9] = b.uvs[i * 2 + 1]!;
-      v[o + 10] = b.fog[i]!;
     }
     this.draw(b.state, n, true);
   }
@@ -270,7 +267,6 @@ export class Renderer {
       v[o + 4] = v[o + 5] = v[o + 6] = v[o + 7] = 1;
       v[o + 8] = s0 + (px - x0) * stepS;
       v[o + 9] = t0 + (py - y0) * stepT;
-      v[o + 10] = 0;
     };
     const v = this.scratch(6);
     const order: [number, number][] = [[x0, y0], [x1, y0], [x0, y1], [x1, y0], [x1, y1], [x0, y1]];
@@ -353,6 +349,7 @@ export class Renderer {
     gl.uniform4f(u('uFog'), f.r / 255, f.g / 255, f.b / 255, f.a / 255);
     gl.uniform4f(u('uBlend'), bl.r / 255, bl.g / 255, bl.b / 255, bl.a / 255);
     gl.uniform1f(u('uPrimLod'), p.lodFrac / 255);
+    gl.uniform2f(u('uFogLine'), state.fog.multiplier, state.fog.offset);
 
     const a = new Float32Array(8), m = new Float32Array(8), c = new Float32Array(8);
     for (let i = 0; i < 2; i++) {

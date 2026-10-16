@@ -16,6 +16,8 @@
 `web/shader.ts` builds one GLSL ES 3.00 fragment shader per `ShaderSpec`: the combiner inputs of both cycles, cycle type, filter mode, alpha compare, fog in shade alpha, and the blender selectors. Colours, tile sizes, masks and shifts are uniforms. Input selector numbering is the one `decodeCombine` already extracts; the meaning of each code, the blender selectors and the other-mode bit positions are from the RDP descriptions on n64brew.dev.
 
 - Blender: `(p·a + m·b) / (a + b)`. A cycle that does not read the framebuffer is computed in the shader (this is how fog works). The last cycle, when it reads the framebuffer and the force-blend bit is set, outputs `p` with weight `a / (a + b)` in alpha and the GL blend unit does the rest; the framebuffer alpha is taken as 1.
+- Coverage and alpha: other-mode bit 12 (coverage times alpha) discards a pixel whose alpha is below 32/255; bit 13 makes the blender's pixel alpha the coverage (1, or the pixel alpha with bit 12). Formulas and evidence in `docs/re/display-lists.md` section 7.
+- Near plane (not clipped by the microcode, see `docs/re/display-lists.md` section 7): a vertex with `w > 0` and `z < -w` is moved to `z = -w` in the vertex shader, not clipped away (the status display's third heart is drawn there).
 - Texture sampling: tile origin subtracted, shift, clamp, mirror and mask in the shader; 3-point bilinear when the filter bits are not zero.
 - Depth: enabled by the geometry mode's z-buffer bit, compare and update by the other-mode bits, decal mode by a polygon offset.
 - Fill rectangles in fill mode clear the rectangle (inclusive corners); in the other cycle types they draw through the combiner.

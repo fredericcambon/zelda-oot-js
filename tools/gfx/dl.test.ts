@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DisplayListInterpreter, decodeCombine, type TriangleBatch } from './dl.ts';
 import { Op } from './opcodes.ts';
+import { SoftRenderer } from './raster.ts';
 
 class Ram {
   readonly bytes = new Uint8Array(0x100000);
@@ -282,5 +283,74 @@ describe('display list interpreter', () => {
     const ram = new Ram();
     ram.list(0x1000, tri(0, 1, 2), END);
     expect(run(ram, 0x1000).problems).toHaveLength(1);
+  });
+});
+
+describe('background pictures of the 2D microcode', () => {
+  const RECORD = 0x3000, UCODE_DATA = 0x4000, UCODE_TEXT = 0x5000, PICTURE = 0x10000;
+  const IMAGE = 0x8000;
+
+  /** 4x2 RGBA16 texels (red, green, blue, white; then black, and three half-intensity ones), a 2D microcode and a record. */
+  function scene(op: number, mode: number, record: Partial<Record<'imageX' | 'frameX' | 'frameY' | 'scaleW', number>> = {}): Ram {
+    const ram = new Ram();
+    const texels = [0xf801, 0x07c1, 0x003f, 0xffff, 0x0001, 0x7bdf, 0x7bdf, 0x7bdf];
+    texels.forEach((t, i) => ram.dv.setUint16(PICTURE + i * 2, t));
+    ram.bytes.set(Array.from('RSP Gfx[Safe] S2DEX fifo 2.05', (c) => c.charCodeAt(0)), UCODE_DATA + 0x138);
+    const r = RECORD;
+    ram.dv.setUint16(r, record.imageX ?? 0);
+    ram.dv.setUint16(r + 2, 4 * 4);
+    ram.dv.setInt16(r + 4, (record.frameX ?? 2) * 4);
+    ram.dv.setUint16(r + 6, 4 * 4);
+    ram.dv.setUint16(r + 10, 2 * 4);
+    ram.dv.setInt16(r + 12, (record.frameY ?? 1) * 4);
+    ram.dv.setUint16(r + 14, 2 * 4);
+    ram.dv.setUint32(r + 16, PICTURE);
+    ram.dv.setUint16(r + 20, 0xfff4);
+    ram.dv.setUint8(r + 22, 0);
+    ram.dv.setUint8(r + 23, 2);
+    ram.dv.setUint16(r + 28, record.scaleW ?? 0x400);
+    ram.dv.setUint16(r + 30, 0x400);
+    ram.list(0x1000,
+      [0xff000000 | (2 << 19) | 319, 0x80000000 | IMAGE],
+      [0xe1000000, UCODE_DATA], [0xdd0007ff, UCODE_TEXT],
+      [0xef000000 | mode, 1], [op << 24, 0x80000000 | RECORD], END);
+    return ram;
+  }
+
+  it('is one copy-mode texture rectangle over the frame window, taking the picture from the record', () => {
+    const r = run(scene(0x0a, 0x200000), 0x1000);
+    expect(r.unknown).toEqual([]);
+    expect(r.problems).toEqual([]);
+    const rect = r.batches.at(-1)!;
+    // The last pixel of a copy-mode rectangle is included: a 4x2 frame at (2,1) ends at (5,2).
+    expect(rect).toMatchObject({ kind: 'texrect', xh: 8, yh: 4, xl: 8 + 16 - 4, yl: 4 + 8 - 4, s: 0, t: 0, dsdx: 4096, dtdy: 1024 });
+    const tex = (rect as { state: { textures: ({ width: number; height: number; rgba: Uint8Array } | null)[] } }).state.textures[0]!;
+    expect([tex.width, tex.height]).toEqual([4, 2]);
+    expect(Array.from(tex.rgba.subarray(0, 8))).toEqual([255, 0, 0, 255, 0, 255, 0, 255]);
+  });
+
+  it('draws the picture 1:1 into the colour image, texels with alpha 0 left alone', () => {
+    const soft = new SoftRenderer();
+    soft.drawTask(run(scene(0x0a, 0x200000), 0x1000));
+    const img = soft.image(IMAGE)!;
+    const at = (x: number, y: number) => Array.from(img.subarray((y * 320 + x) * 4, (y * 320 + x) * 4 + 3));
+    expect(at(2, 1)).toEqual([255, 0, 0]);
+    expect(at(5, 1)).toEqual([255, 255, 255]);
+    expect(at(6, 1)).toEqual([0, 0, 0]);
+    expect(at(2, 2)).toEqual([0, 0, 0]);
+    expect(at(4, 2)).toEqual([123, 123, 123]);
+    expect(at(1, 1)).toEqual([0, 0, 0]);
+  });
+
+  it('scales a one-cycle picture by the record and starts at its image offset', () => {
+    const r = run(scene(0x09, 0x000000, { imageX: 32, scaleW: 0x800 }), 0x1000);
+    const rect = r.batches.at(-1)!;
+    expect(rect).toMatchObject({ kind: 'texrect', xl: 8 + 16, yl: 4 + 8, s: 32, dsdx: 512, dtdy: 1024 });
+  });
+
+  it('is an unknown command while the 3D microcode is loaded', () => {
+    const ram = new Ram();
+    ram.list(0x1000, [0x0a000000, 0x80000000 | RECORD], END);
+    expect(run(ram, 0x1000).unknown).toHaveLength(1);
   });
 });

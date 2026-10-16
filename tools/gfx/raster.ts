@@ -2,7 +2,7 @@
 // rules as the WebGL path (web/shader.ts, web/renderer.ts) with nearest-texel sampling.
 import type { Batch, DecodedTexture, DisplayListResult, DrawState, RectBatch, TileState, TriangleBatch } from './dl.ts';
 import { Geo } from './opcodes.ts';
-import { CycleType, cycleTypeOf, OtherL, shiftScale, specOf, type BlendCycle, type ShaderSpec } from '../../web/shader.ts';
+import { CycleType, cycleTypeOf, MIN_COVERAGE_ALPHA, OtherL, shiftScale, specOf, type BlendCycle, type ShaderSpec } from '../../web/shader.ts';
 
 export const WIDTH = 320;
 export const HEIGHT = 240;
@@ -13,7 +13,6 @@ interface Vertex {
   pos: [number, number, number, number];
   color: [number, number, number, number];
   uv: [number, number];
-  fog: number;
 }
 
 interface Inputs {
@@ -194,14 +193,16 @@ export class SoftRenderer {
       verts.push({
         pos: [b.positions[i * 4]!, b.positions[i * 4 + 1]!, b.positions[i * 4 + 2]!, b.positions[i * 4 + 3]!],
         color: [b.colors[i * 4]!, b.colors[i * 4 + 1]!, b.colors[i * 4 + 2]!, b.colors[i * 4 + 3]!],
-        uv: [b.uvs[i * 2]!, b.uvs[i * 2 + 1]!], fog: b.fog[i]!,
+        uv: [b.uvs[i * 2]!, b.uvs[i * 2 + 1]!]
       });
     }
     for (let i = 0; i + 2 < n; i += 3) this.triangle(b.state, img, verts[i]!, verts[i + 1]!, verts[i + 2]!);
   }
 
   private triangle(state: DrawState, img: Uint8Array, a: Vertex, b: Vertex, c: Vertex): void {
-    const poly = clipNear([a, b, c]);
+    // Same as the vertex shader: a vertex in front of the near plane is moved onto it rather than clipped away.
+    const onNear = (v: Vertex): Vertex => (v.pos[3] > 0 && v.pos[2] < -v.pos[3] ? { ...v, pos: [v.pos[0], v.pos[1], -v.pos[3], v.pos[3]] } : v);
+    const poly = clipNear([onNear(a), onNear(b), onNear(c)]);
     for (let k = 1; k + 1 < poly.length; k++) this.projected(state, img, poly[0]!, poly[k]!, poly[k + 1]!);
   }
 
@@ -243,7 +244,7 @@ export class SoftRenderer {
         const qs = q0 + q1 + q2;
         const mix = (f: (v: Vertex) => number) => (q0 * f(a) + q1 * f(b) + q2 * f(c)) / qs;
         const color: [number, number, number, number] = [mix((v) => v.color[0]), mix((v) => v.color[1]), mix((v) => v.color[2]), mix((v) => v.color[3])];
-        const fog = mix((v) => v.fog);
+        const fog = Math.min(255, Math.max(0, z * state.fog.multiplier + state.fog.offset)) / 255;
         if (this.pixel(state, spec, img, x, y, color, mix((v) => v.uv[0]), mix((v) => v.uv[1]), fog) && depthOn && (l & OtherL.Z_UPDATE)) this.depth[di] = z;
       }
     }
@@ -275,12 +276,14 @@ export class SoftRenderer {
       rgb = inputs.combined;
       a = inputs.combinedA;
       if (spec.alphaCompare && a < state.blendColor.a / 255) return false;
+      if (spec.coverageTimesAlpha && a < MIN_COVERAGE_ALPHA) return false;
     }
     const dst = (y * WIDTH + x) * 4;
     let weight = 1;
+    const pixelAlpha = spec.alphaFromCoverage && !spec.coverageTimesAlpha ? 1 : a;
     if (!spec.copy) {
       for (let n = 0; n < spec.cycles; n++) {
-        const t = blendTerms(spec.blend[n]!, rgb, a, state, inputs.shadeA);
+        const t = blendTerms(spec.blend[n]!, rgb, pixelAlpha, state, inputs.shadeA);
         if (n === spec.cycles - 1 && spec.framebufferBlend) {
           const s = t.a + t.b;
           weight = s > 0 ? t.a / s : 1;
@@ -320,7 +323,7 @@ function clipNear(poly: Vertex[]): Vertex[] {
       out.push({
         pos: cur.pos.map((v, k) => lerp(v, nxt.pos[k]!)) as Vertex['pos'],
         color: cur.color.map((v, k) => lerp(v, nxt.color[k]!)) as Vertex['color'],
-        uv: [lerp(cur.uv[0], nxt.uv[0]), lerp(cur.uv[1], nxt.uv[1])], fog: lerp(cur.fog, nxt.fog),
+        uv: [lerp(cur.uv[0], nxt.uv[0]), lerp(cur.uv[1], nxt.uv[1])]
       });
     }
   }

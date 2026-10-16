@@ -14,7 +14,7 @@ import { RspReference } from '../audio/rsp-ref.ts';
 import { Synth } from '../audio/synth.ts';
 import { encodeWav } from '../audio/wav.ts';
 import { buildManifest, readCartridge, writeAssets } from '../assets/write.ts';
-import { DisplayListInterpreter } from '../gfx/dl.ts';
+import { DisplayListInterpreter, type Batch, type DisplayListResult } from '../gfx/dl.ts';
 import { encodePng } from '../gfx/png.ts';
 import { HEIGHT, SoftRenderer, WIDTH } from '../gfx/raster.ts';
 import { bootGame } from './boot.ts';
@@ -77,9 +77,13 @@ async function bootCapturing(capture: ReadonlySet<number>) {
   const interpreter = new DisplayListInterpreter();
   const soft = new SoftRenderer();
   let frame = 0;
+  const unknown: string[] = [];
   const game = await bootGame(moduleUrl, cartridge, {
     onGfxTask: (task) => {
-      if ([...capture].some((c) => frame <= c && frame > c - DRAW_LEAD)) soft.drawTask(interpreter.run(task.ram, task.data));
+      if (![...capture].some((c) => frame <= c && frame > c - DRAW_LEAD)) return;
+      const result = interpreter.run(task.ram, task.data);
+      unknown.push(...result.unknown.map((u) => `frame ${frame} 0x${u.w0.toString(16)}`), ...result.problems);
+      soft.drawTask(result);
     },
   });
   const shots = new Map<number, Uint8Array>();
@@ -100,7 +104,7 @@ async function bootCapturing(capture: ReadonlySet<number>) {
       }
     }
   };
-  return { game, play, shots, jpegTasks: () => jpegTasks };
+  return { game, play, shots, unknown, jpegTasks: () => jpegTasks };
 }
 
 function differingPixels(a: Uint8Array, b: Uint8Array): number {
@@ -251,6 +255,19 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
     });
     for (let a = 0; a < images.length; a++)
       for (let b = a + 1; b < images.length; b++) expect(differingPixels(images[a]!, images[b]!), `frames ${a} and ${b} differ`).toBeGreaterThan(300);
+
+    // The house is drawn with no unknown command and no interpreter problem, and the room's picture is on screen: most pixels
+    // of the frame under control are the decoded picture's, the rest being Link, the objects and the HUD in front of it.
+    expect(run.unknown).toEqual([]);
+    const picture = run.game.ram().subarray(at, at + 320 * 240 * 2);
+    const shot = run.shots.get(CONTROL_FRAME)!;
+    let same = 0;
+    for (let i = 0; i < 320 * 240; i++) {
+      const px = (picture[i * 2]! << 8) | picture[i * 2 + 1]!;
+      const [r, g, b] = [(px >>> 11) & 31, (px >>> 6) & 31, (px >>> 1) & 31].map((c) => (c << 3) | (c >> 2));
+      if (shot[i * 4] === r && shot[i * 4 + 1] === g && shot[i * 4 + 2] === b) same++;
+    }
+    expect(same / (320 * 240)).toBeGreaterThan(0.85);
   }, 3_600_000);
 
   it('restores a saved state into a fresh game and replays the same frames, pictures, sound, position and memory', async () => {
@@ -409,4 +426,79 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
     expect(compared).toBe(COMPARE_FRAMES.length);
     expect(problems).toEqual([]);
   }, 3_600_000);
+
+  describe('alpha, depth and blending of the drawn frames', () => {
+    /** The graphics tasks of the last frames before `target`, and the colour image the video interface shows then. */
+    const capture = async (target: number) => {
+      const { moduleUrl, cartridge } = await buildGame();
+      const interpreter = new DisplayListInterpreter();
+      const results: DisplayListResult[] = [];
+      let frame = 0;
+      const game = await bootGame(moduleUrl, cartridge, {
+        onGfxTask: (task) => {
+          if (frame > target - DRAW_LEAD) results.push(interpreter.run(task.ram, task.data));
+        },
+      });
+      while (frame < target) {
+        frame++;
+        const pad = padAt(SCRIPT, frame);
+        game.setPad(pad.buttons, pad.x, pad.y);
+        expect((await game.frame()).fatal, `frame ${frame}`).toBeUndefined();
+      }
+      const render = (keep: (b: Batch) => boolean) => {
+        const soft = new SoftRenderer();
+        for (const r of results) soft.drawTask({ ...r, batches: r.batches.filter(keep) });
+        return soft.image(game.framebuffer())!;
+      };
+      return { results, render };
+    };
+    const CVG_TIMES_ALPHA = 1 << 12;
+    const luminance = (img: Uint8Array, i: number) => img[i]! + img[i + 1]! + img[i + 2]!;
+
+    it("leaves out the transparent texels of the forest's cutout textures", async () => {
+      const { results } = await capture(FOREST_FRAME - 200);
+      let tested = 0;
+      for (const r of results) for (const b of r.batches) {
+        const texture = b.state.textures[0];
+        if (b.kind !== 'triangles' || !(b.state.otherModeL & CVG_TIMES_ALPHA) || !texture) continue;
+        let clear = 0;
+        for (let i = 3; i < texture.rgba.length; i += 4) if (texture.rgba[i]! < 32) clear++;
+        if (clear === 0 || clear === texture.width * texture.height) continue;
+        const cut = new SoftRenderer();
+        cut.drawTask({ ...r, batches: [b] });
+        const solid = new SoftRenderer();
+        solid.drawTask({ ...r, batches: [{ ...b, state: { ...b.state, otherModeL: b.state.otherModeL & ~CVG_TIMES_ALPHA } }] });
+        expect(cut.pixelsWritten).toBeLessThanOrEqual(solid.pixelsWritten);
+        if (cut.pixelsWritten < solid.pixelsWritten) tested++;
+      }
+      expect(tested).toBeGreaterThan(20);
+    }, 3_600_000);
+
+    it('draws the three hearts of a new file and a shadow that only darkens the ground', async () => {
+      const { render } = await capture(CONTROL_FRAME + 50);
+      const frame = render(() => true);
+      // The third heart is the beating one: a textured quad at z / w = -1.4, in front of the near plane.
+      for (const [from, to] of [[24, 36], [36, 46], [46, 60]] as const) {
+        let red = 0;
+        for (let y = 14; y < 36; y++) {
+          for (let x = from; x < to; x++) {
+            const o = (y * WIDTH + x) * 4;
+            if (frame[o]! > 180 && frame[o + 1]! < 110 && frame[o + 2]! < 110) red++;
+          }
+        }
+        expect(red, `heart between x = ${from} and ${to}`).toBeGreaterThan(15);
+      }
+
+      // The decal draws (depth mode 3) are the shadow: without them no pixel is darker, with them none is lighter.
+      const decal = (b: Batch) => b.kind === 'triangles' && ((b.state.otherModeL >>> 10) & 3) === 3;
+      const bare = render((b) => !decal(b));
+      let darker = 0;
+      for (let i = 0; i < frame.length; i += 4) {
+        const d = luminance(frame, i) - luminance(bare, i);
+        expect(d, `pixel ${i / 4}`).toBeLessThanOrEqual(0);
+        if (d < 0) darker++;
+      }
+      expect(darker).toBeGreaterThan(50);
+    }, 3_600_000);
+  });
 });
