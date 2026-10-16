@@ -80,6 +80,9 @@ void rt_osSpTaskStartGo(Cpu *c) {
     if (audio_hook) audio_hook(&task);
     done += AUDIO_TASK_CYCLES;
     rt_schedule(done, event_fn, EVENT_SP, 0);
+  } else if (task.type == TASK_HALT && task.ucode == JPEG_UCODE) {
+    rt_jpeg_task(&task);
+    rt_schedule(done + JPEG_TASK_CYCLES, event_fn, EVENT_SP, 0);
   } else if (task.type == TASK_HALT && (task.ucode == HALT_UCODE || task.ucode_boot == HALT_UCODE)) {
     rt_schedule(done + HALT_TASK_CYCLES, event_fn, EVENT_SP, 0);
   } else {

@@ -11,6 +11,7 @@ const TH_ENTRY = 0x11c;
 
 interface OotModule extends OotCore {
   _oot_audio_tasks(): number;
+  _oot_jpeg_tasks(): number;
   _oot_rd32(addr: number): number;
   _oot_trace_count?(): number;
   _oot_trace_at?(back: number): number;
@@ -22,6 +23,7 @@ export interface FrameResult {
   retraces: number;
   gfxTasks: number;
   audioTasks: number;
+  jpegTasks: number;
   newThreads: string[];
   /** One line per thread: address, id, priority, state and the queue it waits on. */
   threadStates: string[];
@@ -54,6 +56,8 @@ export interface Game {
   setPad(buttons: number, x?: number, y?: number): void;
   /** Reads a word of guest memory. */
   rd32(addr: number): number;
+  /** The guest memory, big-endian, indexed by physical address; a view that stays valid only until the next frame. */
+  ram(): Uint8Array;
   /** A copy of the save memory. */
   readSave(): Uint8Array;
   /** Replaces the start of the save memory; call before the first frame. */
@@ -104,12 +108,13 @@ export async function bootGame(moduleUrl: string, rom: Uint8Array, options: Boot
       });
       return {
         threadStates, frame: mod._oot_frames(), alive, retraces: mod._oot_retraces(), gfxTasks: mod._oot_gfx_tasks(),
-        audioTasks: mod._oot_audio_tasks(), newThreads, fatal,
+        audioTasks: mod._oot_audio_tasks(), jpegTasks: mod._oot_jpeg_tasks(), newThreads, fatal,
       };
     },
     framebuffer: () => shownFramebuffer(rd32),
     setPad: (buttons, x = 0, y = 0) => mod._oot_pad_set(0, buttons, x, y),
     rd32,
+    ram: () => mod.HEAPU8.subarray(mod._oot_rdram(), mod._oot_rdram() + RDRAM_SIZE),
     readSave: () => mod.HEAPU8.slice(mod._oot_sram(), mod._oot_sram() + mod._oot_sram_size()),
     writeSave: (bytes) => mod.HEAPU8.set(bytes.subarray(0, mod._oot_sram_size()), mod._oot_sram()),
     takeSaveDirty: () => mod._oot_sram_take_dirty() !== 0,

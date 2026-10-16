@@ -1,0 +1,28 @@
+# From the title screen to a controllable Link in his house, one frame per line of the PAL boot (50 Hz).
+# Start at the title, then A on the language, Start on File 1, A on the letter, Start on END, A to confirm the name.
+2450 START
+2460 NONE
+2700 A
+2710 NONE
+2900 START
+2910 NONE
+3320 A
+3330 NONE
+3400 START
+3410 NONE
+3470 A
+3480 NONE
+# Select the file and answer the prompts.
+3720 A
+3730 NONE
+3820 A
+3830 NONE
+3900 A
+3910 NONE
+# The opening cutscenes and the dialogue wait for A at several points; tapping it advances them all.
+tap A 9400 18700 100 3
+# Link is controllable from here: walk forward, stop, walk right, stop.
+19000 NONE 0 70
+19040 NONE
+19100 NONE 70 0
+19140 NONE

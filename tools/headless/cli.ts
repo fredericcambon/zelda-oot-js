@@ -10,6 +10,10 @@ import { encodePng } from '../gfx/png.ts';
 import { HEIGHT, SoftRenderer, WIDTH } from '../gfx/raster.ts';
 import { DlTotals } from '../gfx/totals.ts';
 import { bootGame, type Game } from './boot.ts';
+import { padAt, parseInput } from './input.ts';
+
+/** Frames drawn before a dumped frame, so that its colour image is complete. */
+const DRAW_LEAD = 8;
 
 async function main(): Promise<number> {
   const { values } = parseArgs({
@@ -22,6 +26,8 @@ async function main(): Promise<number> {
       dump: { type: 'string' },
       'dump-every': { type: 'string', default: '1' },
       'dump-from': { type: 'string', default: '0' },
+      'dump-at': { type: 'string' },
+      input: { type: 'string' },
     },
   });
   const frames = Number(values.frames);
@@ -35,6 +41,9 @@ async function main(): Promise<number> {
   const dumpEvery = Math.max(1, Number(values['dump-every']));
   // Frames before this one are not drawn: each frame is redrawn whole, so only the speed changes.
   const dumpFrom = Number(values['dump-from']);
+  // With --dump-at only the listed frames are dumped and --dump-every and --dump-from are ignored.
+  const dumpAt = (values['dump-at'] ?? '').split(',').filter(Boolean).map(Number);
+  const script = values.input ? parseInput(readFileSync(values.input, 'utf8'), values.input) : { states: [], taps: [] };
   let frameNo = 0;
   let game: Game;
   try {
@@ -43,7 +52,8 @@ async function main(): Promise<number> {
         ? (task) => {
             const result = interpreter.run(task.ram, task.data);
             if (values.dl) totals.add(result);
-            if (frameNo >= dumpFrom - 2) soft?.drawTask(result);
+            const wanted = dumpAt.length > 0 ? dumpAt.some((f) => frameNo <= f && frameNo > f - DRAW_LEAD) : frameNo >= dumpFrom - 2;
+            if (wanted) soft?.drawTask(result);
           }
         : undefined,
     });
@@ -53,6 +63,10 @@ async function main(): Promise<number> {
   }
   for (let k = 0; k < frames; k++) {
     frameNo++;
+    if (script.states.length + script.taps.length > 0) {
+      const pad = padAt(script, frameNo);
+      game.setPad(pad.buttons, pad.x, pad.y);
+    }
     const r = await game.frame();
     if (values.trace || r.newThreads.length > 0) {
       console.log(
@@ -65,7 +79,8 @@ async function main(): Promise<number> {
       const calls = game.lastCalls(40);
       if (calls.length > 0) console.error(`last calls, newest first: ${calls.join(' ')}`);
     }
-    if (soft && dumpDir && r.frame % dumpEvery === 0 && r.frame >= dumpFrom) {
+    const dumpNow = dumpAt.length > 0 ? dumpAt.includes(r.frame) : r.frame % dumpEvery === 0 && r.frame >= dumpFrom;
+    if (soft && dumpDir && dumpNow) {
       const img = soft.image(game.framebuffer());
       if (img) writeFileSync(join(dumpDir, `frame-${String(r.frame).padStart(5, '0')}.png`), encodePng(WIDTH, HEIGHT, img));
     }

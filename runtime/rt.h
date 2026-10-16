@@ -80,6 +80,8 @@ enum {
 #define AUDIO_TASK_CYCLES 100000u
 #define HALT_TASK_CYCLES 1000u   // a task whose microcode only halts
 #define HALT_UCODE 0x800066C0u   // that microcode: it writes SP_STATUS and breaks (docs/re/boot-flow.md section 7)
+#define JPEG_TASK_CYCLES 200000u
+#define JPEG_UCODE 0x800e4b10u   // the JPEG decode microcode (runtime/jpeg.c)
 #define DP_DELAY_CYCLES 2000u    // RDP completion after the RSP
 
 // ---- Host interface ----------------------------------------------------------------------------------
@@ -146,6 +148,8 @@ typedef struct RspTask {
 // SP_STATUS) and `break` (0x800066c4-0x800066cc): a task that only halts, which the runtime completes at once.
 enum { TASK_GFX = 1, TASK_AUDIO = 2, TASK_HALT = 4 };
 typedef void (*RspHook)(const RspTask *task);
+void rt_jpeg_task(const RspTask *task);
+uint32_t rt_jpeg_tasks(void);
 void rt_set_gfx_hook(RspHook fn);
 void rt_set_audio_hook(RspHook fn);
 typedef void (*AiHook)(uint32_t addr, uint32_t length);
