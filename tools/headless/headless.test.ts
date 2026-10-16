@@ -253,6 +253,84 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
       for (let b = a + 1; b < images.length; b++) expect(differingPixels(images[a]!, images[b]!), `frames ${a} and ${b} differ`).toBeGreaterThan(300);
   }, 3_600_000);
 
+  it('restores a saved state into a fresh game and replays the same frames, pictures, sound, position and memory', async () => {
+    const { moduleUrl, cartridge } = await buildGame();
+    const SAVE_FRAME = CONTROL_FRAME - 10;
+    const REPLAY_FRAMES = 180;
+    const sha = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
+
+    const start = async () => {
+      let soft = new SoftRenderer();
+      let interpreter = new DisplayListInterpreter();
+      let sound = createHash('sha256');
+      let drawing = false;
+      const game = await bootGame(moduleUrl, cartridge, {
+        onGfxTask: (task) => {
+          if (drawing) soft.drawTask(interpreter.run(task.ram, task.data));
+        },
+        onAiBuffer: (b) => {
+          if (drawing) sound.update(b.ram.subarray(b.addr & 0x7fffff, (b.addr & 0x7fffff) + b.length));
+        },
+      });
+      /** Plays the frames after `from`, hashing the shown picture, the sound queued and Link's position of each. */
+      const play = async (from: number, to: number): Promise<string[]> => {
+        soft = new SoftRenderer();
+        interpreter = new DisplayListInterpreter();
+        drawing = true;
+        const frames: string[] = [];
+        for (let frame = from + 1; frame <= to; frame++) {
+          const pad = padAt(SCRIPT, frame);
+          game.setPad(pad.buttons, pad.x, pad.y);
+          sound = createHash('sha256');
+          const r = await game.frame();
+          expect(r.fatal, `frame ${frame}`).toBeUndefined();
+          const img = soft.image(game.framebuffer());
+          const rd = (addr: number) => game.rd32(addr);
+          const state = playState(rd);
+          const pos = state ? linkPosition(rd, state) : undefined;
+          frames.push(`${frame} ${img ? sha(img) : 'no image'} ${sound.digest('hex')} ${pos ? `${pos.x},${pos.y},${pos.z}` : 'no link'}`);
+        }
+        drawing = false;
+        return frames;
+      };
+      return { game, play };
+    };
+
+    const first = await start();
+    for (let frame = 1; frame <= SAVE_FRAME; frame++) {
+      const pad = padAt(SCRIPT, frame);
+      first.game.setPad(pad.buttons, pad.x, pad.y);
+      expect((await first.game.frame()).fatal, `frame ${frame}`).toBeUndefined();
+    }
+    expect(playState((a) => first.game.rd32(a))?.scene).toBe(HOUSE_SCENE);
+    const state = first.game.snapshot();
+    const savedGames = first.game.readSave();
+    const expected = await first.play(SAVE_FRAME, SAVE_FRAME + REPLAY_FRAMES);
+    const finalMemory = first.game.snapshot();
+    // The walk moves Link and the pictures change, so the comparison below is not between constant frames.
+    expect(new Set(expected.map((l) => l.split(' ')[1])).size).toBeGreaterThan(20);
+    expect(new Set(expected.map((l) => l.split(' ')[3])).size).toBeGreaterThan(10);
+
+    // A game that has just booted (as a reloaded page has) takes the state.
+    const second = await start();
+    const blank = second.game.readSave();
+    second.game.restore(state);
+    // The save memory holds the player's saved games, which a state does not overwrite.
+    expect(second.game.readSave()).toEqual(blank);
+    second.game.writeSave(savedGames);
+    const replayed = await second.play(SAVE_FRAME, SAVE_FRAME + REPLAY_FRAMES);
+    expect(replayed).toEqual(expected);
+    const replayedMemory = second.game.snapshot();
+    // Every byte of the module's memory but the cartridge image is the same, so nothing the game depends on was left out.
+    const common = Math.min(replayedMemory.tail.length, finalMemory.tail.length);
+    expect(sha(replayedMemory.head)).toBe(sha(finalMemory.head));
+    expect(sha(replayedMemory.tail.subarray(0, common))).toBe(sha(finalMemory.tail.subarray(0, common)));
+
+    // The same game goes back too.
+    first.game.restore(state);
+    expect(await first.play(SAVE_FRAME, SAVE_FRAME + REPLAY_FRAMES)).toEqual(expected);
+  }, 3_600_000);
+
   it('renders the title music to a WAV that is audible and not clipped', async () => {
     const { moduleUrl, cartridge } = await buildGame();
     const audio = new AudioCapture();

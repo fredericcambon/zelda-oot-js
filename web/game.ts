@@ -2,18 +2,23 @@
 import { Synth } from '../tools/audio/synth.ts';
 import { DisplayListInterpreter } from '../tools/gfx/dl.ts';
 import { shownFramebuffer } from '../tools/gfx/vi.ts';
-import { RDRAM_SIZE, startModule, type OotCore } from '../tools/runtime/instance.ts';
+import { RDRAM_SIZE, startModule } from '../tools/runtime/instance.ts';
 import type { AudioSink } from './audio.ts';
 import type { PadState } from './input.ts';
 import type { Renderer } from './renderer.ts';
 import type { SaveMemory } from './saves.ts';
-
+import { buildIdOf, compress, decompress, type StateSource } from './savestate.ts';
+import { captureMemory, decodeMemory, encodeMemory, restoreMemory, type SnapshotCore } from '../tools/runtime/snapshot.ts';
 
 export interface Game {
   /** Sets controller 1 for the frames that follow. */
   setPad(pad: PadState): void;
   /** The save memory the game reads and writes. */
   saveMemory: SaveMemory;
+  /** Save states of the game; capture and apply only between two frames. */
+  states: StateSource;
+  /** Identifies the game module build (the hash of its wasm file). */
+  buildId(): Promise<string>;
   /** Runs the game for one video frame. Rejects with the game's own message when it stops. */
   frame(): Promise<void>;
   /** Address of the colour image the video interface shows. */
@@ -26,7 +31,7 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
   let audioError = '';
   const synth = new Synth();
   const guestRam = () => mod.HEAPU8.subarray(mod._oot_rdram(), mod._oot_rdram() + RDRAM_SIZE);
-  const mod = await startModule<OotCore>(moduleUrl, rom, {
+  const mod = await startModule<SnapshotCore>(moduleUrl, rom, {
     onGfxTask: (data: number) => {
       try {
         renderer.drawTask(new DisplayListInterpreter().run(guestRam(), data >>> 0));
@@ -55,6 +60,14 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
     saveMemory: {
       write: (bytes) => sram().set(bytes.subarray(0, mod._oot_sram_size())),
       takeIfDirty: () => (mod._oot_sram_take_dirty() ? sram().slice() : null),
+    },
+    states: {
+      capture: () => compress(encodeMemory(captureMemory(mod))),
+      apply: async (data) => restoreMemory(mod, decodeMemory(await decompress(data))),
+    },
+    buildId: async () => {
+      const wasmUrl = moduleUrl.replace(/\.js$/, '.wasm');
+      return buildIdOf(await (await fetch(wasmUrl)).arrayBuffer());
     },
     async frame() {
       try {

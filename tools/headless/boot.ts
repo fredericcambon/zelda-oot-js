@@ -1,6 +1,7 @@
 // Loads the built game into this process and steps it one video frame at a time.
 import { shownFramebuffer } from '../gfx/vi.ts';
-import { RDRAM_SIZE, startModule, type OotCore } from '../runtime/instance.ts';
+import { RDRAM_SIZE, startModule } from '../runtime/instance.ts';
+import { captureMemory, restoreMemory, type MemorySnapshot, type SnapshotCore } from '../runtime/snapshot.ts';
 
 const OS_ALLTHREADS = 0x8000685c;
 const OS_SENTINEL = 0x80006850;
@@ -9,7 +10,7 @@ const TH_PRI = 0x04;
 const TH_ID = 0x14;
 const TH_ENTRY = 0x11c;
 
-interface OotModule extends OotCore {
+interface OotModule extends SnapshotCore {
   _oot_jpeg_tasks(): number;
   _oot_rd32(addr: number): number;
   _oot_trace_count?(): number;
@@ -113,6 +114,10 @@ export interface Game {
   rspTasks(): { type: number; ucode: number; count: number }[];
   /** The coverage counters, or undefined when the module is not a coverage build. */
   coverage(): CoverageSnapshot | undefined;
+  /** The complete state of the game; call between frames. */
+  snapshot(): MemorySnapshot;
+  /** Puts back a state taken from a game booted from the same build and cartridge image; the save memory is kept. */
+  restore(state: MemorySnapshot): void;
 }
 
 export async function bootGame(moduleUrl: string, rom: Uint8Array, options: BootOptions = {}): Promise<Game> {
@@ -186,6 +191,8 @@ export async function bootGame(moduleUrl: string, rom: Uint8Array, options: Boot
       }));
       return { functions, osCalls, outsideRdram };
     },
+    snapshot: () => captureMemory(mod),
+    restore: (state) => restoreMemory(mod, state),
     lastCalls(n) {
       const total = mod._oot_trace_count?.() ?? 0;
       return Array.from({ length: Math.min(n, total) }, (_, k) => `0x${hex(mod._oot_trace_at!(k))}`);

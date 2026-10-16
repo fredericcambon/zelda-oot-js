@@ -31,7 +31,7 @@ export function runtimeSources(): string[] {
 }
 
 /** Host entry points (runtime/headless.c) and the allocator the host copies the ROM through. */
-const EXPORTS = ['_main', '_malloc', '_free', '_oot_boot', '_oot_frame', '_oot_idle', '_oot_frames', '_oot_gfx_tasks', '_oot_audio_tasks', '_oot_jpeg_tasks', '_oot_retraces', '_oot_fatal_message', '_oot_rd32', '_oot_rdram', '_oot_pad_set', '_oot_sram', '_oot_sram_size', '_oot_sram_take_dirty', '_oot_trace_count', '_oot_trace_at', '_oot_rsp_task_kinds', '_oot_rsp_task_kind', '_oot_cov_enabled', '_oot_cov_functions', '_oot_cov_os_count', '_oot_cov_os_addr', '_oot_cov_os_hits', '_oot_cov_outside_count', '_oot_cov_outside'];
+const EXPORTS = ['_main', '_malloc', '_free', '_oot_boot', '_oot_frame', '_oot_idle', '_oot_frames', '_oot_gfx_tasks', '_oot_audio_tasks', '_oot_jpeg_tasks', '_oot_retraces', '_oot_fatal_message', '_oot_rd32', '_oot_rdram', '_oot_rom_base', '_oot_rom_size', '_oot_pad_set', '_oot_sram', '_oot_sram_size', '_oot_sram_take_dirty', '_oot_trace_count', '_oot_trace_at', '_oot_rsp_task_kinds', '_oot_rsp_task_kind', '_oot_cov_enabled', '_oot_cov_functions', '_oot_cov_os_count', '_oot_cov_os_addr', '_oot_cov_os_hits', '_oot_cov_outside_count', '_oot_cov_outside'];
 
 const COMPILE_FLAGS = ['-ffp-contract=off', '-Wall', '-Wno-unused-label', '-Wno-unused-variable', '-Wno-unused-but-set-variable', '-Wno-unused-function'];
 
@@ -92,7 +92,7 @@ export async function link(opts: BuildOptions, objects: string[]): Promise<strin
   writeFileSync(list, objects.map((o) => `"${o.replaceAll('\\', '/')}"`).join('\n'));
   const r = await emcc(opts.toolchain, [
     opts.optimize ?? DEFAULT_OPTIMIZE, '-sENVIRONMENT=web,node', '-sALLOW_MEMORY_GROWTH=1', '-sASYNCIFY', '-sEXIT_RUNTIME=0', '-sERROR_ON_UNDEFINED_SYMBOLS=1', '-sMODULARIZE=1', '-sEXPORT_ES6=1', '-sEXPORT_NAME=createOot',
-    `-sEXPORTED_FUNCTIONS=${EXPORTS.join(',')}`, '-sEXPORTED_RUNTIME_METHODS=HEAPU8,UTF8ToString',
+    `-sEXPORTED_FUNCTIONS=${EXPORTS.join(',')}`, '-sEXPORTED_RUNTIME_METHODS=HEAPU8,UTF8ToString,Asyncify',
     `@${list}`, '-o', out,
   ], repoRoot);
   if (r.code !== 0) throw new Error(`link failed:\n${r.output.slice(0, 4000)}`);
