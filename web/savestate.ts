@@ -65,6 +65,26 @@ export function indexedDbStates(factory: IDBFactory = indexedDB): StateStore {
   };
 }
 
+/** States in the server's shared folder. */
+export function serverStates(fetcher: typeof fetch = fetch): StateStore {
+  return {
+    async get(slot) {
+      const r = await fetcher(`/api/saves/state/${slot}`);
+      if (r.status === 404) return null;
+      if (!r.ok) throw new Error(`could not read slot ${slot}: ${r.status}`);
+      return { build: r.headers.get('X-Build') ?? '', savedAt: Number(r.headers.get('X-Saved-At')) || 0, data: new Uint8Array(await r.arrayBuffer()) };
+    },
+    async put(slot, record) {
+      const r = await fetcher(`/api/saves/state/${slot}`, {
+        method: 'PUT',
+        headers: { 'X-Build': record.build, 'X-Saved-At': String(record.savedAt) },
+        body: record.data.slice(),
+      });
+      if (!r.ok) throw new Error(`could not store slot ${slot}: ${r.status}`);
+    },
+  };
+}
+
 function isRecord(v: unknown): v is StateRecord {
   const r = v as Partial<StateRecord> | null;
   return !!r && typeof r.build === 'string' && typeof r.savedAt === 'number' && r.data instanceof Uint8Array;

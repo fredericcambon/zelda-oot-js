@@ -65,7 +65,10 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
       capture: () => compress(encodeMemory(captureMemory(mod))),
       apply: async (data) => restoreMemory(mod, decodeMemory(await decompress(data))),
     },
-    buildId: async () => buildIdOf(await (await fetch(moduleUrl.replace(/\.js$/, '.wasm'))).arrayBuffer()),
+    buildId: async () => {
+      const wasmUrl = moduleUrl.replace(/\.js$/, '.wasm');
+      return buildIdOf(await (await fetch(wasmUrl)).arrayBuffer());
+    },
     async frame() {
       try {
         await mod._oot_frame();

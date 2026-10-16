@@ -49,6 +49,31 @@ export function indexedDbStore(factory: IDBFactory = indexedDB): SaveStore {
   };
 }
 
+/** Whether the page's server keeps saves on disk (the dev and preview servers do; a static copy of the page does not). */
+export async function serverHasSaves(fetcher: typeof fetch = fetch): Promise<boolean> {
+  try {
+    return (await fetcher('/api/saves/ping')).status === 204;
+  } catch {
+    return false;
+  }
+}
+
+/** The save memory in the server's shared folder; any build of the game reads what another wrote. */
+export function serverStore(fetcher: typeof fetch = fetch): SaveStore {
+  return {
+    async load() {
+      const r = await fetcher('/api/saves/sram');
+      if (r.status === 404) return null;
+      if (!r.ok) throw new Error(`could not read the save: ${r.status}`);
+      return new Uint8Array(await r.arrayBuffer());
+    },
+    async store(bytes) {
+      const r = await fetcher('/api/saves/sram', { method: 'PUT', body: bytes.slice() });
+      if (!r.ok) throw new Error(`could not store the save: ${r.status}`);
+    },
+  };
+}
+
 /** The save memory of a running game, as the host sees it. */
 export interface SaveMemory {
   /** Replaces the start of the save memory. */

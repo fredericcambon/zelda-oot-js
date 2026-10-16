@@ -2,9 +2,9 @@ import { copyFileSync, createReadStream, existsSync, mkdirSync, statSync } from 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { join, resolve } from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
+import { LOOPBACK, savesDir, savesMiddleware } from './web/saves-endpoint.ts';
 
 const dist = resolve(import.meta.dirname, 'dist');
-const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 const GAME_FILES: Record<string, string> = { '/oot.js': 'text/javascript', '/oot.wasm': 'application/wasm' };
 
 // The recompiled game and the assets cut from the cartridge (`npm run port`) live in dist/ next to the web build. The dev
@@ -38,9 +38,11 @@ function gameFiles(): Plugin {
   return {
     name: 'oot-game-files',
     configureServer(server) {
+      server.middlewares.use(savesMiddleware(savesDir()));
       server.middlewares.use(serveGameFiles);
     },
     configurePreviewServer(server) {
+      server.middlewares.use(savesMiddleware(savesDir()));
       server.middlewares.use(serveGameFiles);
     },
     closeBundle() {

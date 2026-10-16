@@ -3,9 +3,11 @@ import { startGame, type Game } from './game.ts';
 import { Renderer, type CullMode } from './renderer.ts';
 import { loadCartridge } from './cartridge.ts';
 import { Input } from './input.ts';
-import { indexedDbStore, SaveSync } from './saves.ts';
-import { indexedDbStates, SaveStates } from './savestate.ts';
+import { indexedDbStore, SaveSync, serverHasSaves, serverStore } from './saves.ts';
+import { indexedDbStates, SaveStates, serverStates } from './savestate.ts';
+import { FastForward } from './fastforward.ts';
 
+const FAST_BUDGET_MS = 12;
 const FRAME_MS = 20; // the video interface retraces at 50 Hz
 
 const status = document.getElementById('status')!;
@@ -39,6 +41,12 @@ let pendingState: (() => Promise<string>) | null = null;
 let noticeTimer = 0;
 const input = new Input();
 const audio = new AudioOutput();
+const fastForward = new FastForward();
+// Sound is dropped while fast-forwarding: the buffers would pile up faster than they play.
+const sound = { push: (bytes: Uint8Array, hz: number) => { if (!fastForward.active) audio.push(bytes, hz); } };
+addEventListener('keydown', (e) => fastForward.keydown(e));
+addEventListener('keyup', (e) => fastForward.keyup(e));
+addEventListener('blur', () => fastForward.reset());
 let fps = 0;
 
 // Browsers start sound only from a user gesture; any key or click does it.
@@ -132,8 +140,10 @@ async function loop(): Promise<void> {
     acc = Math.min(acc + now - last, FRAME_MS * 3);
     last = now;
     let stepped = false;
-    while (acc >= FRAME_MS && game) {
-      acc -= FRAME_MS;
+    // Fast-forward: frames back to back for most of the display interval.
+    const budgetEnd = now + FAST_BUDGET_MS;
+    while (game && (fastForward.active ? !stepped || performance.now() < budgetEnd : acc >= FRAME_MS)) {
+      acc = fastForward.active ? 0 : acc - FRAME_MS;
       try {
         game.setPad(input.poll());
         await game.frame();
@@ -159,14 +169,15 @@ async function loop(): Promise<void> {
 
 async function boot(): Promise<void> {
   try {
+    const onServer = await serverHasSaves();
     const rom = await loadCartridge((done, total) => setStatus(`Loading game files: ${done} / ${total}`));
     setStatus('Starting...');
-    const started = await startGame(rom, renderer, audio);
-    const sync = new SaveSync(started.saveMemory, indexedDbStore());
+    const started = await startGame(rom, renderer, sound);
+    const sync = new SaveSync(started.saveMemory, onServer ? serverStore() : indexedDbStore());
     await sync.restore();
     saves = sync;
     try {
-      states = new SaveStates(started.states, indexedDbStates(), await started.buildId());
+      states = new SaveStates(started.states, onServer ? serverStates() : indexedDbStates(), await started.buildId());
     } catch (err) {
       console.error('save states are not available:', err);
     }
