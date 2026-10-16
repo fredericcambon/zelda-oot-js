@@ -17,6 +17,13 @@ const canvas = document.getElementById('screen') as HTMLCanvasElement;
 const notice = document.getElementById('notice')!;
 
 if (location.hash === '#debug') overlay.hidden = false;
+const debugToggle = document.getElementById('debug-toggle') as HTMLButtonElement;
+// Not focusable by mouse (mousedown is cancelled) so the game keeps the keyboard.
+debugToggle.addEventListener('mousedown', (e) => e.preventDefault());
+debugToggle.addEventListener('click', () => {
+  overlay.hidden = !overlay.hidden;
+  debugToggle.blur();
+});
 
 const setStatus = (text: string, error = false) => {
   status.textContent = text;
@@ -85,10 +92,7 @@ addEventListener('keydown', (e) => {
 
 const CULL_MODES: CullMode[] = ['normal', 'swapped', 'off'];
 addEventListener('keydown', (e) => {
-  if (e.key === 'F3') {
-    overlay.hidden = !overlay.hidden;
-    e.preventDefault();
-  } else if (e.key === 'n' || e.key === 'N') {
+  if (e.key === 'n' || e.key === 'N') {
     // Native 320x240, shown with hard pixels, for comparing with the console's resolution.
     const native = renderer.resolutionScale !== 1;
     renderer.setScale(native ? 1 : displayScale());

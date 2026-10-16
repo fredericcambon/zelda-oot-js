@@ -19,7 +19,7 @@ export const STICK_MAX = 80;
 const STICK_DEADZONE = 0.2;
 const C_STICK_THRESHOLD = 0.5;
 
-/** `KeyboardEvent.code` to button. The arrows are the stick; N, C and F3 stay free for the page's own shortcuts. */
+/** `KeyboardEvent.code` to button. The arrows are the stick; N, C and M stay free for the page's own shortcuts. */
 export const KEY_BUTTONS: Readonly<Record<string, number>> = {
   KeyX: Button.A, KeyZ: Button.B, ShiftLeft: Button.Z, ShiftRight: Button.Z, Enter: Button.Start,
   KeyQ: Button.L, KeyE: Button.R,
