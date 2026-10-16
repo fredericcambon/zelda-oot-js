@@ -111,6 +111,9 @@ typedef void (*FatalHandler)(const char *message);
 void rt_set_fatal_handler(FatalHandler fn);
 __attribute__((noreturn, format(printf, 1, 2))) void rt_fatal(const char *fmt, ...);
 
+// Coverage builds: a new video frame starts, which resets the loop watchdog; other builds do nothing.
+void rt_cov_frame(void);
+
 // Direct transfers and indirect calls that found no function, one record per address.
 uint32_t rt_missing_count(void);
 int rt_missing_get(uint32_t index, uint32_t *addr, uint32_t *hits);

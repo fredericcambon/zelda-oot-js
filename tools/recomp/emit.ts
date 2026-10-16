@@ -212,6 +212,8 @@ interface Ctx {
   end: number;
   symbol: (addr: number) => string;
   labels: Set<number>;
+  /** Labels that a branch from a later address jumps back to: loop heads. */
+  loops: Set<number>;
   callees: Set<number>;
 }
 
@@ -285,7 +287,7 @@ export function recompileFunction(f: FuncInput, opts: EmitOptions = {}): Recompi
   const symbol = opts.symbol ?? defaultSymbol;
   const insns = f.words.map((w, k) => decode(w, (f.addr + 4 * k) >>> 0));
   const x: Ctx = {
-    start: f.addr, end: f.addr + 4 * insns.length, symbol: opts.callee ?? symbol, labels: new Set(), callees: new Set(),
+    start: f.addr, end: f.addr + 4 * insns.length, symbol: opts.callee ?? symbol, labels: new Set(), loops: new Set(), callees: new Set(),
     relocs: opts.relocs, delta: opts.delta, jumpTables: opts.jumpTables,
   };
 
@@ -295,7 +297,10 @@ export function recompileFunction(f: FuncInput, opts: EmitOptions = {}): Recompi
     if (!isControl(i)) continue;
     if (k + 1 >= insns.length) throw new Error(`${hex8(i.addr)}: branch without a delay slot`);
     if (isControl(insns[k + 1]!)) throw new Error(`${hex8(i.addr)}: branch in a delay slot`);
-    if (i.target !== undefined && inside(x, i.target) && i.kind !== 'call') x.labels.add(i.target);
+    if (i.target !== undefined && inside(x, i.target) && i.kind !== 'call') {
+      x.labels.add(i.target);
+      if (i.target <= i.addr) x.loops.add(i.target);
+    }
     if (i.kind === 'jr') for (const t of x.jumpTables?.get(i.addr) ?? []) if (inside(x, t)) x.labels.add(t);
     k++;
   }
@@ -306,6 +311,7 @@ export function recompileFunction(f: FuncInput, opts: EmitOptions = {}): Recompi
     const i = insns[k]!;
     const emitLabel = (a: number) => {
       if (x.labels.has(a)) body.push(`${label(a)}:;`);
+      if (x.loops.has(a)) body.push(`  OOT_LOOP(0x${hex8(a)}u);`);
     };
     emitLabel(i.addr);
     body.push(`  /* ${format(i)} */`);

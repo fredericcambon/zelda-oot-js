@@ -7,7 +7,7 @@ import { buildManifest, writeAssets } from '../assets/write.ts';
 import { loadContext, romPathFromEnv } from '../analyze/context.ts';
 import { generate } from '../recomp/generate.ts';
 import { ensureToolchain } from '../recomp/toolchain.ts';
-import { compileAll, link, runtimeSources } from './build.ts';
+import { compileAll, DEFAULT_OPTIMIZE, link, runtimeSources } from './build.ts';
 
 async function main(): Promise<number> {
   const { values } = parseArgs({
@@ -18,8 +18,9 @@ async function main(): Promise<number> {
       generated: { type: 'string', default: 'generated' },
       dist: { type: 'string', default: 'dist' },
       'no-ghidra': { type: 'boolean', default: false },
-      optimize: { type: 'string', default: '-O1' },
+      optimize: { type: 'string', default: DEFAULT_OPTIMIZE },
       'trace-calls': { type: 'boolean', default: false },
+      coverage: { type: 'boolean', default: false },
     },
   });
   const log = (m: string) => console.log(m);
@@ -55,7 +56,7 @@ async function main(): Promise<number> {
     stage(5, 'compile with Emscripten');
     const toolchain = ensureToolchain(log);
     const opts = {
-      cDir, objDir: resolve(values.generated!, values['trace-calls'] ? 'obj-trace' : 'obj'), traceCalls: values['trace-calls'], distDir: resolve(values.dist!), toolchain, optimize: values.optimize, log,
+      cDir, objDir: resolve(values.generated!, values['trace-calls'] ? 'obj-trace' : values.coverage ? 'obj-cov' : 'obj'), traceCalls: values['trace-calls'], coverage: values.coverage, distDir: resolve(values.dist!), toolchain, optimize: values.optimize, log,
     };
     const objects = await compileAll(opts, runtimeSources());
 

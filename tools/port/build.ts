@@ -5,6 +5,12 @@ import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'nod
 import { join } from 'node:path';
 import { repoRoot, type Toolchain } from '../recomp/toolchain.ts';
 
+/**
+ * -O2 runs the recompiled game about twice as fast as -O1 and makes a wasm half the size; the game's memory is bit-identical
+ * after 19,000 frames of the scripted new game.
+ */
+export const DEFAULT_OPTIMIZE = '-O2';
+
 export interface BuildOptions {
   cDir: string;
   objDir: string;
@@ -13,6 +19,8 @@ export interface BuildOptions {
   optimize?: string;
   /** Records every recompiled function's entry (see OOT_TRACE in runtime/cpu.h). */
   traceCalls?: boolean;
+  /** Records the functions run, the OS calls made and the accesses beyond RDRAM (see OOT_COVERAGE in runtime/cpu.h). */
+  coverage?: boolean;
   log: (msg: string) => void;
 }
 
@@ -23,7 +31,7 @@ export function runtimeSources(): string[] {
 }
 
 /** Host entry points (runtime/headless.c) and the allocator the host copies the ROM through. */
-const EXPORTS = ['_main', '_malloc', '_free', '_oot_boot', '_oot_frame', '_oot_idle', '_oot_frames', '_oot_gfx_tasks', '_oot_audio_tasks', '_oot_jpeg_tasks', '_oot_retraces', '_oot_fatal_message', '_oot_rd32', '_oot_rdram', '_oot_pad_set', '_oot_sram', '_oot_sram_size', '_oot_sram_take_dirty', '_oot_trace_count', '_oot_trace_at'];
+const EXPORTS = ['_main', '_malloc', '_free', '_oot_boot', '_oot_frame', '_oot_idle', '_oot_frames', '_oot_gfx_tasks', '_oot_audio_tasks', '_oot_jpeg_tasks', '_oot_retraces', '_oot_fatal_message', '_oot_rd32', '_oot_rdram', '_oot_pad_set', '_oot_sram', '_oot_sram_size', '_oot_sram_take_dirty', '_oot_trace_count', '_oot_trace_at', '_oot_rsp_task_kinds', '_oot_rsp_task_kind', '_oot_cov_enabled', '_oot_cov_functions', '_oot_cov_os_count', '_oot_cov_os_addr', '_oot_cov_os_hits', '_oot_cov_mmio_count', '_oot_cov_mmio'];
 
 const COMPILE_FLAGS = ['-ffp-contract=off', '-Wall', '-Wno-unused-label', '-Wno-unused-variable', '-Wno-unused-but-set-variable', '-Wno-unused-function'];
 
@@ -56,7 +64,7 @@ export async function compileAll(opts: BuildOptions, extraSources: string[]): Pr
   const failures: string[] = [];
   let done = 0;
   const compileOne = async (job: { src: string; obj: string }) => {
-    const r = await emcc(opts.toolchain, [opts.optimize ?? '-O1', ...COMPILE_FLAGS, ...(opts.traceCalls ? ['-DOOT_TRACE'] : []), `-I${join(repoRoot, 'runtime')}`, `-I${opts.cDir}`, '-c', job.src, '-o', job.obj], repoRoot);
+    const r = await emcc(opts.toolchain, [opts.optimize ?? DEFAULT_OPTIMIZE, ...COMPILE_FLAGS, ...(opts.traceCalls ? ['-DOOT_TRACE'] : []), ...(opts.coverage ? ['-DOOT_COVERAGE'] : []), `-I${join(repoRoot, 'runtime')}`, `-I${opts.cDir}`, '-c', job.src, '-o', job.obj], repoRoot);
     if (r.code !== 0) failures.push(`${job.src}:
 ${r.output}`);
     else if (/warning:/.test(r.output)) opts.log(`${job.src}:
@@ -83,7 +91,7 @@ export async function link(opts: BuildOptions, objects: string[]): Promise<strin
   const list = join(opts.objDir, 'objects.rsp');
   writeFileSync(list, objects.map((o) => `"${o.replaceAll('\\', '/')}"`).join('\n'));
   const r = await emcc(opts.toolchain, [
-    opts.optimize ?? '-O1', '-sENVIRONMENT=web,node', '-sALLOW_MEMORY_GROWTH=1', '-sASYNCIFY', '-sEXIT_RUNTIME=0', '-sERROR_ON_UNDEFINED_SYMBOLS=1', '-sMODULARIZE=1', '-sEXPORT_ES6=1', '-sEXPORT_NAME=createOot',
+    opts.optimize ?? DEFAULT_OPTIMIZE, '-sENVIRONMENT=web,node', '-sALLOW_MEMORY_GROWTH=1', '-sASYNCIFY', '-sEXIT_RUNTIME=0', '-sERROR_ON_UNDEFINED_SYMBOLS=1', '-sMODULARIZE=1', '-sEXPORT_ES6=1', '-sEXPORT_NAME=createOot',
     `-sEXPORTED_FUNCTIONS=${EXPORTS.join(',')}`, '-sEXPORTED_RUNTIME_METHODS=HEAPU8,UTF8ToString',
     `@${list}`, '-o', out,
   ], repoRoot);

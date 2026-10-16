@@ -36,9 +36,21 @@ __attribute__((noreturn)) void rt_unimpl(Cpu *c, uint32_t pc, uint32_t word);
 // A direct transfer whose target lies in no recompiled file was reached.
 __attribute__((noreturn)) void rt_missing(Cpu *c, uint32_t addr);
 // Debug builds (-DOOT_TRACE) record the entry of every recompiled function in a ring that oot_trace_at reads.
+// Loop heads of the recompiled code. Coverage builds stop a frame that spends more loop iterations than any real one.
+#ifdef OOT_COVERAGE
+void rt_cov_loop(uint32_t addr);
+#define OOT_LOOP(addr) rt_cov_loop(addr)
+#else
+#define OOT_LOOP(addr) ((void)0)
+#endif
 #ifdef OOT_TRACE
 void rt_trace_enter(uint32_t addr);
 #define OOT_TRACE_ENTER(addr) rt_trace_enter(addr)
+#elif defined(OOT_COVERAGE)
+// Coverage builds (-DOOT_COVERAGE, runtime/cov.c) note every function entered and every access beyond RDRAM.
+void rt_cov_enter(uint32_t addr);
+void rt_cov_outside(uint32_t addr);
+#define OOT_TRACE_ENTER(addr) rt_cov_enter(addr)
 #else
 #define OOT_TRACE_ENTER(addr) ((void)0)
 #endif
@@ -59,7 +71,12 @@ void rt_cache(Cpu *c, uint32_t op, uint32_t addr);
 #define SX32(x) ((uint64_t)(int64_t)(int32_t)(x))
 
 // Guest addresses map onto RDRAM by dropping the segment bits and wrapping at its size.
-static inline uint8_t *mem_ptr(uint32_t a) { return rdram + (a & (RDRAM_SIZE - 1)); }
+static inline uint8_t *mem_ptr(uint32_t a) {
+#ifdef OOT_COVERAGE
+  if ((a & 0x1fffffffu) >= RDRAM_SIZE) rt_cov_outside(a);
+#endif
+  return rdram + (a & (RDRAM_SIZE - 1));
+}
 
 // Guest memory is big-endian; the host is little-endian.
 static inline uint8_t rd8(uint32_t a) { return *mem_ptr(a); }

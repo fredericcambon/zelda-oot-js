@@ -158,6 +158,14 @@ function mul(a: Mat, b: Mat): Mat {
 const MAX_DL_DEPTH = 32;
 const VERTEX_SLOTS = 32;
 const TMEM_BYTES = 4096;
+const TEXTURE_CACHE_LIMIT = 1024;
+
+/** FNV-1a of `length` bytes from `start` (bytes past the end of the array count as zero). */
+function hashBytes(data: Uint8Array, start: number, length: number): number {
+  let hash = 0x811c9dc5;
+  for (let i = start; i < start + length; i++) hash = Math.imul(hash ^ (data[i] ?? 0), 0x01000193);
+  return hash >>> 0;
+}
 
 interface Vertex {
   clip: [number, number, number, number];
@@ -219,8 +227,9 @@ export class DisplayListInterpreter {
   /** Slot 0 and 1 are the look-at vectors, then the lights, then the ambient light. */
   private lightSlots: Uint8Array[] = [];
   private snapshot: DrawState | null = null;
-  private tmemVersion = 0;
   private textureCache = new Map<string, DecodedTexture | null>();
+  /** Hashes of ranges of the texture memory, valid until the next load into it. */
+  private tmemHashes = new Map<number, number>();
   private result!: DisplayListResult;
   private current: { batch: TriangleBatch; pos: number[]; col: number[]; uv: number[]; fog: number[] } | null = null;
 
@@ -294,6 +303,7 @@ export class DisplayListInterpreter {
     this.mvp = null;
     this.verts = new Array<Vertex | undefined>(VERTEX_SLOTS).fill(undefined);
     this.tmem.fill(0);
+    this.tmemHashes.clear();
     this.tiles = Array.from({ length: 8 }, newTile);
     this.timg = { fmt: 0, siz: 0, width: 1, addr: 0 };
     this.geometryMode = 0;
@@ -314,8 +324,6 @@ export class DisplayListInterpreter {
     this.numLights = 0;
     this.lightSlots = Array.from({ length: 10 }, () => new Uint8Array(16));
     this.snapshot = null;
-    this.tmemVersion = 0;
-    this.textureCache.clear();
     this.current = null;
   }
 
@@ -662,7 +670,7 @@ export class DisplayListInterpreter {
     const d = dest & (TMEM_BYTES - 1);
     const n = Math.max(0, Math.min(bytes, TMEM_BYTES - d, this.ram.length - src));
     this.tmem.set(this.ram.subarray(src, src + n), d);
-    this.tmemVersion++;
+    this.tmemHashes.clear();
     this.invalidate();
   }
 
@@ -702,22 +710,35 @@ export class DisplayListInterpreter {
     this.invalidate();
   }
 
+  private tmemHash(start: number, length: number): number {
+    const key = start * 65536 + length;
+    let hash = this.tmemHashes.get(key);
+    if (hash === undefined) {
+      hash = hashBytes(this.tmem, start, length);
+      this.tmemHashes.set(key, hash);
+    }
+    return hash;
+  }
+
   private decodeTile(index: number): DecodedTexture | null {
     const t = this.tiles[index]!;
     if (t.line === 0 || t.fmt === Fmt.YUV) return null;
     const tlutOn = ((this.otherH >>> 14) & 3) !== 0;
     const ia = ((this.otherH >>> 14) & 3) === 3;
-    const key = JSON.stringify([t, this.tmemVersion, tlutOn, ia]);
-    if (this.textureCache.has(key)) {
-      const hit = this.textureCache.get(key);
-      return hit ? { ...hit, tile: index } : null;
-    }
     const rowBytes = t.line * (t.siz === Siz.B32 ? 16 : 8);
     let width = t.sized ? ((t.lrs - t.uls) >> 2) + 1 : t.maskS ? 1 << t.maskS : Math.floor((rowBytes * 8) / bitsPerTexel(t.siz));
     let height = t.sized ? ((t.lrt - t.ult) >> 2) + 1 : t.maskT ? 1 << t.maskT : 1;
     const maxHeight = Math.floor((TMEM_BYTES - t.tmem * 8) / rowBytes);
     width = Math.max(1, Math.min(width, Math.floor((rowBytes * 8) / bitsPerTexel(t.siz))));
     height = Math.max(0, Math.min(height, maxHeight));
+    // The image depends only on the texel bytes, the palette and the format, so equal contents share one decode across lists.
+    const palette = t.fmt === Fmt.CI ? (256 + (t.siz === Siz.B4 ? t.palette * 16 : 0)) * 8 : -1;
+    const paletteBytes = t.siz === Siz.B4 ? 32 : 512;
+    const key = `${t.fmt}.${t.siz}.${width}x${height}.${rowBytes}.${tlutOn}.${ia}.${this.tmemHash(t.tmem * 8, rowBytes * height)}.${palette < 0 ? '' : this.tmemHash(palette, paletteBytes)}`;
+    if (this.textureCache.has(key)) {
+      const hit = this.textureCache.get(key);
+      return hit ? { ...hit, tile: index } : null;
+    }
     let out: DecodedTexture | null = null;
     if (height > 0) {
       const pal = t.fmt === Fmt.CI ? { data: this.tmem, offset: (256 + (t.siz === Siz.B4 ? t.palette * 16 : 0)) * 8, ia } : undefined;
@@ -727,6 +748,7 @@ export class DisplayListInterpreter {
       });
       out = { ...img, tile: index };
     }
+    if (this.textureCache.size >= TEXTURE_CACHE_LIMIT) this.textureCache.clear();
     this.textureCache.set(key, out);
     return out;
   }

@@ -14,6 +14,28 @@ interface OotModule extends OotCore {
   _oot_rd32(addr: number): number;
   _oot_trace_count?(): number;
   _oot_trace_at?(back: number): number;
+  _oot_rsp_task_kinds(): number;
+  _oot_rsp_task_kind(i: number, field: number): number;
+  _oot_cov_enabled(): number;
+  _oot_cov_functions(): number;
+  _oot_cov_os_count(): number;
+  _oot_cov_os_addr(i: number): number;
+  _oot_cov_os_hits(i: number): number;
+  _oot_cov_mmio_count(): number;
+  _oot_cov_mmio(i: number, field: number): number;
+}
+
+/** Bytes of address space, from 0x80000000, that the function bitmap of a coverage build spans (COVERAGE_WINDOW in runtime/cov.c). */
+const COVERAGE_WINDOW = 0x1000000;
+
+/** What a coverage build (`npm run port -- --coverage`) saw run so far. */
+export interface CoverageSnapshot {
+  /** Entry addresses of the recompiled functions that ran (overlay functions at their link address). */
+  functions: number[];
+  /** Calls of each OS routine the runtime replaces, by routine address; routines never called are left out. */
+  osCalls: Map<number, number>;
+  /** Guest addresses beyond RDRAM that the code read or wrote, with the number of accesses and the function entered last at the first access. */
+  outsideRdram: { addr: number; hits: number; function: number }[];
 }
 
 export interface FrameResult {
@@ -87,6 +109,10 @@ export interface Game {
   writeSave(bytes: Uint8Array): void;
   /** Whether the game wrote the save memory since the last call. */
   takeSaveDirty(): boolean;
+  /** The kinds of RSP task submitted so far (type and microcode), with their counts. */
+  rspTasks(): { type: number; ucode: number; count: number }[];
+  /** The coverage counters, or undefined when the module is not a coverage build. */
+  coverage(): CoverageSnapshot | undefined;
 }
 
 export async function bootGame(moduleUrl: string, rom: Uint8Array, options: BootOptions = {}): Promise<Game> {
@@ -143,6 +169,23 @@ export async function bootGame(moduleUrl: string, rom: Uint8Array, options: Boot
     readSave: () => mod.HEAPU8.slice(mod._oot_sram(), mod._oot_sram() + mod._oot_sram_size()),
     writeSave: (bytes) => mod.HEAPU8.set(bytes.subarray(0, mod._oot_sram_size()), mod._oot_sram()),
     takeSaveDirty: () => mod._oot_sram_take_dirty() !== 0,
+    rspTasks: () => Array.from({ length: mod._oot_rsp_task_kinds() }, (_, i) => ({
+      type: mod._oot_rsp_task_kind(i, 0), ucode: mod._oot_rsp_task_kind(i, 1) >>> 0, count: mod._oot_rsp_task_kind(i, 2),
+    })),
+    coverage() {
+      if (!mod._oot_cov_enabled?.()) return undefined;
+      const bitmap = mod.HEAPU8.subarray(mod._oot_cov_functions(), mod._oot_cov_functions() + COVERAGE_WINDOW / 32);
+      const functions: number[] = [];
+      bitmap.forEach((byte, i) => {
+        for (let bit = 0; byte !== 0 && bit < 8; bit++) if (byte & (1 << bit)) functions.push((0x80000000 + (i * 8 + bit) * 4) >>> 0);
+      });
+      const osCalls = new Map<number, number>();
+      for (let i = 0; i < mod._oot_cov_os_count(); i++) if (mod._oot_cov_os_hits(i) > 0) osCalls.set(mod._oot_cov_os_addr(i) >>> 0, mod._oot_cov_os_hits(i));
+      const outsideRdram = Array.from({ length: mod._oot_cov_mmio_count() }, (_, i) => ({
+        addr: mod._oot_cov_mmio(i, 0) >>> 0, hits: mod._oot_cov_mmio(i, 1), function: mod._oot_cov_mmio(i, 2) >>> 0,
+      }));
+      return { functions, osCalls, outsideRdram };
+    },
     lastCalls(n) {
       const total = mod._oot_trace_count?.() ?? 0;
       return Array.from({ length: Math.min(n, total) }, (_, k) => `0x${hex(mod._oot_trace_at!(k))}`);

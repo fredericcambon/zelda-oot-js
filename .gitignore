@@ -8,4 +8,5 @@ generated/
 node_modules/
 dist/
 dist-trace/
-dist-o1/
+dist-*/
+generated-*/
