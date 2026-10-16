@@ -630,3 +630,11 @@ TEST(the_audio_rate_sets_how_long_a_buffer_plays) {
   rt_run(2 * AI_BUFFER_CYCLES);
   CHECK_EQ(rd32(QUEUE_A + MQ_VALID), 1);
 }
+
+TEST(setting_the_audio_frequency_rounds_the_divisor_and_rejects_rates_that_are_too_fast) {
+  wr32(OS_VI_CLOCK, 48681812u);
+  CHECK_EQ(os(&host, rt_osAiSetFrequency, 32000, 0, 0, 0), 48681812u / 1521);
+  CHECK_EQ(rt_ai_rate(), 48681812u / 1521);
+  CHECK_EQ((int32_t)os(&host, rt_osAiSetFrequency, 48681812u / 100, 0, 0, 0), -1);
+  CHECK_EQ(rt_ai_rate(), 48681812u / 1521);
+}

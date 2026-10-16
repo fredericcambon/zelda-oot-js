@@ -1,3 +1,4 @@
+import { AudioOutput } from './audio.ts';
 import { startGame, type Game } from './game.ts';
 import { Renderer, type CullMode } from './renderer.ts';
 import { loadCartridge } from './cartridge.ts';
@@ -31,7 +32,15 @@ try {
 let game: Game | null = null;
 let saves: SaveSync | null = null;
 const input = new Input();
+const audio = new AudioOutput();
 let fps = 0;
+
+// Browsers start sound only from a user gesture; any key or click does it.
+const enableSound = () => {
+  audio.resume().catch((err) => console.error('sound is not available:', err));
+};
+addEventListener('keydown', enableSound);
+addEventListener('pointerdown', enableSound);
 
 const CULL_MODES: CullMode[] = ['normal', 'swapped', 'off'];
 addEventListener('keydown', (e) => {
@@ -43,6 +52,8 @@ addEventListener('keydown', (e) => {
     const native = renderer.resolutionScale !== 1;
     renderer.setScale(native ? 1 : displayScale());
     canvas.classList.toggle('native', native);
+  } else if (e.key === 'm' || e.key === 'M') {
+    audio.toggleMute();
   } else if (e.key === 'c' || e.key === 'C') {
     renderer.cullMode = CULL_MODES[(CULL_MODES.indexOf(renderer.cullMode) + 1) % CULL_MODES.length]!;
   }
@@ -60,7 +71,9 @@ function updateOverlay(): void {
     `programs ${s.programs}  textures ${s.textures}  colour images ${s.targets}`,
     game ? `video framebuffer 0x${game.framebuffer().toString(16)}` : '',
     `culling ${renderer.cullMode}  resolution ${renderer.resolutionScale}x`,
+    g ? `audio tasks ${g.audioTasks}  sound ${audio.state === 'running' ? `on, level ${audio.level().toFixed(3)}` : 'off: press a key'}` : '',
     g?.renderError ? `render error: ${g.renderError}` : '',
+    g?.audioError ? `audio error: ${g.audioError}` : '',
     ...s.problems,
   ].filter(Boolean).join('\n');
 }
@@ -106,7 +119,7 @@ async function boot(): Promise<void> {
   try {
     const rom = await loadCartridge((done, total) => setStatus(`Loading game files: ${done} / ${total}`));
     setStatus('Starting...');
-    const started = await startGame(rom, renderer);
+    const started = await startGame(rom, renderer, audio);
     const sync = new SaveSync(started.saveMemory, indexedDbStore());
     await sync.restore();
     saves = sync;

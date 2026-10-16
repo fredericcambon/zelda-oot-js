@@ -1,10 +1,12 @@
-// `npm run headless -- --frames N [--trace]`: boots the built game (dist/oot.js) from dist/assets in Node with no
+// `npm run headless -- --frames N [--trace] [--wav out.wav]`: boots the built game (dist/oot.js) from dist/assets in Node with no
 // display and reports what it did frame by frame.
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { readCartridge } from '../assets/write.ts';
+import { AudioCapture } from '../audio/capture.ts';
+import { encodeWav } from '../audio/wav.ts';
 import { DisplayListInterpreter } from '../gfx/dl.ts';
 import { encodePng } from '../gfx/png.ts';
 import { HEIGHT, SoftRenderer, WIDTH } from '../gfx/raster.ts';
@@ -20,6 +22,7 @@ async function main(): Promise<number> {
       trace: { type: 'boolean', default: false },
       dl: { type: 'boolean', default: false },
       dump: { type: 'string' },
+      wav: { type: 'string' },
       'dump-every': { type: 'string', default: '1' },
       'dump-from': { type: 'string', default: '0' },
     },
@@ -32,6 +35,7 @@ async function main(): Promise<number> {
   const soft = values.dump ? new SoftRenderer() : undefined;
   const dumpDir = values.dump ? resolve(values.dump) : undefined;
   if (dumpDir) mkdirSync(dumpDir, { recursive: true });
+  const audio = values.wav ? new AudioCapture() : undefined;
   const dumpEvery = Math.max(1, Number(values['dump-every']));
   // Frames before this one are not drawn: each frame is redrawn whole, so only the speed changes.
   const dumpFrom = Number(values['dump-from']);
@@ -46,6 +50,7 @@ async function main(): Promise<number> {
             if (frameNo >= dumpFrom - 2) soft?.drawTask(result);
           }
         : undefined,
+      ...audio?.hooks,
     });
   } catch (err) {
     console.error(`error: ${err instanceof Error ? err.message : String(err)}`);
@@ -79,6 +84,11 @@ async function main(): Promise<number> {
     }
   }
   console.log(`booted ${frames} frames: ${game.stats()}`);
+  if (audio && values.wav) {
+    if (audio.error) console.error(`audio: ${audio.error.message}`);
+    mkdirSync(resolve(values.wav, '..'), { recursive: true });
+    writeFileSync(values.wav, encodeWav(audio.samples(), 2, audio.hz || 32000));
+  }
   if (!values.dl) return 0;
   console.log(totals.summary());
   return totals.unknown.length > 0 ? 4 : 0;

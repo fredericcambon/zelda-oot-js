@@ -8,6 +8,10 @@ import { compileAll, link, runtimeSources } from '../port/build.ts';
 import { generate } from '../recomp/generate.ts';
 import { ensureToolchain } from '../recomp/toolchain.ts';
 import { classify } from '../assets/classify.ts';
+import { AudioCapture } from '../audio/capture.ts';
+import { RspReference } from '../audio/rsp-ref.ts';
+import { Synth } from '../audio/synth.ts';
+import { encodeWav } from '../audio/wav.ts';
 import { buildManifest, readCartridge, writeAssets } from '../assets/write.ts';
 import { DisplayListInterpreter } from '../gfx/dl.ts';
 import { encodePng } from '../gfx/png.ts';
@@ -31,6 +35,10 @@ const DRAW_LEAD = 8;
 const TITLE_FRAME = 2449;
 const FILE_LIST_FRAME = 2880;
 const SAVED_BY_FRAME = 3560;
+/** Frames of the title screen rendered to a WAV file. */
+const TITLE_AUDIO_FRAMES = 250;
+/** Frames at which the mixer is checked against the microcode: the intro every 140 frames, then the title and the file select. */
+const COMPARE_FRAMES = [...Array.from({ length: 16 }, (_, i) => 260 + i * 140), ...Array.from({ length: 29 }, (_, i) => 2440 + i * 40)];
 
 let built: Promise<{ moduleUrl: string; cartridge: Uint8Array }> | undefined;
 
@@ -165,5 +173,84 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
     const restoredList = second.shots.get(FILE_LIST_FRAME)!;
     dump('file-select-restored', restoredList);
     expect(differingPixels(emptyList, restoredList)).toBeGreaterThan(200);
+  }, 3_600_000);
+  it('renders the title music to a WAV that is audible and not clipped', async () => {
+    const { moduleUrl, cartridge } = await buildGame();
+    const audio = new AudioCapture();
+    const game = await bootGame(moduleUrl, cartridge, audio.hooks);
+    let titleStart = 0;
+    for (let k = 1; k <= TITLE_FRAME + TITLE_AUDIO_FRAMES; k++) {
+      const r = await game.frame();
+      expect(r.fatal, `frame ${k}`).toBeUndefined();
+      if (k === TITLE_FRAME) titleStart = audio.samples().length;
+    }
+    expect(audio.error).toBeUndefined();
+    expect(audio.hz).toBeGreaterThan(30000);
+    expect(audio.hz).toBeLessThan(34000);
+    const title = audio.samples().subarray(titleStart);
+    const dir = resolve('out', 'audio');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'title.wav'), encodeWav(title, 2, audio.hz));
+
+    // 50 frames of audio per second: the game queues one buffer per frame.
+    expect(title.length / 2 / audio.hz).toBeGreaterThan(TITLE_AUDIO_FRAMES / 50 - 0.2);
+    let peak = 0, sum = 0, clipped = 0;
+    for (const x of title) {
+      peak = Math.max(peak, Math.abs(x));
+      sum += x * x;
+      if (x >= 32767 || x <= -32768) clipped++;
+    }
+    const rms = Math.sqrt(sum / title.length);
+    expect(rms, 'not silent').toBeGreaterThan(300);
+    expect(peak, 'has a peak').toBeGreaterThan(3000);
+    expect(clipped / title.length, 'not clipped').toBeLessThan(0.0005);
+    // Sound all the way through, not one burst: every half second holds signal.
+    const window = Math.floor(audio.hz / 2) * 2;
+    for (let at = 0; at + window <= title.length; at += window) {
+      let e = 0;
+      for (let i = at; i < at + window; i++) e += title[i]! * title[i]!;
+      expect(Math.sqrt(e / window), `half second at ${at / window}`).toBeGreaterThan(50);
+    }
+  }, 3_600_000);
+
+  it('mixes the same samples as the audio microcode does on the commands of the intro, the title and the file select', async () => {
+    const { moduleUrl, cartridge } = await buildGame();
+    const synth = new Synth();
+    let frame = 0;
+    let compared = 0;
+    const pending = [...COMPARE_FRAMES];
+    const problems: string[] = [];
+    const game = await bootGame(moduleUrl, cartridge, {
+      onAudioTask: (t) => {
+        const task = { list: t.data & 0x1fffffff, size: t.size, dataSegment: t.microcodeData & 0x1fffffff };
+        if (pending.length === 0 || frame < pending[0]!) {
+          synth.run(t.ram, task);
+          return;
+        }
+        pending.shift();
+        // The reference starts from the working memory the mixer holds, which is what the console's processor would still
+        // hold from the previous task, and runs on a copy of the memory the mixer is about to change.
+        const code = t.ram.subarray(t.microcode & 0x1fffffff, (t.microcode & 0x1fffffff) + 0x1000);
+        const expected = t.ram.slice();
+        const reference = new RspReference(code);
+        reference.dmem.set(synth.dmem);
+        synth.run(t.ram, task);
+        reference.run(expected, { dataPtr: task.dataSegment, dataSize: 0x2df, listPtr: task.list, listSize: task.size });
+        compared++;
+        let differing = 0;
+        for (let i = 0; i < expected.length; i++) if (expected[i] !== t.ram[i]) differing++;
+        if (differing > 0) problems.push(`frame ${frame}: ${differing} bytes differ`);
+      },
+    });
+    while (frame < COMPARE_FRAMES[COMPARE_FRAMES.length - 1]! + 5) {
+      frame++;
+      let buttons = 0;
+      for (const [from, b, hold] of SCRIPT) if (frame >= from && frame < from + hold) buttons |= b;
+      game.setPad(buttons);
+      const r = await game.frame();
+      expect(r.fatal, `frame ${frame}`).toBeUndefined();
+    }
+    expect(compared).toBe(COMPARE_FRAMES.length);
+    expect(problems).toEqual([]);
   }, 3_600_000);
 });

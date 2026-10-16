@@ -29,7 +29,20 @@ static void on_gfx(const RspTask *t) {
   gfx_tasks++;
   host_gfx_task(t->type, t->data_ptr, t->data_size, t->addr);
 }
-static void on_audio(const RspTask *t) { (void)t; audio_tasks++; }
+// The host runs the command list while the memory it points into is as the game left it, and writes the samples into
+// the memory the game later hands to the audio interface.
+EM_JS(void, host_audio_task, (uint32_t data, uint32_t size, uint32_t microcode, uint32_t microcode_data), {
+  if (Module.onAudioTask) Module.onAudioTask(data, size, microcode, microcode_data);
+});
+EM_JS(void, host_ai_buffer, (uint32_t addr, uint32_t length, uint32_t hz), {
+  if (Module.onAiBuffer) Module.onAiBuffer(addr, length, hz);
+});
+
+static void on_audio(const RspTask *t) {
+  audio_tasks++;
+  host_audio_task(t->data_ptr, t->data_size, t->ucode, t->ucode_data);
+}
+static void on_ai(uint32_t addr, uint32_t length) { host_ai_buffer(addr, length, rt_ai_rate()); }
 
 static void on_fatal(const char *message) {
   snprintf(fatal_message, sizeof fatal_message, "%s", message);
@@ -47,6 +60,7 @@ EMSCRIPTEN_KEEPALIVE void oot_boot(const uint8_t *rom, size_t size) {
   rt_set_fatal_handler(on_fatal);
   rt_set_gfx_hook(on_gfx);
   rt_set_audio_hook(on_audio);
+  rt_set_ai_hook(on_ai);
   memcpy(mem_ptr(BOOT_LOAD_ADDR), rom + BOOT_ROM_OFFSET, BOOT_IMAGE_SIZE);
   rt_boot_state();
   frame_end = 0;
