@@ -21,8 +21,8 @@ interface OotModule extends OotCore {
   _oot_cov_os_count(): number;
   _oot_cov_os_addr(i: number): number;
   _oot_cov_os_hits(i: number): number;
-  _oot_cov_mmio_count(): number;
-  _oot_cov_mmio(i: number, field: number): number;
+  _oot_cov_outside_count(): number;
+  _oot_cov_outside(i: number, field: number): number;
 }
 
 /** Bytes of address space, from 0x80000000, that the function bitmap of a coverage build spans (COVERAGE_WINDOW in runtime/cov.c). */
@@ -181,8 +181,8 @@ export async function bootGame(moduleUrl: string, rom: Uint8Array, options: Boot
       });
       const osCalls = new Map<number, number>();
       for (let i = 0; i < mod._oot_cov_os_count(); i++) if (mod._oot_cov_os_hits(i) > 0) osCalls.set(mod._oot_cov_os_addr(i) >>> 0, mod._oot_cov_os_hits(i));
-      const outsideRdram = Array.from({ length: mod._oot_cov_mmio_count() }, (_, i) => ({
-        addr: mod._oot_cov_mmio(i, 0) >>> 0, hits: mod._oot_cov_mmio(i, 1), function: mod._oot_cov_mmio(i, 2) >>> 0,
+      const outsideRdram = Array.from({ length: mod._oot_cov_outside_count() }, (_, i) => ({
+        addr: mod._oot_cov_outside(i, 0) >>> 0, hits: mod._oot_cov_outside(i, 1), function: mod._oot_cov_outside(i, 2) >>> 0,
       }));
       return { functions, osCalls, outsideRdram };
     },
