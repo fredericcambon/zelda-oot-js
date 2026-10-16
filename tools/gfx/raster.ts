@@ -2,7 +2,7 @@
 // rules as the WebGL path (web/shader.ts, web/renderer.ts) with nearest-texel sampling.
 import type { Batch, DecodedTexture, DisplayListResult, DrawState, RectBatch, TileState, TriangleBatch } from './dl.ts';
 import { Geo } from './opcodes.ts';
-import { CycleType, cycleTypeOf, OtherL, shiftScale, specOf, type BlendCycle, type ShaderSpec } from '../../web/shader.ts';
+import { CycleType, cycleTypeOf, MIN_COVERAGE_ALPHA, OtherL, shiftScale, specOf, type BlendCycle, type ShaderSpec } from '../../web/shader.ts';
 
 export const WIDTH = 320;
 export const HEIGHT = 240;
@@ -201,7 +201,9 @@ export class SoftRenderer {
   }
 
   private triangle(state: DrawState, img: Uint8Array, a: Vertex, b: Vertex, c: Vertex): void {
-    const poly = clipNear([a, b, c]);
+    // Same as the vertex shader: a vertex in front of the near plane is moved onto it rather than clipped away.
+    const onNear = (v: Vertex): Vertex => (v.pos[3] > 0 && v.pos[2] < -v.pos[3] ? { ...v, pos: [v.pos[0], v.pos[1], -v.pos[3], v.pos[3]] } : v);
+    const poly = clipNear([onNear(a), onNear(b), onNear(c)]);
     for (let k = 1; k + 1 < poly.length; k++) this.projected(state, img, poly[0]!, poly[k]!, poly[k + 1]!);
   }
 
@@ -275,12 +277,14 @@ export class SoftRenderer {
       rgb = inputs.combined;
       a = inputs.combinedA;
       if (spec.alphaCompare && a < state.blendColor.a / 255) return false;
+      if (spec.coverageTimesAlpha && a < MIN_COVERAGE_ALPHA) return false;
     }
     const dst = (y * WIDTH + x) * 4;
     let weight = 1;
+    const pixelAlpha = spec.alphaFromCoverage && !spec.coverageTimesAlpha ? 1 : a;
     if (!spec.copy) {
       for (let n = 0; n < spec.cycles; n++) {
-        const t = blendTerms(spec.blend[n]!, rgb, a, state, inputs.shadeA);
+        const t = blendTerms(spec.blend[n]!, rgb, pixelAlpha, state, inputs.shadeA);
         if (n === spec.cycles - 1 && spec.framebufferBlend) {
           const s = t.a + t.b;
           weight = s > 0 ? t.a / s : 1;

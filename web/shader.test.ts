@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { decodeCombine, type DrawState } from '../tools/gfx/dl.ts';
-import { CycleType, equation, fragmentSource, rgbInput, shiftScale, specKey, specOf } from './shader.ts';
+import { CycleType, equation, fragmentSource, MIN_COVERAGE_ALPHA, rgbInput, shiftScale, specKey, specOf, VERTEX_SHADER } from './shader.ts';
 
 const rgba = { r: 0, g: 0, b: 0, a: 0 };
 
@@ -97,6 +97,19 @@ describe('shader generation', () => {
     expect(src).toContain('outColor = vec4(pixel, 1.0);');
   });
 
+  it('discards pixels without coverage when the coverage is multiplied by alpha', () => {
+    const plain = specOf(state({ otherModeL: 1 << 13 }));
+    expect(plain.coverageTimesAlpha).toBe(false);
+    expect(plain.alphaFromCoverage).toBe(true);
+    expect(fragmentSource(plain)).not.toContain(`if (cA < ${MIN_COVERAGE_ALPHA.toFixed(6)}) discard;`);
+    expect(fragmentSource(plain)).toContain('float pixelA = 1.0;');
+    const edge = specOf(state({ otherModeL: (1 << 13) | (1 << 12) }));
+    expect(edge.coverageTimesAlpha).toBe(true);
+    expect(fragmentSource(edge)).toContain(`if (cA < ${MIN_COVERAGE_ALPHA.toFixed(6)}) discard;`);
+    expect(fragmentSource(edge)).toContain('float pixelA = cA;');
+    expect(specKey(edge)).not.toBe(specKey(plain));
+  });
+
   it('copies the texel in copy mode', () => {
     const s = specOf(state({ otherModeH: CycleType.COPY << 20 }));
     expect(s.copy).toBe(true);
@@ -120,6 +133,12 @@ describe('shader generation', () => {
         expect(src.split('{').length).toBe(src.split('}').length);
       }
     }
+  });
+});
+
+describe('vertex shader', () => {
+  it('moves a vertex in front of the near plane onto it and leaves the others alone', () => {
+    expect(VERTEX_SHADER).toContain('aPos.w > 0.0 ? max(aPos.z, -aPos.w) : aPos.z');
   });
 });
 

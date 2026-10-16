@@ -30,6 +30,10 @@ export interface ShaderSpec {
   /** Bilinear (3-point) texture filtering instead of nearest. */
   bilerp: boolean;
   alphaCompare: boolean;
+  /** The coverage is scaled by the pixel alpha: a pixel whose alpha rounds to no coverage is not written. */
+  coverageTimesAlpha: boolean;
+  /** The blender's pixel alpha is the coverage (1 for a pixel inside the triangle, the pixel alpha when scaled by it). */
+  alphaFromCoverage: boolean;
   blend: [BlendCycle, BlendCycle];
   /**
    * The last blender cycle mixes with the framebuffer and the mix is applied by the GL blend unit: the shader
@@ -43,8 +47,16 @@ export const OtherL = {
   Z_COMPARE: 1 << 4,
   Z_UPDATE: 1 << 5,
   ZMODE_SHIFT: 10,
+  CVG_TIMES_ALPHA: 1 << 12,
+  ALPHA_CVG_SELECT: 1 << 13,
   FORCE_BLEND: 1 << 14,
 } as const;
+
+/**
+ * Smallest alpha that leaves a pixel any coverage when coverage is multiplied by alpha: with eight sub-pixel samples and
+ * an 8-bit alpha, `(8 * alpha + 4) >> 8` is zero up to an alpha of 31.
+ */
+export const MIN_COVERAGE_ALPHA = 32 / 255;
 
 export const cycleTypeOf = (otherModeH: number): number => (otherModeH >>> 20) & 3;
 
@@ -69,6 +81,8 @@ export function specOf(state: DrawState): ShaderSpec {
     fogInShadeAlpha: (state.geometryMode & Geo.FOG) !== 0,
     bilerp: ((state.otherModeH >>> 12) & 3) !== 0,
     alphaCompare: (state.otherModeL & OtherL.ALPHA_COMPARE_MASK) === 1,
+    coverageTimesAlpha: (state.otherModeL & OtherL.CVG_TIMES_ALPHA) !== 0,
+    alphaFromCoverage: (state.otherModeL & OtherL.ALPHA_CVG_SELECT) !== 0,
     blend,
     framebufferBlend: (state.otherModeL & OtherL.FORCE_BLEND) !== 0 && last.m === 1 && last.p !== 1 && !(last.a === 3 && last.b === 3),
   };
@@ -76,7 +90,7 @@ export function specOf(state: DrawState): ShaderSpec {
 
 /** Stable text for a spec, used as the program cache key. */
 export function specKey(s: ShaderSpec): string {
-  return JSON.stringify([s.cycles, s.copy, s.cycles === 2 ? s.rgb : s.rgb[0], s.cycles === 2 ? s.alpha : s.alpha[0], s.fogInShadeAlpha, s.bilerp, s.alphaCompare, s.cycles === 2 ? s.blend : s.blend[0], s.framebufferBlend]);
+  return JSON.stringify([s.cycles, s.copy, s.cycles === 2 ? s.rgb : s.rgb[0], s.cycles === 2 ? s.alpha : s.alpha[0], s.fogInShadeAlpha, s.bilerp, s.alphaCompare, s.coverageTimesAlpha, s.alphaFromCoverage, s.cycles === 2 ? s.blend : s.blend[0], s.framebufferBlend]);
 }
 
 // ---- Combiner -------------------------------------------------------------------------------------------------------
@@ -203,7 +217,8 @@ function blendTerms(c: BlendCycle, pixel: string, pixelAlpha: string): { p: stri
 }
 
 function blenderSource(spec: ShaderSpec): string {
-  const lines: string[] = ['  vec3 pixel = cRgb;', '  float pixelA = cA;', '  float weight = 1.0;'];
+  const pixelAlpha = spec.alphaFromCoverage ? (spec.coverageTimesAlpha ? 'cA' : '1.0') : 'cA';
+  const lines: string[] = ['  vec3 pixel = cRgb;', `  float pixelA = ${pixelAlpha};`, '  float weight = 1.0;'];
   if (spec.copy) return lines.join('\n');
   for (let n = 0; n < spec.cycles; n++) {
     const last = n === spec.cycles - 1;
@@ -278,7 +293,8 @@ out vec4 vColor;
 out vec2 vUv;
 out float vFog;
 void main() {
-  gl_Position = aPos;
+  // A vertex in front of the near plane is drawn at the nearest depth instead of being clipped away.
+  gl_Position = vec4(aPos.xy, aPos.w > 0.0 ? max(aPos.z, -aPos.w) : aPos.z, aPos.w);
   vColor = aColor;
   vUv = aUv;
   vFog = aFog;
@@ -316,6 +332,7 @@ void main() {
   vec4 t1 = sample1(vUv);
 ${combinerSource(spec)}
 ${spec.alphaCompare || spec.copy ? `  if (cA < ${spec.copy ? '0.5' : 'uBlend.a'}) discard;` : ''}
+${spec.coverageTimesAlpha && !spec.copy ? `  if (cA < ${MIN_COVERAGE_ALPHA.toFixed(6)}) discard;` : ''}
 ${blenderSource(spec)}
   outColor = vec4(pixel, ${spec.framebufferBlend ? 'weight' : '1.0'});
 }
