@@ -73,6 +73,14 @@ EMSCRIPTEN_KEEPALIVE const char *oot_fatal_message(void) { return fatal_message;
 EMSCRIPTEN_KEEPALIVE const uint8_t *oot_rdram(void) { return rdram; }
 EMSCRIPTEN_KEEPALIVE uint32_t oot_rd32(uint32_t addr) { return rd32(addr); }
 
+// Controller `port` (0-3) as the game reads it: OSContPad button bits, stick -128..127.
+EMSCRIPTEN_KEEPALIVE void oot_pad_set(uint32_t port, uint32_t buttons, int32_t x, int32_t y) { rt_pad_set(port, (uint16_t)buttons, (int8_t)x, (int8_t)y); }
+
+// The save memory (the cartridge's SRAM window) and whether the game wrote it since the last call.
+EMSCRIPTEN_KEEPALIVE uint8_t *oot_sram(void) { return rt_sram(NULL); }
+EMSCRIPTEN_KEEPALIVE uint32_t oot_sram_size(void) { size_t n; rt_sram(&n); return (uint32_t)n; }
+EMSCRIPTEN_KEEPALIVE int oot_sram_take_dirty(void) { return rt_sram_take_dirty(); }
+
 // ---- Call trace (debug builds) --------------------------------------------------------------------------------
 
 #define TRACE_RING 4096u

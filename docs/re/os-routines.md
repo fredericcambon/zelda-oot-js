@@ -838,6 +838,12 @@ Selects a controller-pak bank: writes the bank number a1 into the 32-byte block 
 
 Evidence: 0x800d0200: stores the bank byte into every fourth word position of a 32-byte block (0x800d0280-0x800d0298), 0xFE terminator at 0x80129c80+, SI DMA write then read.
 
+#### `osPfsInit` (code, 0x800d0474–0x800d05d0)
+
+Initialises the controller pak of one channel: osPfsInit(queue, pfs, channel) stores the queue and channel in the pak record, selects banks 0xFE and 0x80 and returns 0 or a non-zero error code.
+
+Evidence: 0x800d0474: stores a0 at +4 and a2 at +8 of the record in a1 and 0xFF at +101 (0x800d0488-0x800d04a4); calls 0x800d38b0 with a1 = 0xFE and 0x80 (0x800d04a8-0x800d04c0) and os_internal_cont_ram_read twice with size 0x400 (0x800d04e4, 0x800d0550); returns 0x0b when the byte read back is not 0xFE / 0x80 (0x800d0518, 0x800d0588) and 0 at the end (0x800d05b8). Its caller 0x800a2a40 runs it for four channels and skips the next bank selection when it returns non-zero.
+
 #### `osContInit` (code, 0x800d0690–0x800d0800)
 
 Initialises the controller interface: waits (with osSetTimer) until 0.5 s after reset have passed, sends a status request for all channels through the PIF and reads back which controllers are connected.

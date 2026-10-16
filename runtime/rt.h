@@ -198,6 +198,7 @@ void rt_osContGetQuery(Cpu *c);
 void rt_osContGetReadData(Cpu *c);
 void rt_osContInit(Cpu *c);
 void rt_osContStartQuery(Cpu *c);
+void rt_osPfsInit(Cpu *c);
 void rt_osContStartReadData(Cpu *c);
 void rt_osCreateMesgQueue(Cpu *c);
 void rt_osCreatePiManager(Cpu *c);

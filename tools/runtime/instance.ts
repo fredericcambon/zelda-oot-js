@@ -11,6 +11,10 @@ export interface OotCore {
   _oot_gfx_tasks(): number;
   _oot_retraces(): number;
   _oot_rdram(): number;
+  _oot_pad_set(port: number, buttons: number, x: number, y: number): void;
+  _oot_sram(): number;
+  _oot_sram_size(): number;
+  _oot_sram_take_dirty(): number;
   _oot_fatal_message(): number;
   UTF8ToString(ptr: number): string;
 }

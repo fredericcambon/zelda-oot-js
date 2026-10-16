@@ -17,7 +17,7 @@ const REQUIRED: Record<string, { found: string[]; absent?: string[] }> = {
     found: ['osViSetMode', 'osViSwapBuffer', 'osViBlack', 'osViSetEvent', 'osCreateViManager', 'os_internal_vi_mgr_main', 'os_internal_vi_swap_context'],
   },
   timers: { found: ['osGetCount', 'osGetTime', 'osSetTimer', 'osStopTimer', 'os_internal_timer_interrupt'] },
-  controllers: { found: ['osContInit', 'osContStartReadData', 'osContGetReadData', 'osContStartQuery', 'osContGetQuery'] },
+  controllers: { found: ['osContInit', 'osContStartReadData', 'osContGetReadData', 'osContStartQuery', 'osContGetQuery', 'osPfsInit'] },
   saves: {
     found: ['sram_transfer', 'sram_pi_transfer'],
     absent: [

@@ -50,6 +50,16 @@ export interface Game {
   lastCalls(n: number): string[];
   /** Address of the colour image the video interface shows; 0 when the screen is blanked. */
   framebuffer(): number;
+  /** Sets controller 1 for the frames that follow. */
+  setPad(buttons: number, x?: number, y?: number): void;
+  /** Reads a word of guest memory. */
+  rd32(addr: number): number;
+  /** A copy of the save memory. */
+  readSave(): Uint8Array;
+  /** Replaces the start of the save memory; call before the first frame. */
+  writeSave(bytes: Uint8Array): void;
+  /** Whether the game wrote the save memory since the last call. */
+  takeSaveDirty(): boolean;
 }
 
 export async function bootGame(moduleUrl: string, rom: Uint8Array, options: BootOptions = {}): Promise<Game> {
@@ -98,6 +108,11 @@ export async function bootGame(moduleUrl: string, rom: Uint8Array, options: Boot
       };
     },
     framebuffer: () => shownFramebuffer(rd32),
+    setPad: (buttons, x = 0, y = 0) => mod._oot_pad_set(0, buttons, x, y),
+    rd32,
+    readSave: () => mod.HEAPU8.slice(mod._oot_sram(), mod._oot_sram() + mod._oot_sram_size()),
+    writeSave: (bytes) => mod.HEAPU8.set(bytes.subarray(0, mod._oot_sram_size()), mod._oot_sram()),
+    takeSaveDirty: () => mod._oot_sram_take_dirty() !== 0,
     lastCalls(n) {
       const total = mod._oot_trace_count?.() ?? 0;
       return Array.from({ length: Math.min(n, total) }, (_, k) => `0x${hex(mod._oot_trace_at!(k))}`);

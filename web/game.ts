@@ -2,10 +2,16 @@
 import { DisplayListInterpreter } from '../tools/gfx/dl.ts';
 import { shownFramebuffer } from '../tools/gfx/vi.ts';
 import { RDRAM_SIZE, startModule, type OotCore } from '../tools/runtime/instance.ts';
+import type { PadState } from './input.ts';
 import type { Renderer } from './renderer.ts';
+import type { SaveMemory } from './saves.ts';
 
 
 export interface Game {
+  /** Sets controller 1 for the frames that follow. */
+  setPad(pad: PadState): void;
+  /** The save memory the game reads and writes. */
+  saveMemory: SaveMemory;
   /** Runs the game for one video frame. Rejects with the game's own message when it stops. */
   frame(): Promise<void>;
   /** Address of the colour image the video interface shows. */
@@ -27,7 +33,13 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, moduleUrl =
     },
   });
   const view = () => new DataView(mod.HEAPU8.buffer, mod._oot_rdram(), RDRAM_SIZE);
+  const sram = () => mod.HEAPU8.subarray(mod._oot_sram(), mod._oot_sram() + mod._oot_sram_size());
   return {
+    setPad: (pad) => mod._oot_pad_set(0, pad.buttons, pad.x, pad.y),
+    saveMemory: {
+      write: (bytes) => sram().set(bytes.subarray(0, mod._oot_sram_size())),
+      takeIfDirty: () => (mod._oot_sram_take_dirty() ? sram().slice() : null),
+    },
     async frame() {
       try {
         await mod._oot_frame();

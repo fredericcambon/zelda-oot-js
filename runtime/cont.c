@@ -5,6 +5,7 @@
 #define CHANNELS 4
 #define CONT_TYPE_NORMAL 0x0005u
 #define CONT_NO_RESPONSE 0x08u
+#define PFS_ERR_NOPACK 1
 
 typedef struct Pad {
   uint16_t buttons;
@@ -92,3 +93,6 @@ void rt_osContGetReadData(Cpu *c) {
 }
 
 void rt_osContGetQuery(Cpu *c) { write_status(ARG(0)); }
+
+// osPfsInit(queue, pfs, channel): no controller pak is ever plugged in, so every channel answers "no pak".
+void rt_osPfsInit(Cpu *c) { RET(PFS_ERR_NOPACK); }

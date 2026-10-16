@@ -469,6 +469,14 @@ TEST(a_query_completes_on_the_given_queue_when_no_si_event_is_registered) {
   CHECK_EQ(rd8(STATUS_OUT + 3), 8);
 }
 
+static void pfs_thread(Cpu *c) { tlog("pfs %u", os(c, rt_osPfsInit, QUEUE_A, 0x80551000u, 0, 0)); }
+
+TEST(a_controller_pak_is_never_found) {
+  guest(ENT_A, pfs_thread);
+  run_thread(query_main);
+  CHECK_STR(tlog_get(), "pfs 1");
+}
+
 // ---- RSP and RDP --------------------------------------------------------------------------------------------------------
 
 #define TASK 0x80550000u

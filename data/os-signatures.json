@@ -2153,6 +2153,27 @@
       }
     },
     {
+      "id": "osPfsInit",
+      "category": "controller",
+      "image": "code",
+      "summary": "Initialises the controller pak of one channel: osPfsInit(queue, pfs, channel) stores the queue and channel in the pak record, selects banks 0xFE and 0x80 and returns 0 or a non-zero error code.",
+      "evidence": "0x800d0474: stores a0 at +4 and a2 at +8 of the record in a1 and 0xFF at +101 (0x800d0488-0x800d04a4); calls 0x800d38b0 with a1 = 0xFE and 0x80 (0x800d04a8-0x800d04c0) and os_internal_cont_ram_read twice with size 0x400 (0x800d04e4, 0x800d0550); returns 0x0b when the byte read back is not 0xFE / 0x80 (0x800d0518, 0x800d0588) and 0 at the end (0x800d05b8). Its caller 0x800a2a40 runs it for four channels and skips the next bank selection when it returns non-zero.",
+      "match": {
+        "calls": [
+          "os_internal_cont_ram_read"
+        ],
+        "startsWith": [
+          "27bdffb8",
+          "afbf001c",
+          "afb00018"
+        ],
+        "insns": [
+          85,
+          100
+        ]
+      }
+    },
+    {
       "id": "os_internal_pfs_select_bank",
       "category": "controller",
       "image": "code",

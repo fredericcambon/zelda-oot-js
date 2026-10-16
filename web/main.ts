@@ -1,6 +1,8 @@
 import { startGame, type Game } from './game.ts';
 import { Renderer, type CullMode } from './renderer.ts';
 import { loadCartridge } from './cartridge.ts';
+import { Input } from './input.ts';
+import { indexedDbStore, SaveSync } from './saves.ts';
 
 const FRAME_MS = 20; // the video interface retraces at 50 Hz
 
@@ -27,6 +29,8 @@ try {
 }
 
 let game: Game | null = null;
+let saves: SaveSync | null = null;
+const input = new Input();
 let fps = 0;
 
 const CULL_MODES: CullMode[] = ['normal', 'swapped', 'off'];
@@ -76,7 +80,9 @@ async function loop(): Promise<void> {
     while (acc >= FRAME_MS && game) {
       acc -= FRAME_MS;
       try {
+        game.setPad(input.poll());
         await game.frame();
+        saves?.flush().catch((err) => setStatus(`Could not store the save: ${err instanceof Error ? err.message : String(err)}`, true));
       } catch (err) {
         setStatus(`The game stopped: ${err instanceof Error ? err.message : String(err)}`, true);
         game = null;
@@ -100,7 +106,11 @@ async function boot(): Promise<void> {
   try {
     const rom = await loadCartridge((done, total) => setStatus(`Loading game files: ${done} / ${total}`));
     setStatus('Starting...');
-    game = await startGame(rom, renderer);
+    const started = await startGame(rom, renderer);
+    const sync = new SaveSync(started.saveMemory, indexedDbStore());
+    await sync.restore();
+    saves = sync;
+    game = started;
     setStatus('Running');
     void loop();
   } catch (err) {
