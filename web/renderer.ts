@@ -126,6 +126,8 @@ export class Renderer {
   /** Draws the batches of one graphics task into the colour images they name. */
   drawTask(result: DisplayListResult): void {
     const s = this.stats;
+    // The cache is emptied between tasks: emptying it while a draw holds two textures would delete the first one.
+    if (this.textureCache.size >= MAX_TEXTURES) this.clearTextures();
     s.tasks++;
     s.commands = result.commands;
     s.batches = result.batches.length;
@@ -422,6 +424,12 @@ export class Renderer {
     return { texture, width, height };
   }
 
+  private clearTextures(): void {
+    for (const t of this.textureCache.values()) this.gl.deleteTexture(t.texture);
+    this.textureCache.clear();
+    this.textureByImage = new WeakMap();
+  }
+
   /** Decoded textures are rebuilt for every task, so they are shared by content. */
   private textureFor(image: DecodedTexture): GpuTexture {
     const hit = this.textureByImage.get(image.rgba);
@@ -431,11 +439,6 @@ export class Renderer {
     const key = `${image.width}x${image.height}:${h >>> 0}`;
     let tex = this.textureCache.get(key);
     if (!tex) {
-      if (this.textureCache.size >= MAX_TEXTURES) {
-        for (const t of this.textureCache.values()) this.gl.deleteTexture(t.texture);
-        this.textureCache.clear();
-        this.textureByImage = new WeakMap();
-      }
       tex = this.upload(image.width, image.height, image.rgba);
       this.textureCache.set(key, tex);
     }

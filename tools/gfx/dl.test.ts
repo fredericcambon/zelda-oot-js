@@ -143,6 +143,120 @@ describe('display list interpreter', () => {
     expect(plain.colors[2]).toBeCloseTo(127 / 255);
   });
 
+  describe('what the graphics microcode does with vertices (checked against its execution, tools/gfx/ucode-ref.ts)', () => {
+    /** Loads three vertices with normal bytes n through a model-view matrix of the given scale and returns the first colour. */
+    const lit = (n: [number, number, number], scale: number, light = [0, 0, 127], rgb = [200, 100, 50]) => {
+      const ram = new Ram();
+      for (let i = 0; i < 3; i++) ram.vertex(0x2000 + i * 16, 0, 0, 0, 0, 0, [n[0] & 255, n[1] & 255, n[2] & 255, 255]);
+      ram.bytes.set([...rgb, 0, ...rgb, 0, light[0]! & 255, light[1]! & 255, light[2]! & 255, 0, 0, 0, 0, 0], 0x2800);
+      ram.bytes.set([20, 30, 40, 0, 20, 30, 40, 0, 0, 0, 0, 0, 0, 0, 0, 0], 0x2810);
+      ram.matrix(0x3000, [scale, 0, 0, 0, 0, scale, 0, 0, 0, 0, scale, 0, 0, 0, 0, 1]);
+      ram.list(0x1000, [0xdb020000, 24], [0xdc08060a, 0x2800], [0xdc08090a, 0x2810], [0xda380003, 0x3000], [0xd9ffffff, 0x20000],
+        vtx(3, 0, 0x2000), tri(0, 1, 2), END);
+      return Array.from((run(ram, 0x1000).batches[0] as TriangleBatch).colors.subarray(0, 3)).map((c) => c * 255);
+    };
+
+    it('lights with the normal as it is, not normalised: half the length, half the light', () => {
+      // Microcode: ambient 20 plus 200 * 64 * 127 / 16384 = 99 for a normal of length 64.
+      expect(lit([0, 0, 64], 2)[0]).toBeCloseTo(119, 0);
+      expect(lit([0, 0, 127], 2)[0]).toBeCloseTo(216, 0);
+    });
+
+    it('gives nothing to a face that looks away, and caps one light at 1 - 2^-15', () => {
+      lit([0, 0, -127], 2).forEach((c, i) => expect(c).toBeCloseTo([20, 30, 40][i]!, 3));
+      expect(lit([127, 127, 0], 2, [90, 90, 0])[0]).toBeCloseTo(20 + Math.floor((200 * 32767) / 32768), 3);
+    });
+
+    it('takes the light direction through the model matrix: a vector of 1.27 is kept, one of 0.58 is dimmed', () => {
+      expect(lit([0, 0, 64], 0.01)[0]).toBeCloseTo(lit([0, 0, 64], 2)[0]!, 3);
+      expect(lit([0, 0, 127], 0.0046)[0]).toBeLessThan(lit([0, 0, 127], 2)[0]! - 50);
+    });
+
+    it('generates texture coordinates from the normal and the look-at vectors', () => {
+      const ram = new Ram();
+      for (let i = 0; i < 3; i++) ram.vertex(0x2000 + i * 16, 0, 0, 0, 0, 0, [127, 0, 0, 255]);
+      // Look-at x along +x, look-at y along +y, then one light and the ambient.
+      ram.bytes.set([0, 0, 0, 0, 0, 0, 0, 0, 127, 0, 0, 0, 0, 0, 0, 0], 0x2800);
+      ram.bytes.set([0, 0, 0, 0, 0, 0, 0, 0, 0, 127, 0, 0, 0, 0, 0, 0], 0x2810);
+      ram.bytes.set([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 127, 0, 0, 0, 0, 0], 0x2820);
+      ram.bytes.set(new Uint8Array(16), 0x2830);
+      ram.matrix(0x3000, [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+      const draw = (mode: number) => {
+        ram.list(0x1000, [0xdb020000, 24], [0xdc08000a, 0x2800], [0xdc08030a, 0x2810], [0xdc08060a, 0x2820], [0xdc08090a, 0x2830],
+          [0xda380003, 0x3000], [0xd7000001, 0xffffffff], [0xd9ffffff, 0x20000 | mode], vtx(3, 0, 0x2000), tri(0, 1, 2), END);
+        return run(ram, 0x1000).batches[0] as TriangleBatch;
+      };
+      // Plain mode: 0x3FFF + 127 * 127 along the look-at x, 0x3FFF across it. Linear mode: the cubic, 32281 at the end.
+      expect(draw(0x40000).uvs[0]! * 32).toBeCloseTo(32512, -1);
+      expect(draw(0x40000).uvs[1]! * 32).toBeCloseTo(0x3fff, -1);
+      expect(draw(0xc0000).uvs[0]! * 32).toBeCloseTo(32281, -1);
+    });
+
+    /** Three vertices through a projection whose w is 0.3 + 0.0004 z, so that z below -750 is behind the eye. */
+    const perspective = (zs: [number, number, number], mult: number, offset: number) => {
+      const ram = new Ram();
+      zs.forEach((z, i) => ram.vertex(0x2000 + i * 16, [0, 20, -20][i]!, 10, z, 0, 0, [255, 255, 255, 255]));
+      ram.matrix(0x3000, [0.01, 0, 0, 0, 0, 0.01, 0, 0, 0, 0, 0.0005, 0.0004, 0, 0, 0.2, 0.3]);
+      ram.list(0x1000, [0xdb080000, ((mult & 0xffff) << 16) | (offset & 0xffff)], [0xda380007, 0x3000], [0xd9ffffff, 0x10000], vtx(3, 0, 0x2000), tri(0, 1, 2), END);
+      return run(ram, 0x1000);
+    };
+
+    it('takes the fog factor from z / w, and gives a vertex behind the eye the lowest depth', () => {
+      // z / w = 0.6666 at z = 0: 200 * 0.6666 - 50 = 83.
+      const [front] = perspective([0, 0, 0], 200, -50).batches as TriangleBatch[];
+      expect(front!.colors[3]! * 255).toBeCloseTo(83, 0);
+      // With w < 0 z / w would exceed 1 and give the far end's fog (1); the microcode stores 0 for a positive multiplier, so the
+      // vertices the clipper makes towards it fade down from the fog of the two in front (233 of 255) instead of up.
+      const behind = perspective([0, 0, -2000], 200, 100).batches as TriangleBatch[];
+      const alphas = behind.flatMap((b) => Array.from(b.colors).filter((_, i) => i % 4 === 3));
+      expect(Math.min(...alphas)).toBeLessThan(0.8);
+      expect(alphas.every((a) => a >= 0 && a <= 1)).toBe(true);
+    });
+
+    it('clips a triangle behind the eye to twice the screen and keeps w positive', () => {
+      const [b] = perspective([0, 0, -2000], 0, 0).batches as TriangleBatch[];
+      expect(b!.positions.length / 12).toBeGreaterThan(1);
+      for (let i = 0; i < b!.positions.length; i += 4) {
+        expect(b!.positions[i + 3]).toBeGreaterThan(0);
+        expect(Math.abs(b!.positions[i]!)).toBeLessThanOrEqual(2 * b!.positions[i + 3]! + 1e-4);
+        expect(Math.abs(b!.positions[i + 1]!)).toBeLessThanOrEqual(2 * b!.positions[i + 3]! + 1e-4);
+      }
+    });
+
+    it('drops a triangle whose vertices are all beyond the far plane, and ends a list culled for it', () => {
+      expect(trianglesIn(perspective([1500, 2000, 2500], 0, 0).batches)).toBe(0);
+      const ram = new Ram();
+      for (let i = 0; i < 3; i++) ram.vertex(0x2000 + i * 16, i, 0, 3000, 0, 0, [0, 0, 0, 255]);
+      ram.matrix(0x3000, [0.01, 0, 0, 0, 0, 0.01, 0, 0, 0, 0, 0.0005, 0.0004, 0, 0, 0.2, 0.3]);
+      ram.list(0x1000, [0xda380007, 0x3000], vtx(3, 0, 0x2000), [0x03000000, 4], tri(0, 1, 2), END);
+      expect(run(ram, 0x1000).batches).toHaveLength(0);
+    });
+
+    it('branches to the list of the last RDPHALF_1 when the integer part of a vertex w is below the value', () => {
+      const ram = new Ram();
+      ram.triangleVertices(0x2000);
+      ram.list(0x1000, vtx(3, 0, 0x2000), [0xe1000000, 0x3000], [0x04000000, 5], [0xfa000000, 0x11223344], tri(0, 1, 2), END);
+      ram.list(0x3000, [0xfa000000, 0x55667788], tri(0, 1, 2), END);
+      // The vertices are not transformed, so w is 1: below 5 the branch is taken and the first list's draw never happens.
+      const taken = run(ram, 0x1000).batches as TriangleBatch[];
+      expect(taken).toHaveLength(1);
+      expect(taken[0]!.state.primColor.r).toBe(0x55);
+      ram.list(0x1000, vtx(3, 0, 0x2000), [0xe1000000, 0x3000], [0x04000000, 1], [0xfa000000, 0x11223344], tri(0, 1, 2), END);
+      expect((run(ram, 0x1000).batches[0] as TriangleBatch).state.primColor.r).toBe(0x11);
+    });
+
+    it('overwrites the colour or the texture coordinates of a loaded vertex', () => {
+      const ram = new Ram();
+      ram.triangleVertices(0x2000);
+      ram.list(0x1000, vtx(3, 0, 0x2000), [0x02100002, 0x11223344], [0x02140002, 0x00370ece], tri(0, 1, 2), END);
+      const b = run(ram, 0x1000).batches[0] as TriangleBatch;
+      expect(Array.from(b.colors.subarray(0, 4)).map((c) => Math.round(c * 255))).toEqual([0, 0, 0, 255]);
+      expect(Array.from(b.colors.subarray(4, 8)).map((c) => Math.round(c * 255))).toEqual([0x11, 0x22, 0x33, 0x44]);
+      expect(b.uvs[2]).toBe(0x37 / 32);
+      expect(b.uvs[3]).toBe(0xece / 32);
+    });
+  });
+
   it('starts a new batch when the render state changes and keeps the state of each', () => {
     const ram = new Ram();
     ram.triangleVertices(0x2000);
