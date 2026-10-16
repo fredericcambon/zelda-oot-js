@@ -1,6 +1,7 @@
 // The RSP, RDP and audio interface. Tasks are not executed: a graphics task goes to the renderer's hook and an
 // audio task to the mixer's, and their completion is reported through the same events the interrupts would raise.
 #include <stdio.h>
+#include <emscripten.h>
 #include "rt.h"
 
 // The task record, from osSpTaskLoad (0x800d002c) and its helper 0x800cff10:
@@ -45,7 +46,25 @@ void rt_set_ai_hook(AiHook fn) { ai_hook = fn; }
 void rt_ai_set_rate(uint32_t hz) { ai_hz = hz ? hz : 1; }
 uint32_t rt_ai_rate(void) { return ai_hz; }
 
-void rsp_reset(void) { ai_count = 0; }
+// The kinds of task the game has submitted so far: type, microcode and how many times.
+#define TASK_KINDS 16
+static struct { uint32_t type, ucode, count; } task_kinds[TASK_KINDS];
+static uint32_t task_kind_n;
+
+static void note_task(const RspTask *t) {
+  for (uint32_t k = 0; k < task_kind_n; k++) {
+    if (task_kinds[k].type == t->type && task_kinds[k].ucode == t->ucode) { task_kinds[k].count++; return; }
+  }
+  if (task_kind_n < TASK_KINDS) { task_kinds[task_kind_n].type = t->type; task_kinds[task_kind_n].ucode = t->ucode; task_kinds[task_kind_n].count = 1; task_kind_n++; }
+}
+
+EMSCRIPTEN_KEEPALIVE uint32_t oot_rsp_task_kinds(void) { return task_kind_n; }
+// Field 0 is the task type, 1 the microcode text address, 2 the number of tasks.
+EMSCRIPTEN_KEEPALIVE uint32_t oot_rsp_task_kind(uint32_t i, uint32_t field) {
+  return field == 0 ? task_kinds[i].type : field == 1 ? task_kinds[i].ucode : task_kinds[i].count;
+}
+
+void rsp_reset(void) { ai_count = 0; task_kind_n = 0; }
 
 static void decode_task(uint32_t t, RspTask *out) {
   *out = (RspTask){
@@ -71,6 +90,7 @@ void rt_osSpTaskLoad(Cpu *c) { (void)c; }
 void rt_osSpTaskStartGo(Cpu *c) {
   RspTask task;
   decode_task(ARG(0), &task);
+  note_task(&task);
   uint64_t done = rt_clock();
   if (task.type == TASK_GFX) {
     if (gfx_hook) gfx_hook(&task);

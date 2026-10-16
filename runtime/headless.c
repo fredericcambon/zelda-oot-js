@@ -76,6 +76,7 @@ EMSCRIPTEN_KEEPALIVE void oot_boot(const uint8_t *rom, size_t size) {
 // (The result is not the return value: an export that suspends on a fiber switch does not hand one back reliably.)
 EMSCRIPTEN_KEEPALIVE void oot_frame(void) {
   frame_end += RT_CPU_COUNTER / RT_VI_HZ;
+  rt_cov_frame();
   int r = rt_run(frame_end);
   frames_done++;
   idle = r == RT_RUN_IDLE;

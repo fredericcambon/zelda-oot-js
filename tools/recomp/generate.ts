@@ -66,7 +66,7 @@ export function generate(ctx: RomContext, inv: Inventory, outDir: string): Gener
   emit('os_bindings.c', [
     '// Default bodies of the OS routines: the recompiled original. A runtime that implements a routine defines',
     '// the same symbol and takes precedence.',
-    '#include "oot_gen.h"', '',
+    '#define OOT_NO_COV', '#include "oot_gen.h"', '',
     ...bound.map(([a, n]) => `__attribute__((weak)) void ${n}(Cpu *c) { ${defaultSymbol(a)}(c); }`), '',
   ].join('\n'));
   for (const [a, n] of osNames) if (!starts.has(a)) problems.push(`OS routine ${n} at ${hex(a)} is not a function of the inventory`);
@@ -90,7 +90,17 @@ export function generate(ctx: RomContext, inv: Inventory, outDir: string): Gener
   emit('oot_gen.h', [
     '#ifndef OOT_GEN_H', '#define OOT_GEN_H', '#include "dispatch.h"', '',
     ...inv.images.flatMap((img, k) => (img.kind === 'overlay' ? [`#define ${img.name}_delta (oot_images[${k}].delta)`] : [])),
-    '', ...[...decls].sort(), '', '#endif', '',
+    '', ...[...decls].sort(), '',
+    '// Coverage builds count every call of an OS routine (runtime/cov.c).',
+    '#if defined(OOT_COVERAGE) && !defined(OOT_NO_COV)', 'void rt_cov_os(uint32_t index);',
+    ...bound.map(([, n], k) => `#define ${n}(c) (rt_cov_os(${k}), ${n}(c))`),
+    '#endif', '', '#endif', '',
+  ].join('\n'));
+  emit('os_cov.c', [
+    '// The OS routines of the coverage counters, in the order of the macros of oot_gen.h.',
+    '#include <stdint.h>', '',
+    `const uint32_t oot_os_cov_count = ${bound.length};`,
+    'const uint32_t oot_os_cov_addr[] = {', ...bound.map(([a]) => `  0x${hex(a)}u,`), '};', '',
   ].join('\n'));
 
   const reg: string[] = ['#include "oot_gen.h"', ''];
