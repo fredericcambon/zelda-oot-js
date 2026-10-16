@@ -55,12 +55,11 @@ const showNotice = (text: string) => {
   noticeTimer = window.setTimeout(() => (notice.hidden = true), 2000);
 };
 
-// F5 saves to the current slot and F8 loads it; F6 and F7 pick the previous and the next slot.
+// 5 saves to the current slot, 6 loads it and 7 moves to the next slot.
 const STATE_KEYS: Record<string, (s: SaveStates) => Promise<string>> = {
-  F5: (s) => s.save(),
-  F8: (s) => s.load(),
-  F6: (s) => s.select(-1),
-  F7: (s) => s.select(1),
+  '5': (s) => s.save(),
+  '6': (s) => s.load(),
+  '7': (s) => s.select(1),
 };
 addEventListener('keydown', (e) => {
   const action = STATE_KEYS[e.key];
