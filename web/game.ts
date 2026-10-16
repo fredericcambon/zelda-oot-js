@@ -1,7 +1,9 @@
 // Boots the recompiled game in the page and feeds each graphics task it submits to the renderer.
+import { Synth } from '../tools/audio/synth.ts';
 import { DisplayListInterpreter } from '../tools/gfx/dl.ts';
 import { shownFramebuffer } from '../tools/gfx/vi.ts';
 import { RDRAM_SIZE, startModule, type OotCore } from '../tools/runtime/instance.ts';
+import type { AudioSink } from './audio.ts';
 import type { PadState } from './input.ts';
 import type { Renderer } from './renderer.ts';
 import type { SaveMemory } from './saves.ts';
@@ -16,20 +18,34 @@ export interface Game {
   frame(): Promise<void>;
   /** Address of the colour image the video interface shows. */
   framebuffer(): number;
-  info(): { frames: number; retraces: number; gfxTasks: number; idle: boolean; renderError: string };
+  info(): { frames: number; retraces: number; gfxTasks: number; audioTasks: number; idle: boolean; renderError: string; audioError: string };
 }
 
-export async function startGame(rom: Uint8Array, renderer: Renderer, moduleUrl = '/oot.js'): Promise<Game> {
+export async function startGame(rom: Uint8Array, renderer: Renderer, audio: AudioSink, moduleUrl = '/oot.js'): Promise<Game> {
   let renderError = '';
+  let audioError = '';
+  const synth = new Synth();
+  const guestRam = () => mod.HEAPU8.subarray(mod._oot_rdram(), mod._oot_rdram() + RDRAM_SIZE);
   const mod = await startModule<OotCore>(moduleUrl, rom, {
     onGfxTask: (data: number) => {
       try {
-        const ram = mod.HEAPU8.subarray(mod._oot_rdram(), mod._oot_rdram() + RDRAM_SIZE);
-        renderer.drawTask(new DisplayListInterpreter().run(ram, data >>> 0));
+        renderer.drawTask(new DisplayListInterpreter().run(guestRam(), data >>> 0));
       } catch (err) {
         renderError = err instanceof Error ? err.message : String(err);
         console.error(err);
       }
+    },
+    onAudioTask: (data: number, size: number, _microcode: number, microcodeData: number) => {
+      try {
+        synth.run(guestRam(), { list: data & 0x1fffffff, size, dataSegment: microcodeData & 0x1fffffff });
+      } catch (err) {
+        audioError = err instanceof Error ? err.message : String(err);
+        console.error(err);
+      }
+    },
+    onAiBuffer: (addr: number, length: number, hz: number) => {
+      const at = addr & 0x7fffff;
+      audio.push(guestRam().slice(at, at + length), hz);
     },
   });
   const view = () => new DataView(mod.HEAPU8.buffer, mod._oot_rdram(), RDRAM_SIZE);
@@ -49,6 +65,6 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, moduleUrl =
       }
     },
     framebuffer: () => shownFramebuffer((addr) => view().getUint32(addr & 0x1fffffff)),
-    info: () => ({ frames: mod._oot_frames(), retraces: mod._oot_retraces(), gfxTasks: mod._oot_gfx_tasks(), idle: mod._oot_idle() !== 0, renderError }),
+    info: () => ({ frames: mod._oot_frames(), retraces: mod._oot_retraces(), gfxTasks: mod._oot_gfx_tasks(), audioTasks: mod._oot_audio_tasks(), idle: mod._oot_idle() !== 0, renderError, audioError }),
   };
 }

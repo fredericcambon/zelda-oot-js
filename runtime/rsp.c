@@ -43,6 +43,7 @@ void rt_set_gfx_hook(RspHook fn) { gfx_hook = fn; }
 void rt_set_audio_hook(RspHook fn) { audio_hook = fn; }
 void rt_set_ai_hook(AiHook fn) { ai_hook = fn; }
 void rt_ai_set_rate(uint32_t hz) { ai_hz = hz ? hz : 1; }
+uint32_t rt_ai_rate(void) { return ai_hz; }
 
 void rsp_reset(void) { ai_count = 0; }
 
@@ -115,6 +116,18 @@ static void ai_finished(uint32_t a, uint32_t b) {
   ai_len[0] = ai_len[1];
   ai_count--;
   event_send(EVENT_AI);
+}
+
+// osAiSetFrequency(hz) (0x800d3120): the divisor is the video clock word at 0x80006878 over the rate, rounded to the
+// nearest integer (the float add of 0.5 at 0x800d3154-0x800d316c); below 132 the call fails with -1 (0x800d31ec).
+// The rate it returns is the clock over the divisor (0x800d3234).
+void rt_osAiSetFrequency(Cpu *c) {
+  float clock = (float)rd32(OS_VI_CLOCK);
+  float wanted = (float)ARG(0);
+  uint32_t divisor = (uint32_t)(clock / wanted + 0.5f);
+  if (divisor < 132) { RET(-1); return; }
+  ai_hz = rd32(OS_VI_CLOCK) / divisor;
+  RET(ai_hz);
 }
 
 // osAiSetNextBuffer(address, length): -1 when both buffers are taken.

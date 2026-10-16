@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -8,6 +9,10 @@ import { compileAll, link, runtimeSources } from '../port/build.ts';
 import { generate } from '../recomp/generate.ts';
 import { ensureToolchain } from '../recomp/toolchain.ts';
 import { classify } from '../assets/classify.ts';
+import { AudioCapture } from '../audio/capture.ts';
+import { RspReference } from '../audio/rsp-ref.ts';
+import { Synth } from '../audio/synth.ts';
+import { encodeWav } from '../audio/wav.ts';
 import { buildManifest, readCartridge, writeAssets } from '../assets/write.ts';
 import { DisplayListInterpreter } from '../gfx/dl.ts';
 import { encodePng } from '../gfx/png.ts';
@@ -39,6 +44,12 @@ const WALKED_RIGHT_FRAME = 19140;
 const HOUSE_SCENE = 52;
 /** The 320x240 RGBA5551 background the JPEG task decodes, in RDRAM; it ends where the task's work buffer (0x8014F680) starts. */
 const BACKGROUND_ADDRESS = 0x80129e80;
+/** SHA-256 of that image once decoded; the decoded picture was inspected and shows the treehouse interior from above. */
+const BACKGROUND_SHA256 = 'e0ed6b2ad056f55b0d16efd879d5831a11d7b8a7fdf6e7771981cf8b98fe97d4';
+/** Frames of the title screen rendered to a WAV file. */
+const TITLE_AUDIO_FRAMES = 250;
+/** Frames at which the mixer is checked against the microcode: the intro every 140 frames, then the title and the file select. */
+const COMPARE_FRAMES = [...Array.from({ length: 16 }, (_, i) => 260 + i * 140), ...Array.from({ length: 29 }, (_, i) => 2440 + i * 40)];
 
 let built: Promise<{ moduleUrl: string; cartridge: Uint8Array }> | undefined;
 
@@ -205,12 +216,10 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
     expect(new Set([HOUSE_SCENE, castle, forest]).size).toBe(3);
     expect((await sceneAt(HOUSE_CUTSCENE_FRAME))?.scene).toBe(HOUSE_SCENE);
 
-    // 300 macroblocks of 16x16 pixels make the background; the decoded picture has many colours and every pixel opaque.
-    const ram = run.game.ram();
-    const background = new Uint16Array(320 * 240);
-    for (let i = 0; i < background.length; i++) background[i] = (ram[(BACKGROUND_ADDRESS & 0x7fffff) + 2 * i]! << 8) | ram[(BACKGROUND_ADDRESS & 0x7fffff) + 2 * i + 1]!;
-    expect(background.every((p) => (p & 1) === 1)).toBe(true);
-    expect(new Set(background).size).toBeGreaterThan(300);
+    // 300 macroblocks of 16x16 pixels make the background: 320x240 halfwords, checked against the digest of the decoded treehouse picture.
+    const at = BACKGROUND_ADDRESS & 0x7fffff;
+    const digest = createHash('sha256').update(run.game.ram().subarray(at, at + 320 * 240 * 2)).digest('hex');
+    expect(digest).toBe(BACKGROUND_SHA256);
 
     // Idle before the stick moves, then forward, then right: the position changes with the stick and in no other frame.
     await run.play(CONTROL_FRAME - 10);
@@ -242,5 +251,84 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
     });
     for (let a = 0; a < images.length; a++)
       for (let b = a + 1; b < images.length; b++) expect(differingPixels(images[a]!, images[b]!), `frames ${a} and ${b} differ`).toBeGreaterThan(300);
+  }, 3_600_000);
+
+  it('renders the title music to a WAV that is audible and not clipped', async () => {
+    const { moduleUrl, cartridge } = await buildGame();
+    const audio = new AudioCapture();
+    const game = await bootGame(moduleUrl, cartridge, audio.hooks);
+    let titleStart = 0;
+    for (let k = 1; k <= TITLE_FRAME + TITLE_AUDIO_FRAMES; k++) {
+      const r = await game.frame();
+      expect(r.fatal, `frame ${k}`).toBeUndefined();
+      if (k === TITLE_FRAME) titleStart = audio.samples().length;
+    }
+    expect(audio.error).toBeUndefined();
+    expect(audio.hz).toBeGreaterThan(30000);
+    expect(audio.hz).toBeLessThan(34000);
+    const title = audio.samples().subarray(titleStart);
+    const dir = resolve('out', 'audio');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'title.wav'), encodeWav(title, 2, audio.hz));
+
+    // 50 frames of audio per second: the game queues one buffer per frame.
+    expect(title.length / 2 / audio.hz).toBeGreaterThan(TITLE_AUDIO_FRAMES / 50 - 0.2);
+    let peak = 0, sum = 0, clipped = 0;
+    for (const x of title) {
+      peak = Math.max(peak, Math.abs(x));
+      sum += x * x;
+      if (x >= 32767 || x <= -32768) clipped++;
+    }
+    const rms = Math.sqrt(sum / title.length);
+    expect(rms, 'not silent').toBeGreaterThan(300);
+    expect(peak, 'has a peak').toBeGreaterThan(3000);
+    expect(clipped / title.length, 'not clipped').toBeLessThan(0.0005);
+    // Sound all the way through, not one burst: every half second holds signal.
+    const window = Math.floor(audio.hz / 2) * 2;
+    for (let at = 0; at + window <= title.length; at += window) {
+      let e = 0;
+      for (let i = at; i < at + window; i++) e += title[i]! * title[i]!;
+      expect(Math.sqrt(e / window), `half second at ${at / window}`).toBeGreaterThan(50);
+    }
+  }, 3_600_000);
+
+  it('mixes the same samples as the audio microcode does on the commands of the intro, the title and the file select', async () => {
+    const { moduleUrl, cartridge } = await buildGame();
+    const synth = new Synth();
+    let frame = 0;
+    let compared = 0;
+    const pending = [...COMPARE_FRAMES];
+    const problems: string[] = [];
+    const game = await bootGame(moduleUrl, cartridge, {
+      onAudioTask: (t) => {
+        const task = { list: t.data & 0x1fffffff, size: t.size, dataSegment: t.microcodeData & 0x1fffffff };
+        if (pending.length === 0 || frame < pending[0]!) {
+          synth.run(t.ram, task);
+          return;
+        }
+        pending.shift();
+        // The reference starts from the working memory the mixer holds, which is what the console's processor would still
+        // hold from the previous task, and runs on a copy of the memory the mixer is about to change.
+        const code = t.ram.subarray(t.microcode & 0x1fffffff, (t.microcode & 0x1fffffff) + 0x1000);
+        const expected = t.ram.slice();
+        const reference = new RspReference(code);
+        reference.dmem.set(synth.dmem);
+        synth.run(t.ram, task);
+        reference.run(expected, { dataPtr: task.dataSegment, dataSize: 0x2df, listPtr: task.list, listSize: task.size });
+        compared++;
+        let differing = 0;
+        for (let i = 0; i < expected.length; i++) if (expected[i] !== t.ram[i]) differing++;
+        if (differing > 0) problems.push(`frame ${frame}: ${differing} bytes differ`);
+      },
+    });
+    while (frame < COMPARE_FRAMES[COMPARE_FRAMES.length - 1]! + 5) {
+      frame++;
+      const pad = padAt(SCRIPT, frame);
+      game.setPad(pad.buttons, pad.x, pad.y);
+      const r = await game.frame();
+      expect(r.fatal, `frame ${frame}`).toBeUndefined();
+    }
+    expect(compared).toBe(COMPARE_FRAMES.length);
+    expect(problems).toEqual([]);
   }, 3_600_000);
 });

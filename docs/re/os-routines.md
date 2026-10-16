@@ -710,6 +710,12 @@ Queues the next audio DMA buffer (a0 address, a1 length): writes AI_DRAM_ADDR an
 
 Evidence: 0x800bc500: reads the flag byte at 0x8010f760 (0x800bc504), AI_STATUS and AI_LEN; 29 instructions, no calls.
 
+#### `osAiSetFrequency` (code, 0x800d3120–0x800d3264)
+
+Sets the audio sample rate (a0 Hz): divides the video clock word at 0x80006878 by it to get the AI_DACRATE value, returns -1 below 132, writes AI_DACRATE (0xA4500010) with the value minus one and AI_BITRATE (0xA4500014) with min(value / 66, 16) minus one, and returns the clock divided by the value.
+
+Evidence: 0x800d3120: loads the word at 0x80006878 (0x800d3124-0x800d3128), compares the divisor with 132 (0x800d31ec), divides by 66 (0x800d3204) and caps at 16 (0x800d3210); stores at 0x800d3220 (offset 16 of the 0xA450 base) and 0x800d3228 (offset 20); returns clock / divisor (0x800d3234).
+
 #### `osAiGetLength` (code, 0x800d39a0–0x800d39ac)
 
 Returns AI_LEN (0xA4500004), the bytes left in the audio DMA.

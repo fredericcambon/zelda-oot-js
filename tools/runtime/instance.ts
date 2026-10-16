@@ -9,6 +9,7 @@ export interface OotCore {
   _oot_idle(): number;
   _oot_frames(): number;
   _oot_gfx_tasks(): number;
+  _oot_audio_tasks(): number;
   _oot_retraces(): number;
   _oot_rdram(): number;
   _oot_pad_set(port: number, buttons: number, x: number, y: number): void;

@@ -154,6 +154,7 @@ void rt_set_gfx_hook(RspHook fn);
 void rt_set_audio_hook(RspHook fn);
 typedef void (*AiHook)(uint32_t addr, uint32_t length);
 void rt_set_ai_hook(AiHook fn);
+uint32_t rt_ai_rate(void);
 void rt_ai_set_rate(uint32_t hz);
 
 // Video state for the renderer.
@@ -197,6 +198,7 @@ void events_run_due(void);
 // generated bindings name the routine rt_<id>, and these definitions take precedence over the recompiled bodies.
 
 void rt_osAiGetLength(Cpu *c);
+void rt_osAiSetFrequency(Cpu *c);
 void rt_osAiSetNextBuffer(Cpu *c);
 void rt_osContGetQuery(Cpu *c);
 void rt_osContGetReadData(Cpu *c);

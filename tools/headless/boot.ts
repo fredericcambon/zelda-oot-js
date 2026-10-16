@@ -10,7 +10,6 @@ const TH_ID = 0x14;
 const TH_ENTRY = 0x11c;
 
 interface OotModule extends OotCore {
-  _oot_audio_tasks(): number;
   _oot_jpeg_tasks(): number;
   _oot_rd32(addr: number): number;
   _oot_trace_count?(): number;
@@ -40,9 +39,33 @@ export interface GfxTask {
   ram: Uint8Array;
 }
 
+/** An audio command list as the game submitted it. */
+export interface AudioTask {
+  /** Start and size in bytes of the command list. */
+  data: number;
+  size: number;
+  /** Addresses of the microcode's text and of its data segment, which holds the resampler's filter table. */
+  microcode: number;
+  microcodeData: number;
+  ram: Uint8Array;
+}
+
+/** A buffer of 16-bit stereo frames the game queued to the audio interface. */
+export interface AiBuffer {
+  addr: number;
+  length: number;
+  /** Sample rate in Hz. */
+  hz: number;
+  ram: Uint8Array;
+}
+
 export interface BootOptions {
   /** Called synchronously when the game starts a graphics task, before it can touch the memory again. */
   onGfxTask?: (task: GfxTask) => void;
+  /** Called synchronously when the game starts an audio task. */
+  onAudioTask?: (task: AudioTask) => void;
+  /** Called synchronously when the game queues a buffer to the audio interface. */
+  onAiBuffer?: (buffer: AiBuffer) => void;
 }
 
 export interface Game {
@@ -67,12 +90,14 @@ export interface Game {
 }
 
 export async function bootGame(moduleUrl: string, rom: Uint8Array, options: BootOptions = {}): Promise<Game> {
+  const guestRam = () => mod.HEAPU8.subarray(mod._oot_rdram(), mod._oot_rdram() + RDRAM_SIZE);
   const mod = await startModule<OotModule>(moduleUrl, rom, {
     onGfxTask: (data: number, size: number, task: number) => {
-      data >>>= 0; size >>>= 0; task >>>= 0;
-      const ram = mod.HEAPU8.subarray(mod._oot_rdram(), mod._oot_rdram() + RDRAM_SIZE);
-      options.onGfxTask?.({ task, data, size, ram });
+      options.onGfxTask?.({ task: task >>> 0, data: data >>> 0, size: size >>> 0, ram: guestRam() });
     },
+    onAudioTask: (data: number, size: number, microcode: number, microcodeData: number) =>
+      options.onAudioTask?.({ data: data >>> 0, size: size >>> 0, microcode: microcode >>> 0, microcodeData: microcodeData >>> 0, ram: guestRam() }),
+    onAiBuffer: (addr: number, length: number, hz: number) => options.onAiBuffer?.({ addr: addr >>> 0, length: length >>> 0, hz: hz >>> 0, ram: guestRam() }),
   });
 
   const rd32 = (addr: number) => mod._oot_rd32(addr) >>> 0;
