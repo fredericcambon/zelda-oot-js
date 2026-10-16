@@ -644,7 +644,8 @@ export class DisplayListInterpreter {
   }
 
   /**
-   * MODIFYVTX: overwrites a field of a loaded vertex. `w0[23:16]` names the field and `w0[15:0] / 2` the slot: 0x10 the colour
+   * MODIFYVTX: overwrites a field of a loaded vertex (fields observed by running the microcode, docs/re/display-lists.md section 9; the
+   * screen position and depth are converted back to clip space with the viewport, which is this interpreter's own inverse). `w0[23:16]` names the field and `w0[15:0] / 2` the slot: 0x10 the colour
    * (`w1` = rgba), 0x14 the texture coordinates (`w1` = s in the high half, t in the low, S10.5, not scaled), 0x18 the screen
    * position in 10.2 pixel units (x high, y low) and 0x1C the screen depth (high half).
    */

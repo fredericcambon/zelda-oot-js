@@ -64,7 +64,8 @@ describe.skipIf(!rom || !existsSync(rom))('display lists of the booted game', ()
     expect(totals.unknown, totals.summary()).toEqual([]);
     expect(totals.problems, totals.summary()).toEqual([]);
     expect(totals.tasks).toBeGreaterThan(300);
-    expect(totals.triangles).toBeGreaterThan(100_000);
+    // Triangles whose vertices all lie outside one side of the view are dropped, as the microcode drops them.
+    expect(totals.triangles).toBeGreaterThan(50_000);
     expect(textured).toBeGreaterThan(10_000);
   }, 3_600_000);
 });
