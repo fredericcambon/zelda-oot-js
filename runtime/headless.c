@@ -19,6 +19,8 @@ static uint32_t gfx_tasks, audio_tasks;
 static char fatal_message[256];
 static uint64_t frame_end;
 static int idle;
+static const uint8_t *boot_rom;
+static size_t boot_rom_size;
 
 // The host sees a graphics task while the memory it points into is still as the game left it.
 EM_JS(void, host_gfx_task, (uint32_t type, uint32_t data, uint32_t size, uint32_t task), {
@@ -56,6 +58,8 @@ EMSCRIPTEN_KEEPALIVE void oot_boot(const uint8_t *rom, size_t size) {
   memset(rdram, 0, sizeof rdram);
   frames_done = gfx_tasks = audio_tasks = 0;
   fatal_message[0] = 0;
+  boot_rom = rom;
+  boot_rom_size = size;
   rt_rom_set(rom, size);
   rt_set_fatal_handler(on_fatal);
   rt_set_gfx_hook(on_gfx);
@@ -86,6 +90,9 @@ EMSCRIPTEN_KEEPALIVE uint32_t oot_jpeg_tasks(void) { return rt_jpeg_tasks(); }
 EMSCRIPTEN_KEEPALIVE uint32_t oot_retraces(void) { RtVi v; rt_vi_get(&v); return v.retraces; }
 EMSCRIPTEN_KEEPALIVE const char *oot_fatal_message(void) { return fatal_message; }
 EMSCRIPTEN_KEEPALIVE const uint8_t *oot_rdram(void) { return rdram; }
+// Where the cartridge image sits in the module's memory. It is read-only, so a saved state leaves it out.
+EMSCRIPTEN_KEEPALIVE const uint8_t *oot_rom_base(void) { return boot_rom; }
+EMSCRIPTEN_KEEPALIVE uint32_t oot_rom_size(void) { return (uint32_t)boot_rom_size; }
 EMSCRIPTEN_KEEPALIVE uint32_t oot_rd32(uint32_t addr) { return rd32(addr); }
 
 // Controller `port` (0-3) as the game reads it: OSContPad button bits, stick -128..127.

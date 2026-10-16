@@ -4,12 +4,14 @@ import { Renderer, type CullMode } from './renderer.ts';
 import { loadCartridge } from './cartridge.ts';
 import { Input } from './input.ts';
 import { indexedDbStore, SaveSync } from './saves.ts';
+import { indexedDbStates, SaveStates } from './savestate.ts';
 
 const FRAME_MS = 20; // the video interface retraces at 50 Hz
 
 const status = document.getElementById('status')!;
 const overlay = document.getElementById('overlay') as HTMLPreElement;
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
+const notice = document.getElementById('notice')!;
 
 if (location.hash === '#debug') overlay.hidden = false;
 
@@ -31,6 +33,10 @@ try {
 
 let game: Game | null = null;
 let saves: SaveSync | null = null;
+let states: SaveStates | null = null;
+// The save state key last pressed, run between two frames: the game cannot be copied while a frame is in progress.
+let pendingState: (() => Promise<string>) | null = null;
+let noticeTimer = 0;
 const input = new Input();
 const audio = new AudioOutput();
 let fps = 0;
@@ -41,6 +47,33 @@ const enableSound = () => {
 };
 addEventListener('keydown', enableSound);
 addEventListener('pointerdown', enableSound);
+
+const showNotice = (text: string) => {
+  notice.textContent = text;
+  notice.hidden = false;
+  clearTimeout(noticeTimer);
+  noticeTimer = window.setTimeout(() => (notice.hidden = true), 2000);
+};
+
+// F5 saves to the current slot and F8 loads it; F6 and F7 pick the previous and the next slot.
+const STATE_KEYS: Record<string, (s: SaveStates) => Promise<string>> = {
+  F5: (s) => s.save(),
+  F8: (s) => s.load(),
+  F6: (s) => s.select(-1),
+  F7: (s) => s.select(1),
+};
+addEventListener('keydown', (e) => {
+  const action = STATE_KEYS[e.key];
+  if (!action || e.ctrlKey || e.metaKey || e.altKey) return;
+  e.preventDefault();
+  if (e.repeat) return;
+  if (!states) {
+    showNotice('Save states are not available yet');
+    return;
+  }
+  const target = states;
+  pendingState = () => action(target);
+});
 
 const CULL_MODES: CullMode[] = ['normal', 'swapped', 'off'];
 addEventListener('keydown', (e) => {
@@ -85,6 +118,16 @@ async function loop(): Promise<void> {
   let countStart = last;
   while (game) {
     await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    if (pendingState) {
+      const run = pendingState;
+      pendingState = null;
+      try {
+        showNotice(await run());
+      } catch (err) {
+        showNotice(`Save state failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      last = performance.now();
+    }
     const now = performance.now();
     // At most three frames of catch-up, so a stalled tab does not trigger a burst.
     acc = Math.min(acc + now - last, FRAME_MS * 3);
@@ -123,6 +166,11 @@ async function boot(): Promise<void> {
     const sync = new SaveSync(started.saveMemory, indexedDbStore());
     await sync.restore();
     saves = sync;
+    try {
+      states = new SaveStates(started.states, indexedDbStates(), await started.buildId());
+    } catch (err) {
+      console.error('save states are not available:', err);
+    }
     game = started;
     setStatus('Running');
     void loop();
