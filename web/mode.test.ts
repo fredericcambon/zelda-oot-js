@@ -7,23 +7,23 @@ function memory(): PreferenceStore & { items: Map<string, string> } {
 }
 
 describe('the remembered rate', () => {
-  it('is 50 Hz until 60 Hz is chosen, and then survives a reload', () => {
+  it('is 60 Hz until a rate is chosen, and then the choice survives a reload', () => {
     const store = memory();
-    expect(loadHz(store)).toBe(50);
-    expect(saveHz(60, store)).toBe(true);
     expect(loadHz(store)).toBe(60);
-    saveHz(50, store);
+    expect(saveHz(50, store)).toBe(true);
     expect(loadHz(store)).toBe(50);
+    saveHz(60, store);
+    expect(loadHz(store)).toBe(60);
   });
 
-  it('falls back to 50 Hz when storage is missing or throws', () => {
+  it('falls back to 60 Hz when storage is missing or throws', () => {
     const broken: PreferenceStore = {
       getItem: () => { throw new Error('denied'); },
       setItem: () => { throw new Error('denied'); },
     };
-    expect(loadHz(broken)).toBe(50);
+    expect(loadHz(broken)).toBe(60);
     expect(saveHz(60, broken)).toBe(false);
-    expect(loadHz(null)).toBe(50);
+    expect(loadHz(null)).toBe(60);
     expect(saveHz(60, null)).toBe(false);
   });
 });
