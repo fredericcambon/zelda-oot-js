@@ -3,7 +3,7 @@ import { runDisplayList, type GfxGameCore } from '../gfx/c-dl.ts';
 import type { DisplayListResult } from '../gfx/types.ts';
 import { shownFramebuffer } from '../gfx/vi.ts';
 import { RDRAM_SIZE, startModule } from '../runtime/instance.ts';
-import { captureMemory, restoreMemory, type MemorySnapshot, type SnapshotCore } from '../runtime/snapshot.ts';
+import { loadState, saveState, type StateCore } from '../runtime/snapshot.ts';
 
 const OS_ALLTHREADS = 0x8000685c;
 const OS_SENTINEL = 0x80006850;
@@ -12,8 +12,9 @@ const TH_PRI = 0x04;
 const TH_ID = 0x14;
 const TH_ENTRY = 0x11c;
 
-interface OotModule extends SnapshotCore, GfxGameCore {
+interface OotModule extends StateCore, GfxGameCore {
   _oot_jpeg_tasks(): number;
+  _oot_ai_gaps(): number;
   _oot_rd32(addr: number): number;
   _oot_trace_count?(): number;
   _oot_trace_at?(back: number): number;
@@ -26,6 +27,9 @@ interface OotModule extends SnapshotCore, GfxGameCore {
   _oot_cov_os_hits(i: number): number;
   _oot_cov_outside_count(): number;
   _oot_cov_outside(i: number, field: number): number;
+  _oot_threads_describe(buf: number, cap: number): number;
+  _oot_threads_rebuild(buf: number, len: number): void | Promise<void>;
+  _oot_threads_rebuilt(): number;
 }
 
 /** Bytes of address space, from 0x80000000, that the function bitmap of a coverage build spans (COVERAGE_WINDOW in runtime/cov.c). */
@@ -48,6 +52,8 @@ export interface FrameResult {
   gfxTasks: number;
   audioTasks: number;
   jpegTasks: number;
+  /** Buffers queued to the audio interface after it had run dry. */
+  aiGaps: number;
   newThreads: string[];
   /** One line per thread: address, id, priority, state and the queue it waits on. */
   threadStates: string[];
@@ -93,6 +99,8 @@ export interface BootOptions {
   onAudioTask?: (task: AudioTask) => void;
   /** Called synchronously when the game queues a buffer to the audio interface. */
   onAiBuffer?: (buffer: AiBuffer) => void;
+  /** The video rate to boot at: 60 boots the NTSC cartridge variant (see docs/re/tv-type.md); the default is the PAL 50. */
+  hz?: 50 | 60;
 }
 
 export interface Game {
@@ -118,10 +126,23 @@ export interface Game {
   rspTasks(): { type: number; ucode: number; count: number }[];
   /** The coverage counters, or undefined when the module is not a coverage build. */
   coverage(): CoverageSnapshot | undefined;
-  /** The complete state of the game; call between frames. */
-  snapshot(): MemorySnapshot;
-  /** Puts back a state taken from a game booted from the same build and cartridge image; the save memory is kept. */
-  restore(state: MemorySnapshot): void;
+  /** The portable state of the game (runtime/state.c); call between frames. Throws with the reason when the game cannot be saved now. */
+  saveState(): Uint8Array;
+  /**
+   * Replaces the state of the game with a saved one, taken by this build or another; the save memory is kept. Throws with the
+   * reason when the state is refused, and the game then runs on as it was.
+   */
+  loadState(state: Uint8Array): Promise<void>;
+  /**
+   * Every guest thread as build-independent data: its registers, the functions and call sites of its call chain, and where it
+   * waits. Call between frames. Throws with the reason when a thread is somewhere a state cannot hold.
+   */
+  describeThreads(): Uint8Array;
+  /**
+   * Replaces the guest threads with those of a description. The guest memory and the runtime state have to be those of the
+   * moment the description was taken. Throws with the reason when the description is refused; the threads are then untouched.
+   */
+  rebuildThreads(description: Uint8Array): Promise<void>;
 }
 
 export async function bootGame(moduleUrl: string, rom: Uint8Array, options: BootOptions = {}): Promise<Game> {
@@ -133,7 +154,7 @@ export async function bootGame(moduleUrl: string, rom: Uint8Array, options: Boot
     onAudioTask: (data: number, size: number, microcode: number, microcodeData: number) =>
       options.onAudioTask?.({ data: data >>> 0, size: size >>> 0, microcode: microcode >>> 0, microcodeData: microcodeData >>> 0, ram: guestRam() }),
     onAiBuffer: (addr: number, length: number, hz: number) => options.onAiBuffer?.({ addr: addr >>> 0, length: length >>> 0, hz: hz >>> 0, ram: guestRam() }),
-  });
+  }, options.hz);
 
   const rd32 = (addr: number) => mod._oot_rd32(addr) >>> 0;
   const seen = new Set<number>();
@@ -168,7 +189,7 @@ export async function bootGame(moduleUrl: string, rom: Uint8Array, options: Boot
       });
       return {
         threadStates, frame: mod._oot_frames(), alive, retraces: mod._oot_retraces(), gfxTasks: mod._oot_gfx_tasks(),
-        audioTasks: mod._oot_audio_tasks(), jpegTasks: mod._oot_jpeg_tasks(), newThreads, fatal,
+        audioTasks: mod._oot_audio_tasks(), jpegTasks: mod._oot_jpeg_tasks(), aiGaps: mod._oot_ai_gaps(), newThreads, fatal,
       };
     },
     framebuffer: () => shownFramebuffer(rd32),
@@ -195,8 +216,30 @@ export async function bootGame(moduleUrl: string, rom: Uint8Array, options: Boot
       }));
       return { functions, osCalls, outsideRdram };
     },
-    snapshot: () => captureMemory(mod),
-    restore: (state) => restoreMemory(mod, state),
+    describeThreads() {
+      const message = () => mod.UTF8ToString(mod._oot_state_error());
+      const size = mod._oot_threads_describe(0, 0);
+      if (size === 0) throw new Error(message());
+      const buf = mod._malloc(size);
+      try {
+        if (mod._oot_threads_describe(buf, size) !== size) throw new Error(message());
+        return mod.HEAPU8.slice(buf, buf + size);
+      } finally {
+        mod._free(buf);
+      }
+    },
+    async rebuildThreads(description) {
+      const buf = mod._malloc(description.length);
+      try {
+        mod.HEAPU8.set(description, buf);
+        await mod._oot_threads_rebuild(buf, description.length);
+        if (!mod._oot_threads_rebuilt()) throw new Error(mod.UTF8ToString(mod._oot_state_error()));
+      } finally {
+        mod._free(buf);
+      }
+    },
+    saveState: () => saveState(mod),
+    loadState: (state) => loadState(mod, state),
     lastCalls(n) {
       const total = mod._oot_trace_count?.() ?? 0;
       return Array.from({ length: Math.min(n, total) }, (_, k) => `0x${hex(mod._oot_trace_at!(k))}`);

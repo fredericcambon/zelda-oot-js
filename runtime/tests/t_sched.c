@@ -402,11 +402,6 @@ TEST(event_message_is_sent_when_the_queue_has_room) {
   CHECK_EQ(rd32(q + MQ_VALID), 1);
 }
 
-static void fire_event(uint32_t event, uint32_t unused) {
-  (void)unused;
-  event_send((int)event);
-}
-
 static void event_waiter(Cpu *c) {
   uint32_t out = 0x80500800u;
   os(c, rt_osRecvMesg, QUEUE_A, out, OS_MESG_BLOCK, 0);
@@ -423,7 +418,7 @@ static void main_waits_for_event(Cpu *c) {
 TEST(an_event_wakes_the_thread_waiting_on_its_queue) {
   setup_boot();
   guest(ENT_A, event_waiter);
-  rt_schedule(5000, fire_event, EVENT_VI, 0);
+  rt_schedule(5000, TE_RSP_EVENT, EVENT_VI, 0);
   run_main(main_waits_for_event);
   CHECK_STR(tlog_get(), "event 55 at >=1");
 }

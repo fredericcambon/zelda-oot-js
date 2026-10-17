@@ -6,11 +6,14 @@ import { FULL_SMOOTHING, finalColorImage, SmoothFrames, smoothFraction, type Smo
 import { shownFramebuffer } from '../tools/gfx/vi.ts';
 import { RDRAM_SIZE, startModule } from '../tools/runtime/instance.ts';
 import type { AudioSink } from './audio.ts';
+import type { Hz } from './mode.ts';
 import type { PadState } from './input.ts';
 import type { Renderer } from './renderer.ts';
 import type { SaveMemory } from './saves.ts';
-import { buildIdOf, compress, decompress, type StateSource } from './savestate.ts';
-import { captureMemory, decodeMemory, encodeMemory, restoreMemory, type SnapshotCore } from '../tools/runtime/snapshot.ts';
+import { compress, decompress, type StateSource } from './savestate.ts';
+import { mark } from './timing.ts';
+import { MODULE_URL, type WasmBuild } from './wasm.ts';
+import { loadState, saveState, type StateCore } from '../tools/runtime/snapshot.ts';
 
 export interface Game {
   /** Sets controller 1 for the frames that follow. */
@@ -19,8 +22,6 @@ export interface Game {
   saveMemory: SaveMemory;
   /** Save states of the game; capture and apply only between two frames. */
   states: StateSource;
-  /** Identifies the game module build (the hash of its wasm file). */
-  buildId(): Promise<string>;
   /** Runs the game for one video frame. Rejects with the game's own message when it stops. */
   frame(): Promise<void>;
   /** Address of the colour image the video interface shows. */
@@ -54,7 +55,7 @@ export interface SmoothInfo {
   rewritten: number;
 }
 
-export async function startGame(rom: Uint8Array, renderer: Renderer, audio: AudioSink, moduleUrl = '/oot.js'): Promise<Game> {
+export async function startGame(rom: Uint8Array, renderer: Renderer, audio: AudioSink, wasm: WasmBuild, moduleUrl = MODULE_URL, hz: Hz = 50): Promise<Game> {
   let renderError = '';
   let audioError = '';
   const synth = new Synth();
@@ -70,7 +71,20 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
   let drawn = '';
   let lastShown: number | null = null;
   const guestRam = () => mod.HEAPU8.subarray(mod._oot_rdram(), mod._oot_rdram() + RDRAM_SIZE);
-  const mod = await startModule<SnapshotCore & SmoothCore>(moduleUrl, rom, {
+  // The module's start-up promise never settles when the hook below fails, so the failure is raced against it.
+  let failInstantiation!: (err: unknown) => void;
+  const instantiationFailed = new Promise<never>((_, reject) => (failInstantiation = reject));
+  const started = startModule<StateCore & SmoothCore>(moduleUrl, rom, {
+    instantiateWasm: (imports: WebAssembly.Imports, done: (instance: WebAssembly.Instance) => void) => {
+      wasm.module
+        .then((module) => WebAssembly.instantiate(module, imports))
+        .then((instance) => {
+          done(instance);
+          mark('instantiated');
+        })
+        .catch(failInstantiation);
+      return {};
+    },
     onGfxTask: (data: number) => profiler.hook(() => {
       try {
         if (smoothing) {
@@ -107,7 +121,8 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
       const at = addr & 0x7fffff;
       audio.push(guestRam().slice(at, at + length), hz);
     }),
-  });
+  }, hz);
+  const mod = await Promise.race([started, instantiationFailed]);
   frames = new SmoothFrames(mod);
   const view = () => new DataView(mod.HEAPU8.buffer, mod._oot_rdram(), RDRAM_SIZE);
   const sram = () => mod.HEAPU8.subarray(mod._oot_sram(), mod._oot_sram() + mod._oot_sram_size());
@@ -118,14 +133,11 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
       write: (bytes) => sram().set(bytes.subarray(0, mod._oot_sram_size())),
       takeIfDirty: () => (mod._oot_sram_take_dirty() ? sram().slice() : null),
     },
-    // The kept frames are display data: a state neither carries them nor survives them.
+    // The kept frames are display data, not part of a state; one loaded makes them stale.
     states: {
-      capture: () => {
-        frames!.forget();
-        return compress(encodeMemory(captureMemory(mod)));
-      },
+      capture: () => compress(saveState(mod)),
       apply: async (data) => {
-        restoreMemory(mod, decodeMemory(await decompress(data)));
+        await loadState(mod, await decompress(data));
         frames!.forget();
       },
     },
@@ -165,10 +177,6 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
     smoothInfo() {
       const stats = frames!.stats;
       return stats ? { threeD: stats.threeD, matched: stats.matched, cut: stats.cut, rewritten: frames!.rewritten } : null;
-    },
-    buildId: async () => {
-      const wasmUrl = moduleUrl.replace(/\.js$/, '.wasm');
-      return buildIdOf(await (await fetch(wasmUrl)).arrayBuffer());
     },
     async frame() {
       videoFrames++;

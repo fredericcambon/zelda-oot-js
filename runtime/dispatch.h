@@ -4,8 +4,6 @@
 
 #include "cpu.h"
 
-typedef void (*GuestFn)(Cpu *c);
-
 typedef struct DispatchEntry {
   uint32_t addr;
   GuestFn fn;
@@ -21,10 +19,22 @@ typedef struct ImageInfo {
   int loaded;
   const DispatchEntry *table;
   uint32_t count;
+  // The call sites of the image's functions are the entries [first_site, first_site + site_count) of oot_sites.
+  uint32_t first_site, site_count;
 } ImageInfo;
 
 extern ImageInfo oot_images[];
 extern const uint32_t oot_image_count;
+
+// A call site of a recompiled function. A thread's shadow stack holds indices into this table.
+typedef struct SiteEntry {
+  GuestFn fn;     // the function that holds the site
+  uint32_t entry; // its entry address, as linked
+  uint32_t site;  // the address of the call, as linked
+} SiteEntry;
+
+extern const SiteEntry oot_sites[];
+extern const uint32_t oot_site_count;
 
 // The recompiled function that starts at a guest address as seen by the running game, or NULL.
 GuestFn oot_lookup(uint32_t addr);

@@ -80,7 +80,7 @@ void rt_osCreatePiManager(Cpu *c) {
 
 void rt_osPiGetCmdQueue(Cpu *c) { RET(rd32(OS_PI_ACTIVE) ? rd32(OS_PI_CMDQUEUE) : 0); }
 
-static void pi_complete(uint32_t mesg, uint32_t unused) {
+void te_pi_done(uint32_t mesg, uint32_t unused) {
   (void)unused;
   uint32_t handle = rd32(mesg + IO_HANDLE);
   cart_copy(cart_phys(handle, rd32(mesg + IO_DEVADDR)), rd32(mesg + IO_DRAM), rd32(mesg + IO_SIZE), rd16(mesg + IO_TYPE) == IO_TYPE_WRITE);
@@ -97,7 +97,7 @@ void rt_osEPiStartDma(Cpu *c) {
   wr16(mesg + IO_TYPE, dir == 0 ? IO_TYPE_READ : IO_TYPE_WRITE);
   uint64_t start = rt_clock() > pi_free_at ? rt_clock() : pi_free_at;
   pi_free_at = start + PI_SETUP_CYCLES + (uint64_t)rd32(mesg + IO_SIZE) * PI_CYCLES_PER_BYTE;
-  rt_schedule(pi_free_at, pi_complete, mesg, 0);
+  rt_schedule(pi_free_at, TE_PI_DONE, mesg, 0);
   RET(0);
 }
 
@@ -118,4 +118,19 @@ void rt_osEPiWriteIo(Cpu *c) {
     sram_dirty = 1;
   }
   RET(0);
+}
+
+// ---- Saved state -------------------------------------------------------------------------------------------
+// The save memory is not part of a state.
+
+int pi_save(Writer *w) {
+  put64(w, pi_free_at);
+  return 1;
+}
+
+int pi_load(Reader *r, int apply) {
+  uint64_t t = get64(r);
+  if (r->bad) return rt_state_refuse("the cartridge interface state is damaged");
+  if (apply) pi_free_at = t;
+  return 1;
 }

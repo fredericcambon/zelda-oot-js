@@ -69,7 +69,9 @@ enum {
 
 // Count ticks per second (osClockRate * 3 / 4, as osInitialize derives it).
 #define RT_CPU_COUNTER 46875000ull
-#define RT_VI_HZ 50u
+// Retraces per second of the video interface: 50 for the PAL console, 60 when the cartridge is booted as an NTSC one.
+#define RT_VI_HZ_PAL 50u
+#define RT_VI_HZ_NTSC 60u
 
 // Device timing of the model, in Count ticks. Only the order in which things complete matters to the game; the
 // values are those of a plausible machine, not measurements.
@@ -92,6 +94,10 @@ enum { RT_RUN_TIME = 0, RT_RUN_IDLE = 1 };
 void rt_reset(void);
 // Writes the values the IPL leaves in low memory for a PAL cartridge.
 void rt_boot_state(void);
+// The retrace rate (RT_VI_HZ_PAL or RT_VI_HZ_NTSC). It decides the TV type that rt_boot_state writes, so set it before booting;
+// a reset leaves it alone.
+void rt_set_vi_hz(uint32_t hz);
+uint32_t rt_vi_hz(void);
 // Runs `entry` as the boot context (a function of the dispatch tables) with the given stack pointer. It runs
 // until it starts the first thread, which is when the real boot code is abandoned for good.
 void rt_start(uint32_t entry, uint32_t sp);
@@ -99,10 +105,31 @@ void rt_start(uint32_t entry, uint32_t sp);
 // can ever run again (RT_RUN_IDLE).
 int rt_run(uint64_t until);
 uint64_t rt_clock(void);
-// Schedules `fn(a, b)` at an absolute time; used by the devices.
+// Timed events are named by kind, not by function, so that a queued event can be written to a saved state. The numbers
+// are part of the state: new kinds take new numbers.
+enum TimedKind {
+  TE_WAKE_SLEEPER = 1, // a: OSThread address
+  TE_TIMER = 2,        // a: OSTimer address
+  TE_PI_DONE = 3,      // a: OSIoMesg address
+  TE_SI_DONE = 4,      // a: queue of the controller call
+  TE_VI_RETRACE = 5,
+  TE_RSP_EVENT = 6,    // a: interrupt event to send
+  TE_AI_FINISHED = 7,
+  TE_USER = 255,       // runs the function of rt_set_user_event; for hosts and tests, and not part of a saved state
+};
+// Schedules the event `kind` with arguments `a` and `b` at an absolute time; used by the devices.
+void rt_schedule(uint64_t when, int kind, uint32_t a, uint32_t b);
+int rt_cancel(int kind, uint32_t a);
 typedef void (*TimedFn)(uint32_t a, uint32_t b);
-void rt_schedule(uint64_t when, TimedFn fn, uint32_t a, uint32_t b);
-int rt_cancel(TimedFn fn, uint32_t a);
+void rt_set_user_event(TimedFn fn);
+// The handlers of the device events, run by the clock.
+void te_wake_sleeper(uint32_t thread, uint32_t unused);
+void te_timer(uint32_t timer, uint32_t unused);
+void te_pi_done(uint32_t mesg, uint32_t unused);
+void te_si_done(uint32_t queue, uint32_t unused);
+void te_vi_retrace(uint32_t a, uint32_t b);
+void te_rsp_event(uint32_t event, uint32_t unused);
+void te_ai_finished(uint32_t a, uint32_t b);
 // Time at which the next scheduled event is due; returns 0 when there is none.
 int rt_next_event(uint64_t *when);
 
@@ -158,6 +185,7 @@ void rt_set_audio_hook(RspHook fn);
 typedef void (*AiHook)(uint32_t addr, uint32_t length);
 void rt_set_ai_hook(AiHook fn);
 uint32_t rt_ai_rate(void);
+uint32_t rt_ai_gaps(void);
 void rt_ai_set_rate(uint32_t hz);
 
 // Video state for the renderer.
@@ -168,6 +196,106 @@ typedef struct RtVi {
   uint32_t retraces;
 } RtVi;
 void rt_vi_get(RtVi *out);
+
+// ---- Call chains and blocking sites ------------------------------------------------------------------------
+// A thread that is not running waits in a runtime routine at a blocking site. The ids are part of the portable
+// state: new sites take new ids, and the existing ones keep theirs.
+enum BlockSite {
+  BS_NONE = 0,
+  BS_RECV_WAIT = 1,  // osRecvMesg, waiting for a message
+  BS_RECV_YIELD = 2, // osRecvMesg, preempted after it received one
+  BS_SEND_WAIT = 3,
+  BS_SEND_YIELD = 4,
+  BS_JAM_WAIT = 5,
+  BS_JAM_YIELD = 6,
+  BS_YIELD_THREAD = 7,  // osYieldThread
+  BS_STOP_SELF = 8,     // osStopThread on the running thread
+  BS_START_YIELD = 9,   // osStartThread made a higher priority thread runnable
+  BS_PRI_PARK = 10,     // osSetThreadPri to 0: the idle loop
+  BS_PRI_YIELD = 11,
+  BS_GETCOUNT = 12,     // osGetCount, preempted while it charges time
+  BS_GETTIME = 13,
+  BS_AIGETLENGTH = 14,
+  BS_VIGETFB = 15,      // osViGetCurrentFramebuffer
+  BS_CONTINIT_SLEEP = 16,
+};
+
+// A runtime routine that calls recompiled code and uses its own locals afterwards keeps them in a frame on the
+// shadow stack: the frame id, then its payload words. Frame ids are above every call site key.
+#define RT_FRAME_BASE 0xF0000000u
+#define RT_FRAME_OVERLAY_LOAD (RT_FRAME_BASE + 1) // payload: the link address and the load address
+#define RT_FRAME_CONT_TRANSFER (RT_FRAME_BASE + 2) // osContStartReadData/osContStartQuery waiting on the queue; payload: the queue and 1 for a read
+// A frame whose routine waits itself, so that a chain may end in it.
+static inline int rt_frame_blocks(uint32_t id) { return id == RT_FRAME_CONT_TRANSFER; }
+
+// True while the call chain of the thread behind `c` is being rebuilt and the thread waited at `site`.
+static inline int resuming_at(const Cpu *c, int site) { return c->resume && c->blk_id == (uint32_t)site; }
+
+// The function that a call in resume mode reaches next: the one holding the next call site of the chain, or the
+// routine of the blocking site at its end.
+GuestFn rt_resume_target(Cpu *c);
+
+// Describes every guest thread so that a fresh instance can rebuild them (see "Portable save states" in
+// docs/runtime.md). Call between two oot_frame() calls. Returns the size in bytes; with `buf` NULL nothing is
+// written. Returns 0 and sets rt_state_error() when the threads cannot be described.
+uint32_t rt_threads_describe(uint8_t *buf, uint32_t cap);
+// Replaces the threads with the described ones. The guest memory and the runtime's other state have to be those
+// of the description already. Returns 0 and sets rt_state_error() when the description is refused; the threads
+// are then untouched.
+int rt_threads_rebuild(const uint8_t *buf, uint32_t len);
+// Like rt_threads_rebuild, but only checks the description.
+int rt_threads_check(const uint8_t *buf, uint32_t len);
+const char *rt_state_error(void);
+
+// ---- Portable state ---------------------------------------------------------------------------------
+// The state of the game as build-independent data (docs/runtime.md, "Portable save states"). All words are
+// little-endian. A Writer with no buffer only counts.
+typedef struct Writer {
+  uint8_t *buf;
+  uint32_t cap, len;
+} Writer;
+typedef struct Reader {
+  const uint8_t *buf;
+  uint32_t len, pos;
+  int bad;
+} Reader;
+void put32(Writer *w, uint32_t v);
+void put64(Writer *w, uint64_t v);
+uint32_t get32(Reader *r);
+uint64_t get64(Reader *r);
+
+// Version of the format that rt_state_save writes and rt_state_load reads. It changes when a variable is added to
+// or removed from the state.
+#define RT_STATE_VERSION 1u
+// Writes the state into `buf`; with `buf` NULL it only measures. Call between two frames. Returns the size in bytes, or
+// 0 with rt_state_error() set when the game is somewhere a state cannot hold.
+uint32_t rt_state_save(uint8_t *buf, uint32_t cap);
+// Replaces the state of the game with a saved one. Returns 0 with rt_state_error() set when the state is refused;
+// the game is then as it was. The cartridge's save memory is not part of a state and is left alone.
+int rt_state_load(const uint8_t *buf, uint32_t len);
+// Records why a save or load was refused; returns 0.
+int rt_state_refuse(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+void rt_state_clear(void);
+
+// Each part of the state writes its variables with `*_save` and reads them with `*_load`. A load with `apply` clear
+// only checks the data, so that a refusal leaves the game untouched; it returns 0 (after rt_state_refuse) when the
+// data is not acceptable.
+int dispatch_save(Writer *w);
+int dispatch_load(Reader *r, int apply);
+int overlays_save(Writer *w);
+int overlays_load(Reader *r, int apply);
+int clock_save(Writer *w);
+int clock_load(Reader *r, int apply);
+int cont_save(Writer *w);
+int cont_load(Reader *r, int apply);
+int pi_save(Writer *w);
+int pi_load(Reader *r, int apply);
+int vi_save(Writer *w);
+int vi_load(Reader *r, int apply);
+int rsp_save(Writer *w);
+int rsp_load(Reader *r, int apply);
+int jpeg_save(Writer *w);
+int jpeg_load(Reader *r, int apply);
 
 // ---- Shared by the runtime files ---------------------------------------------------------------------
 
@@ -186,12 +314,12 @@ void timers_reset(void);
 // Sends `msg` to the queue when it has room, waking the first receiver; returns 0 when the queue is full.
 int mq_try_send(uint32_t q, uint32_t msg);
 void mq_init(uint32_t q, uint32_t buffer, uint32_t count);
-// Blocks the calling thread until the given time.
-void thread_sleep_until(uint64_t when);
+// Blocks the calling thread until the given time, at blocking site `site`.
+void thread_sleep_until(Cpu *c, uint64_t when, int site);
 // Sends the message registered for an event.
 void event_send(int event);
 // Advances the clock for a poll-style call and lets due events run.
-void rt_poll(uint32_t cycles);
+void rt_poll(Cpu *c, int site, uint32_t cycles);
 void clock_set(uint64_t now);
 extern uint32_t rt_status;
 void events_run_due(void);

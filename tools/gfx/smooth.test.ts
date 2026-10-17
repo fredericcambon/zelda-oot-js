@@ -1,16 +1,8 @@
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, utimesSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { analyze } from '../analyze/run.ts';
-import { loadContext } from '../analyze/context.ts';
-import { classify } from '../assets/classify.ts';
-import { buildManifest, readCartridge, writeAssets } from '../assets/write.ts';
+import { buildGame } from '../headless/headless-support.ts';
 import { padAt, parseInput } from '../headless/input.ts';
 import { playState, requestEntrance } from '../headless/state.ts';
-import { compileAll, link, runtimeSources } from '../port/build.ts';
-import { generate } from '../recomp/generate.ts';
-import { ensureToolchain } from '../recomp/toolchain.ts';
 import { startModule, type OotCore } from '../runtime/instance.ts';
 import { runDisplayList } from './c-dl.ts';
 import { isCamera, MatrixFlag, matchFrames, planMotion, readMatrices, type MotionMatrix } from './motion.ts';
@@ -31,41 +23,6 @@ const WALK = parseInput('2450 NONE 0 70\n2500 NONE 70 0\n2550 NONE 0 -70\n2600 N
 
 interface GameCore extends OotCore, SmoothCore {
   _oot_rd32(addr: number): number;
-}
-
-/** Recompiles the runtime and links the game under out/smooth-test. */
-async function buildGame(): Promise<{ moduleUrl: string; cartridge: Uint8Array }> {
-  const work = resolve('out', 'smooth-test');
-  const inventory = await analyze({ romPath: rom!, outDir: work, workDir: join(work, 'work'), useGhidra: false });
-  const cDir = join(work, 'c');
-  const gen = generate(loadContext(rom!), inventory, cDir);
-  expect(gen.problems).toEqual([]);
-  const objDir = join(work, 'obj');
-  seedObjects(cDir, objDir);
-  const opts = { cDir, objDir, distDir: join(work, 'dist'), toolchain: ensureToolchain(), log: () => {} };
-  const out = await link(opts, await compileAll(opts, runtimeSources()));
-  const ctx = loadContext(rom!);
-  writeAssets(ctx.rom, buildManifest(ctx.sha1, ctx.rom.length, classify(ctx, inventory)), join(work, 'dist', 'assets'));
-  return { moduleUrl: pathToFileURL(out).href, cartridge: readCartridge(join(work, 'dist', 'assets')) };
-}
-
-/**
- * Starts the object directory with the objects `npm run port` left for the same recompiled source, so that only the runtime is
- * compiled: the game's own C files are the same text, and their objects do not depend on the runtime's sources.
- */
-function seedObjects(cDir: string, objDir: string): void {
-  const from = resolve('generated');
-  if (existsSync(objDir) || !existsSync(join(from, 'obj'))) return;
-  mkdirSync(objDir, { recursive: true });
-  const now = new Date();
-  for (const f of readdirSync(join(from, 'obj'))) {
-    if (!f.endsWith('-gen.o')) continue;
-    const source = f.replace(/-gen.o$/, '.c');
-    const theirs = join(from, 'c', source), ours = join(cDir, source);
-    if (!existsSync(theirs) || !existsSync(ours) || Buffer.compare(readFileSync(theirs), readFileSync(ours)) !== 0) continue;
-    copyFileSync(join(from, 'obj', f), join(objDir, f));
-    utimesSync(join(objDir, f), now, now);
-  }
 }
 
 const differs = (a: Uint8Array, b: Uint8Array): boolean => Buffer.compare(a, b) !== 0;

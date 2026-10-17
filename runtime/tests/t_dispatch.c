@@ -7,8 +7,10 @@ static void fo1(Cpu *c) { (void)c; tlog("o1"); }
 static void fo2(Cpu *c) { (void)c; tlog("o2"); }
 
 // The recompiled overlay loader the runtime wraps: it returns the loaded size.
+void (*loader_hook)(Cpu *c);
 void fn_800cd428(Cpu *c) {
-  tlog("loader ");
+  if (!OOT_RESUMING()) tlog("loader ");
+  if (loader_hook) loader_hook(c);
   c->r[2] = 0x4000;
 }
 
@@ -126,6 +128,18 @@ TEST(boot_state_describes_a_pal_cartridge) {
   CHECK_EQ(rd32(OS_ROM_BASE), 0xb0000000u);
   CHECK_EQ(rd32(OS_RESET_TYPE), 0);
   CHECK_EQ(rd32(OS_MEM_SIZE), RDRAM_SIZE);
+}
+
+TEST(boot_state_describes_an_ntsc_cartridge_at_60_hz) {
+  rt_set_vi_hz(60);
+  rt_boot_state();
+  CHECK_EQ(rd32(OS_TV_TYPE), 1);
+  CHECK_EQ(rd32(OS_ROM_BASE), 0xb0000000u);
+  rt_set_vi_hz(50);
+  rt_boot_state();
+  CHECK_EQ(rd32(OS_TV_TYPE), 0);
+  rt_set_vi_hz(75);
+  CHECK_EQ(rt_vi_hz(), 50);
 }
 
 TEST(initialisation_derives_the_clock_rates_and_enables_the_fpu) {

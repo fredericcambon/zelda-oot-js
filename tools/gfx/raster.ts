@@ -33,21 +33,23 @@ const DECAL_MIN_BIAS = 1e-6;
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 const unit = (c: { r: number; g: number; b: number; a: number }): [number, number, number, number] => [c.r / 255, c.g / 255, c.b / 255, c.a / 255];
 
+function rgbBase(c: number, i: Inputs): V3 | null {
+  switch (c) {
+    case 0: return i.combined;
+    case 1: return [i.t0[0], i.t0[1], i.t0[2]];
+    case 2: return [i.t1[0], i.t1[1], i.t1[2]];
+    case 3: return [i.prim[0], i.prim[1], i.prim[2]];
+    case 4: return i.shade;
+    case 5: return [i.env[0], i.env[1], i.env[2]];
+    default: return null;
+  }
+}
+
+const gray = (v: number): V3 => [v, v, v];
+
 function rgbInput(slot: number, code: number, i: Inputs): V3 {
-  const base = (c: number): V3 | null => {
-    switch (c) {
-      case 0: return i.combined;
-      case 1: return [i.t0[0], i.t0[1], i.t0[2]];
-      case 2: return [i.t1[0], i.t1[1], i.t1[2]];
-      case 3: return [i.prim[0], i.prim[1], i.prim[2]];
-      case 4: return i.shade;
-      case 5: return [i.env[0], i.env[1], i.env[2]];
-      default: return null;
-    }
-  };
-  const gray = (v: number): V3 => [v, v, v];
   if (slot === 2) {
-    if (code < 6) return base(code)!;
+    if (code < 6) return rgbBase(code, i)!;
     switch (code) {
       case 7: return gray(i.combinedA);
       case 8: return gray(i.t0[3]);
@@ -61,7 +63,7 @@ function rgbInput(slot: number, code: number, i: Inputs): V3 {
   }
   if (code === 6) return slot === 1 ? [0, 0, 0] : [1, 1, 1];
   if (code === 7 && slot === 0) return [0.5, 0.5, 0.5];
-  return (code < 6 ? base(code) : null) ?? [0, 0, 0];
+  return (code < 6 ? rgbBase(code, i) : null) ?? [0, 0, 0];
 }
 
 function alphaInput(slot: number, code: number, i: Inputs): number {
@@ -271,10 +273,12 @@ export class SoftRenderer {
         const q0 = w0 * p[0].iw, q1 = w1 * p[1].iw, q2 = w2 * p[2].iw;
         const qs = q0 + q1 + q2;
         // Texture coordinates are corrected for perspective; the shade (colour and fog factor) is linear in screen space.
-        const mix = (f: (v: Vertex) => number) => (q0 * f(a) + q1 * f(b) + q2 * f(c)) / qs;
-        const linear = (f: (v: Vertex) => number) => w0 * f(a) + w1 * f(b) + w2 * f(c);
-        const color: [number, number, number, number] = [linear((v) => v.color[0]), linear((v) => v.color[1]), linear((v) => v.color[2]), linear((v) => v.color[3])];
-        if (this.pixel(state, spec, img, x, y, color, mix((v) => v.uv[0]), mix((v) => v.uv[1])) && depthOn && (l & OtherL.Z_UPDATE)) this.depth[di] = z;
+        const color: [number, number, number, number] = [
+          w0 * a.color[0] + w1 * b.color[0] + w2 * c.color[0], w0 * a.color[1] + w1 * b.color[1] + w2 * c.color[1],
+          w0 * a.color[2] + w1 * b.color[2] + w2 * c.color[2], w0 * a.color[3] + w1 * b.color[3] + w2 * c.color[3],
+        ];
+        const u = (q0 * a.uv[0] + q1 * b.uv[0] + q2 * c.uv[0]) / qs, v = (q0 * a.uv[1] + q1 * b.uv[1] + q2 * c.uv[1]) / qs;
+        if (this.pixel(state, spec, img, x, y, color, u, v) && depthOn && (l & OtherL.Z_UPDATE)) this.depth[di] = z;
       }
     }
   }
@@ -297,8 +301,9 @@ export class SoftRenderer {
         const cur = n === 0 ? inputs : { ...inputs, t0: t1, t1: t0 };
         cur.combined = inputs.combined;
         cur.combinedA = inputs.combinedA;
-        const [ra, rb, rc, rd] = spec.rgb[n]!.map((code, slot) => rgbInput(slot, code, cur)) as [V3, V3, V3, V3];
-        const [aa, ab, ac, ad] = spec.alpha[n]!.map((code, slot) => alphaInput(slot, code, cur)) as [number, number, number, number];
+        const rgbCodes = spec.rgb[n]!, alphaCodes = spec.alpha[n]!;
+        const ra = rgbInput(0, rgbCodes[0]!, cur), rb = rgbInput(1, rgbCodes[1]!, cur), rc = rgbInput(2, rgbCodes[2]!, cur), rd = rgbInput(3, rgbCodes[3]!, cur);
+        const aa = alphaInput(0, alphaCodes[0]!, cur), ab = alphaInput(1, alphaCodes[1]!, cur), ac = alphaInput(2, alphaCodes[2]!, cur), ad = alphaInput(3, alphaCodes[3]!, cur);
         inputs.combined = [clamp01((ra[0] - rb[0]) * rc[0] + rd[0]), clamp01((ra[1] - rb[1]) * rc[1] + rd[1]), clamp01((ra[2] - rb[2]) * rc[2] + rd[2])];
         inputs.combinedA = clamp01((aa - ab) * ac + ad);
       }

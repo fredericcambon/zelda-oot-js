@@ -1,6 +1,7 @@
 // The RSP, RDP and audio interface. Tasks are not executed: a graphics task goes to the renderer's hook and an
 // audio task to the mixer's, and their completion is reported through the same events the interrupts would raise.
 #include <stdio.h>
+#include <string.h>
 #include <emscripten.h>
 #include "rt.h"
 
@@ -39,6 +40,8 @@ static uint32_t ai_hz = 32000;
 static uint64_t ai_end[2];
 static uint32_t ai_len[2];
 static int ai_count;
+// Buffers queued so far, and how many of them found the interface with nothing left to play (the sound broke off).
+static uint32_t ai_queued, ai_gaps;
 
 void rt_set_gfx_hook(RspHook fn) { gfx_hook = fn; }
 void rt_set_audio_hook(RspHook fn) { audio_hook = fn; }
@@ -64,7 +67,8 @@ EMSCRIPTEN_KEEPALIVE uint32_t oot_rsp_task_kind(uint32_t i, uint32_t field) {
   return field == 0 ? task_kinds[i].type : field == 1 ? task_kinds[i].ucode : task_kinds[i].count;
 }
 
-void rsp_reset(void) { ai_count = 0; task_kind_n = 0; }
+void rsp_reset(void) { ai_count = 0; ai_queued = ai_gaps = 0; task_kind_n = 0; }
+uint32_t rt_ai_gaps(void) { return ai_gaps; }
 
 static void decode_task(uint32_t t, RspTask *out) {
   *out = (RspTask){
@@ -79,7 +83,7 @@ static void decode_task(uint32_t t, RspTask *out) {
   };
 }
 
-static void event_fn(uint32_t event, uint32_t unused) {
+void te_rsp_event(uint32_t event, uint32_t unused) {
   (void)unused;
   event_send((int)event);
 }
@@ -95,17 +99,17 @@ void rt_osSpTaskStartGo(Cpu *c) {
   if (task.type == TASK_GFX) {
     if (gfx_hook) gfx_hook(&task);
     done += GFX_TASK_CYCLES;
-    rt_schedule(done, event_fn, EVENT_SP, 0);
-    rt_schedule(done + DP_DELAY_CYCLES, event_fn, EVENT_DP, 0);
+    rt_schedule(done, TE_RSP_EVENT, EVENT_SP, 0);
+    rt_schedule(done + DP_DELAY_CYCLES, TE_RSP_EVENT, EVENT_DP, 0);
   } else if (task.type == TASK_AUDIO) {
     if (audio_hook) audio_hook(&task);
     done += AUDIO_TASK_CYCLES;
-    rt_schedule(done, event_fn, EVENT_SP, 0);
+    rt_schedule(done, TE_RSP_EVENT, EVENT_SP, 0);
   } else if (task.type == TASK_HALT && task.ucode == JPEG_UCODE) {
     rt_jpeg_task(&task);
-    rt_schedule(done + JPEG_TASK_CYCLES, event_fn, EVENT_SP, 0);
+    rt_schedule(done + JPEG_TASK_CYCLES, TE_RSP_EVENT, EVENT_SP, 0);
   } else if (task.type == TASK_HALT && (task.ucode == HALT_UCODE || task.ucode_boot == HALT_UCODE)) {
-    rt_schedule(done + HALT_TASK_CYCLES, event_fn, EVENT_SP, 0);
+    rt_schedule(done + HALT_TASK_CYCLES, TE_RSP_EVENT, EVENT_SP, 0);
   } else {
     rt_fatal("RSP task of unknown type %u (flags 0x%x, ucode 0x%08x, data 0x%08x+0x%x, called from 0x%08x)", task.type, task.flags, task.ucode, task.data_ptr, task.data_size, (uint32_t)c->r[31]);
   }
@@ -129,7 +133,7 @@ void rt_osDpSetStatus(Cpu *c) { (void)c; }
 
 static uint64_t buffer_cycles(uint32_t length) { return (uint64_t)(length / 4) * RT_CPU_COUNTER / ai_hz; }
 
-static void ai_finished(uint32_t a, uint32_t b) {
+void te_ai_finished(uint32_t a, uint32_t b) {
   (void)a; (void)b;
   if (ai_count == 0) return;
   ai_end[0] = ai_end[1];
@@ -138,10 +142,30 @@ static void ai_finished(uint32_t a, uint32_t b) {
   event_send(EVENT_AI);
 }
 
+// The sound engine's context (audio init, 0x800b8d80-0x800b8d90): a refresh rate, the constant 50 at 0x80125fb4, and a tempo
+// divisor, the float 20.03042 at 0x80125fb0. The refresh rate sizes each audio task (32000 / rate samples, 0x800b5910) and
+// the task runs once per retrace; the sequences advance once per task. At 60 retraces a second the unchanged constants make
+// 640-sample tasks of which a sixth is dropped (clicks) and music 1.2 times too fast. A 60 Hz boot gives the engine the refresh
+// rate 60 (544-sample tasks, one buffer per task) and divides its tempo by 1.2, which keeps the music at the tempo it has
+// at 50 Hz. Both are read after osAiSetFrequency returns (0x800b5904, 0x800b5a68). See docs/re/tv-type.md.
+#define AUDIO_REFRESH_RATE 0x80125fb4u
+#define AUDIO_TEMPO_DIVISOR 0x80125fb0u
+static void retune_sound_engine(void) {
+  uint32_t w = rd32(AUDIO_TEMPO_DIVISOR);
+  float f;
+  memcpy(&f, &w, 4);
+  if (f != 20.03042f || rd32(AUDIO_REFRESH_RATE) != RT_VI_HZ_PAL) return;
+  f = f * RT_VI_HZ_PAL / RT_VI_HZ_NTSC;
+  memcpy(&w, &f, 4);
+  wr32(AUDIO_TEMPO_DIVISOR, w);
+  wr32(AUDIO_REFRESH_RATE, RT_VI_HZ_NTSC);
+}
+
 // osAiSetFrequency(hz) (0x800d3120): the divisor is the video clock word at 0x80006878 over the rate, rounded to the
 // nearest integer (the float add of 0.5 at 0x800d3154-0x800d316c); below 132 the call fails with -1 (0x800d31ec).
 // The rate it returns is the clock over the divisor (0x800d3234).
 void rt_osAiSetFrequency(Cpu *c) {
+  if (rt_vi_hz() == RT_VI_HZ_NTSC) retune_sound_engine();
   float clock = (float)rd32(OS_VI_CLOCK);
   float wanted = (float)ARG(0);
   uint32_t divisor = (uint32_t)(clock / wanted + 0.5f);
@@ -153,11 +177,13 @@ void rt_osAiSetFrequency(Cpu *c) {
 // osAiSetNextBuffer(address, length): -1 when both buffers are taken.
 void rt_osAiSetNextBuffer(Cpu *c) {
   if (ai_count == 2) { RET(-1); return; }
+  if (ai_count == 0 && ai_queued > 0) ai_gaps++;
+  ai_queued++;
   uint64_t start = ai_count ? ai_end[ai_count - 1] : rt_clock();
   uint32_t length = ARG(1);
   ai_end[ai_count] = start + buffer_cycles(length);
   ai_len[ai_count] = length;
-  rt_schedule(ai_end[ai_count], ai_finished, 0, 0);
+  rt_schedule(ai_end[ai_count], TE_AI_FINISHED, 0, 0);
   ai_count++;
   if (ai_hook) ai_hook(ARG(0), length);
   RET(0);
@@ -165,9 +191,39 @@ void rt_osAiSetNextBuffer(Cpu *c) {
 
 // Bytes of the playing buffer that are left.
 void rt_osAiGetLength(Cpu *c) {
-  rt_poll(16);
+  rt_poll(c, BS_AIGETLENGTH, 16);
   if (ai_count == 0) { RET(0); return; }
   uint64_t now = rt_clock();
   if (now >= ai_end[0]) { RET(0); return; }
   RET((uint32_t)((ai_end[0] - now) * ai_hz / RT_CPU_COUNTER * 4));
+}
+
+// ---- Saved state -------------------------------------------------------------------------------------------
+
+int rsp_save(Writer *w) {
+  put32(w, ai_hz);
+  put32(w, (uint32_t)ai_count);
+  for (int k = 0; k < 2; k++) {
+    put64(w, ai_end[k]);
+    put32(w, ai_len[k]);
+  }
+  return 1;
+}
+
+int rsp_load(Reader *r, int apply) {
+  uint32_t hz = get32(r), count = get32(r);
+  uint64_t end[2];
+  uint32_t len[2];
+  for (int k = 0; k < 2; k++) {
+    end[k] = get64(r);
+    len[k] = get32(r);
+  }
+  if (r->bad || hz == 0 || count > 2) return rt_state_refuse("the audio interface state is damaged");
+  if (apply) {
+    ai_hz = hz;
+    ai_count = (int)count;
+    memcpy(ai_end, end, sizeof end);
+    memcpy(ai_len, len, sizeof len);
+  }
+  return 1;
 }

@@ -13,13 +13,13 @@ void rt_reset(void) {
   rsp_reset();
 }
 
-// What the IPL leaves in low memory for a PAL cartridge. 0x80000300 = 0 is the value for which osInitialize stores
+// What the IPL leaves in low memory. 0x80000300 is the TV type: 0 (PAL) is the value for which osInitialize stores
 // the clock 0x02f5b2d2 (49.65 MHz, the PAL video clock of n64brew.dev); 0x80000308 is the ROM base that the PI
 // DMA code ORs into device addresses (0x80003c48), 0xb0000000 being the cartridge window in KSEG1 (n64brew.dev);
 // 0x8000030c = 0 is the cold-reset value osInitialize tests; 0x80000318 receives the RAM size that boot_main
 // stores after probing (0x800004e4).
 void rt_boot_state(void) {
-  wr32(OS_TV_TYPE, 0);
+  wr32(OS_TV_TYPE, rt_vi_hz() == RT_VI_HZ_NTSC ? 1 : 0);
   wr32(OS_ROM_BASE, 0xb0000000u);
   wr32(OS_RESET_TYPE, 0);
   wr32(OS_MEM_SIZE, RDRAM_SIZE);

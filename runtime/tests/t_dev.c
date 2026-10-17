@@ -37,7 +37,8 @@ static void set_timer(uint32_t timer, uint64_t countdown, uint64_t interval, uin
 TEST(run_stops_at_the_requested_time_and_reports_idle_when_nothing_is_left) {
   CHECK_EQ(rt_run(100), RT_RUN_IDLE);
   CHECK_EQ(rt_clock(), 0);
-  rt_schedule(1000, noop, 0, 0);
+  rt_set_user_event(noop);
+  rt_schedule(1000, TE_USER, 0, 0);
   CHECK_EQ(rt_run(500), RT_RUN_TIME);
   CHECK_EQ(rt_clock(), 500);
   CHECK_EQ(rt_run(2000), RT_RUN_IDLE);
@@ -47,18 +48,20 @@ TEST(run_stops_at_the_requested_time_and_reports_idle_when_nothing_is_left) {
 static void log_event(uint32_t a, uint32_t b) { tlog("%u%u ", a, b); }
 
 TEST(events_run_in_time_order_and_in_scheduling_order_when_simultaneous) {
-  rt_schedule(30, log_event, 3, 0);
-  rt_schedule(10, log_event, 1, 0);
-  rt_schedule(10, log_event, 1, 1);
-  rt_schedule(20, log_event, 2, 0);
-  CHECK_EQ(rt_cancel(log_event, 2), 1);
-  CHECK_EQ(rt_cancel(log_event, 2), 0);
+  rt_set_user_event(log_event);
+  rt_schedule(30, TE_USER, 3, 0);
+  rt_schedule(10, TE_USER, 1, 0);
+  rt_schedule(10, TE_USER, 1, 1);
+  rt_schedule(20, TE_USER, 2, 0);
+  CHECK_EQ(rt_cancel(TE_USER, 2), 1);
+  CHECK_EQ(rt_cancel(TE_USER, 2), 0);
   rt_run(100);
   CHECK_STR(tlog_get(), "10 11 30 ");
 }
 
 TEST(count_and_time_follow_the_virtual_clock) {
-  rt_schedule(0x100000000ull + 5, noop, 0, 0);
+  rt_set_user_event(noop);
+  rt_schedule(0x100000000ull + 5, TE_USER, 0, 0);
   rt_run(0x100000000ull + 5);
   uint32_t count = os(&host, rt_osGetCount, 0, 0, 0, 0);
   CHECK(count >= 5 && count < 100);
@@ -277,7 +280,7 @@ TEST(save_memory_access_outside_the_store_is_fatal) {
 
 #define VI_MODE 0x80530000u
 #define VI_FB 0x80600000u
-#define VI_PERIOD (RT_CPU_COUNTER / RT_VI_HZ)
+#define VI_PERIOD (RT_CPU_COUNTER / rt_vi_hz())
 #define VI_NEXT_CTX() rd32(0x80006944u)
 #define VI_CUR_CTX() rd32(0x80006940u)
 
@@ -297,6 +300,7 @@ TEST(the_vi_manager_sets_up_two_contexts) {
 }
 
 TEST(video_edits_take_effect_at_the_next_retrace_every_20_ms) {
+  CHECK_EQ(rt_vi_hz(), 50);
   start_vi();
   mk_queue(&host, QUEUE_A, 16);
   os(&host, rt_osViSetEvent, QUEUE_A, 99, 1, 0);
@@ -324,6 +328,22 @@ TEST(video_edits_take_effect_at_the_next_retrace_every_20_ms) {
   rt_vi_get(&vi);
   CHECK_EQ(vi.retraces, 10);
   CHECK_EQ(rd32(QUEUE_A + MQ_VALID), 10);
+}
+
+TEST(at_60_hz_the_retrace_comes_every_16_67_ms) {
+  rt_set_vi_hz(60);
+  start_vi();
+  mk_queue(&host, QUEUE_A, 16);
+  os(&host, rt_osViSetEvent, QUEUE_A, 7, 1, 0);
+  CHECK_EQ(VI_PERIOD, 781250);
+  rt_run(VI_PERIOD - 1);
+  CHECK_EQ(rd32(QUEUE_A + MQ_VALID), 0);
+  rt_run(60 * VI_PERIOD);
+  RtVi vi;
+  rt_vi_get(&vi);
+  CHECK_EQ(vi.retraces, 60);
+  CHECK_EQ(rt_clock(), RT_CPU_COUNTER);
+  rt_set_vi_hz(RT_VI_HZ_PAL);
 }
 
 TEST(a_retrace_count_of_two_notifies_every_other_retrace) {
@@ -618,6 +638,18 @@ TEST(the_audio_interface_holds_two_buffers_and_signals_each_end) {
   rt_run(t0 + 3 * AI_BUFFER_CYCLES);
   CHECK_EQ(rd32(QUEUE_A + MQ_VALID), 3);
   CHECK_EQ(os(&host, rt_osAiGetLength, 0, 0, 0, 0), 0);
+}
+
+TEST(a_buffer_queued_after_the_interface_ran_dry_counts_as_a_gap) {
+  uint64_t t0 = rt_clock();
+  os(&host, rt_osAiSetNextBuffer, 0x80590000u, AI_BUFFER, 0, 0);
+  os(&host, rt_osAiSetNextBuffer, 0x80594000u, AI_BUFFER, 0, 0);
+  rt_run(t0 + AI_BUFFER_CYCLES);
+  os(&host, rt_osAiSetNextBuffer, 0x80598000u, AI_BUFFER, 0, 0);
+  CHECK_EQ(rt_ai_gaps(), 0);
+  rt_run(t0 + 4 * AI_BUFFER_CYCLES);
+  os(&host, rt_osAiSetNextBuffer, 0x80590000u, AI_BUFFER, 0, 0);
+  CHECK_EQ(rt_ai_gaps(), 1);
 }
 
 TEST(the_audio_rate_sets_how_long_a_buffer_plays) {

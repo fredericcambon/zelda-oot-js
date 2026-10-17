@@ -1,4 +1,4 @@
-// `npm run headless -- --frames N [--trace] [--wav out.wav] [--profile]`: boots the built game (dist/oot.js) from dist/assets in Node with no
+// `npm run headless -- --frames N [--hz 60] [--trace] [--wav out.wav] [--profile]`: boots the built game (dist/oot.js) from dist/assets in Node with no
 // display and reports what it did frame by frame.
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -36,9 +36,15 @@ async function main(): Promise<number> {
       'entrance-at': { type: 'string', default: '19000' },
       profile: { type: 'boolean', default: false },
       'profile-window': { type: 'string', default: String(WINDOW) },
+      hz: { type: 'string', default: '50' },
     },
   });
   const frames = Number(values.frames);
+  const hz = Number(values.hz);
+  if (hz !== 50 && hz !== 60) {
+    console.error('error: --hz must be 50 or 60');
+    return 1;
+  }
   // The game runs from the assets `npm run port` wrote; a ROM file is only for comparing against them.
   const rom = values.rom ? readFileSync(values.rom) : readCartridge(join(resolve(values.dist!), 'assets'));
   const totals = new DlTotals();
@@ -62,6 +68,7 @@ async function main(): Promise<number> {
   let game: Game;
   try {
     game = await bootGame(pathToFileURL(resolve(values.dist!, 'oot.js')).href, rom, {
+      hz,
       onGfxTask: values.dl || soft || profiler
         ? (task) => {
             const handle = () => {

@@ -2,7 +2,10 @@
 // save made in one running copy of the page is found by the next. Only this machine may use it.
 //
 //   GET|PUT /api/saves/sram          the cartridge's save memory
-//   GET|PUT /api/saves/state/<1-4>   a save state; the build that took it travels in the X-Build header
+//   GET|PUT /api/saves/state/<1-4>   a save state; the version of its format travels in the X-State-Format header, its video rate in X-Hz
+//
+// A state is state-<n>.bin with state-<n>.bin.format beside it (version, saved-at time and video rate, one per line).
+// States kept before the portable format have state-<n>.bin.build instead; they are served as format 0 and never deleted.
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
@@ -40,6 +43,14 @@ function readBody(req: IncomingMessage): Promise<Buffer | null> {
   });
 }
 
+function readMeta(path: string): string[] | null {
+  try {
+    return readFileSync(path, 'utf8').split('\n');
+  } catch {
+    return null;
+  }
+}
+
 /** Answers requests under SAVES_PREFIX; anything else goes to `next`. */
 export function savesMiddleware(dir: string) {
   return async (req: IncomingMessage, res: ServerResponse, next: () => void): Promise<void> => {
@@ -56,7 +67,8 @@ export function savesMiddleware(dir: string) {
     if (name === 'ping') return reply(res, 204);
     if (!FILES.test(name)) return reply(res, 400, 'unknown save');
     const file = join(dir, `${name.replace('/', '-')}.bin`);
-    const meta = `${file}.build`;
+    const meta = `${file}.format`;
+    const legacyMeta = `${file}.build`;
     try {
       if (req.method === 'GET') {
         let data: Buffer;
@@ -67,9 +79,10 @@ export function savesMiddleware(dir: string) {
         }
         res.setHeader('Content-Type', 'application/octet-stream');
         if (name !== 'sram') {
-          const [build = '', savedAt = '0'] = readFileSync(meta, 'utf8').split('\n');
-          res.setHeader('X-Build', build);
+          const [format = '0', savedAt = '0', hz = '50'] = readMeta(meta) ?? ['0', ...(readMeta(legacyMeta) ?? []).slice(1)];
+          res.setHeader('X-State-Format', format);
           res.setHeader('X-Saved-At', savedAt);
+          res.setHeader('X-Hz', hz);
         }
         res.end(data);
       } else if (req.method === 'PUT') {
@@ -82,9 +95,11 @@ export function savesMiddleware(dir: string) {
           renameSync(`${path}.tmp`, path);
         };
         if (name !== 'sram') {
-          const build = String(req.headers['x-build'] ?? '');
-          if (!/^[0-9a-f]{64}$/.test(build)) return reply(res, 400, 'bad build id');
-          write(meta, `${build}\n${Number(req.headers['x-saved-at']) || Date.now()}`);
+          const format = String(req.headers['x-state-format'] ?? '');
+          if (!/^[0-9]{1,9}$/.test(format)) return reply(res, 400, 'bad state format');
+          write(meta, `${Number(format)}
+${Number(req.headers['x-saved-at']) || Date.now()}
+${req.headers['x-hz'] === '60' ? 60 : 50}`);
         }
         write(file, body);
         reply(res, 204);

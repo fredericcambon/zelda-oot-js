@@ -2,15 +2,20 @@ import { AudioOutput } from './audio.ts';
 import { startGame, type Game } from './game.ts';
 import { Renderer, type CullMode } from './renderer.ts';
 import { loadCartridge } from './cartridge.ts';
-import { Input } from './input.ts';
+import { Input, mergePads } from './input.ts';
+import { TouchControls } from './touch.ts';
 import { indexedDbStore, SaveSync, serverHasSaves, serverStore } from './saves.ts';
 import { indexedDbStates, SaveStates, serverStates } from './savestate.ts';
+import { STATE_VERSION } from '../tools/runtime/snapshot.ts';
 import { migrateToServer } from './migrate.ts';
 import { FastForward } from './fastforward.ts';
 import { formatBreakdown } from '../tools/gfx/profile.ts';
+import { fetchWasm, preloadModule } from './wasm.ts';
+import { mark, timingLines } from './timing.ts';
+import { FramePacer, loadHz, saveHz, type Hz } from './mode.ts';
 
 const FAST_BUDGET_MS = 12;
-const FRAME_MS = 20; // the video interface retraces at 50 Hz
+const SLOW_LOAD_MS = 500;
 
 const status = document.getElementById('status')!;
 const overlay = document.getElementById('overlay') as HTMLPreElement;
@@ -78,6 +83,23 @@ const spanInput = tuneInput('smooth-span', 'oot.smooth.span');
 function applyTuning(): void {
   game?.tuneSmooth({ strength: Number(strengthInput.value) / 100, span: Number(spanInput.value) / 100 });
 }
+// The video rate is chosen when the game boots, so the button only changes what the next page load boots.
+const bootHz: Hz = loadHz();
+let wantedHz: Hz = bootHz;
+const hzToggle = document.getElementById('hz-toggle') as HTMLButtonElement;
+const hzNote = document.getElementById('hz-note')!;
+const showHz = () => {
+  hzToggle.textContent = `60 Hz: ${wantedHz === 60 ? 'on' : 'off'}`;
+  hzNote.hidden = wantedHz === bootHz;
+};
+hzToggle.addEventListener('mousedown', (e) => e.preventDefault());
+hzToggle.addEventListener('click', () => {
+  wantedHz = wantedHz === 60 ? 50 : 60;
+  if (!saveHz(wantedHz)) showNotice('The browser did not keep the 60 Hz choice');
+  showHz();
+  hzToggle.blur();
+});
+showHz();
 
 const setStatus = (text: string, error = false) => {
   status.textContent = text;
@@ -86,6 +108,10 @@ const setStatus = (text: string, error = false) => {
 
 // Whole multiples of the 320x240 the game addresses, enough to fill the canvas as displayed.
 const displayScale = () => Math.min(4, Math.max(1, Math.ceil((canvas.clientWidth * devicePixelRatio) / 320)));
+
+// Started now so the module downloads and compiles while the cartridge image loads.
+const wasm = fetchWasm();
+preloadModule();
 
 let renderer: Renderer;
 try {
@@ -102,6 +128,7 @@ let states: SaveStates | null = null;
 let pendingState: (() => Promise<string>) | null = null;
 let noticeTimer = 0;
 const input = new Input();
+const touch = new TouchControls(document.getElementById('touch-layer') as HTMLElement, document.getElementById('touch-toggle') as HTMLButtonElement);
 const audio = new AudioOutput();
 const fastForward = new FastForward();
 // Sound is dropped while fast-forwarding: the buffers would pile up faster than they play.
@@ -111,19 +138,24 @@ addEventListener('keyup', (e) => fastForward.keyup(e));
 addEventListener('blur', () => fastForward.reset());
 let fps = 0;
 let shownFps = 0;
+let gameFps = 0;
 
-// Browsers start sound only from a user gesture; any key or click does it.
+// Browsers start sound only from a user gesture; a key press or click does it, and for touch only the release counts.
 const enableSound = () => {
   audio.resume().catch((err) => console.error('sound is not available:', err));
 };
 addEventListener('keydown', enableSound);
 addEventListener('pointerdown', enableSound);
+addEventListener('pointerup', enableSound);
+addEventListener('touchend', enableSound);
+addEventListener('pointerup', enableSound);
+addEventListener('touchend', enableSound);
 
 const showNotice = (text: string) => {
   notice.textContent = text;
   notice.hidden = false;
   clearTimeout(noticeTimer);
-  noticeTimer = window.setTimeout(() => (notice.hidden = true), 2000);
+  noticeTimer = window.setTimeout(() => (notice.hidden = true), text.length > 30 ? 5000 : 2000);
 };
 
 // 5 saves to the current slot, 6 loads it and 7 moves to the next slot.
@@ -173,8 +205,9 @@ function updateOverlay(): void {
   const s = renderer.stats;
   const g = game?.info();
   overlay.textContent = [
-    `${fps.toFixed(0)} fps (game 50 Hz)  displayed ${shownFps.toFixed(0)} fps`,
+    `${fps.toFixed(0)} fps (${bootHz} Hz mode)  game ${gameFps.toFixed(1)} frames/s  displayed ${shownFps.toFixed(0)} fps`,
     ...smoothLines(),
+    ...timingLines(),
     g ? `frame ${g.frames}  retraces ${g.retraces}  gfx tasks ${g.gfxTasks}${g.idle ? '  IDLE' : ''}` : 'no game',
     `last task: ${s.commands} commands, ${s.batches} batches, ${s.triangles} triangles, ${s.rects} rects`,
     ...(game ? formatBreakdown(game.profiler.breakdown()) : []),
@@ -183,6 +216,7 @@ function updateOverlay(): void {
     game ? `video framebuffer 0x${game.framebuffer().toString(16)}` : '',
     `culling ${renderer.cullMode}  resolution ${renderer.resolutionScale}x`,
     g ? `audio tasks ${g.audioTasks}  sound ${audio.state === 'running' ? `on, level ${audio.level().toFixed(3)}` : 'off: press a key'}` : '',
+    ...audio.status(),
     g?.renderError ? `render error: ${g.renderError}` : '',
     g?.audioError ? `audio error: ${g.audioError}` : '',
     ...s.problems,
@@ -191,7 +225,8 @@ function updateOverlay(): void {
 
 async function loop(): Promise<void> {
   let last = performance.now();
-  let acc = 0;
+  const pacer = new FramePacer(bootHz);
+  let countedGfx = game?.info().gfxTasks ?? 0;
   let counted = 0;
   let presented = 0;
   let countStart = last;
@@ -211,16 +246,16 @@ async function loop(): Promise<void> {
     game?.setSmooth(smoothOn && !fastForward.active);
     applyTuning();
     const now = performance.now();
-    // At most three frames of catch-up, so a stalled tab does not trigger a burst.
-    acc = Math.min(acc + now - last, FRAME_MS * 3);
+    let due = pacer.advance(now - last);
     last = now;
     let stepped = false;
     // Fast-forward: frames back to back for most of the display interval.
     const budgetEnd = now + FAST_BUDGET_MS;
-    while (game && (fastForward.active ? !stepped || performance.now() < budgetEnd : acc >= FRAME_MS)) {
-      acc = fastForward.active ? 0 : acc - FRAME_MS;
+    while (game && (fastForward.active ? !stepped || performance.now() < budgetEnd : due > 0)) {
+      if (fastForward.active) pacer.reset();
+      else due--;
       try {
-        game.setPad(input.poll());
+        game.setPad(mergePads(input.poll(), touch.poll()));
         await game.frame();
         saves?.flush().catch((err) => setStatus(`Could not store the save: ${err instanceof Error ? err.message : String(err)}`, true));
       } catch (err) {
@@ -232,19 +267,21 @@ async function loop(): Promise<void> {
       stepped = true;
     }
     if (game) {
-      const smooth = game.drawSmooth(acc / FRAME_MS);
+      const smooth = game.drawSmooth(pacer.fraction());
       if (smooth !== null || stepped) {
-        const t0 = performance.now();
         renderer.present(smooth ?? game.framebuffer());
-        game.profiler.addSubmit(performance.now() - t0);
+        mark('firstFrame');
         presented++;
       }
     }
     if (now - countStart >= 1000) {
       fps = (counted * 1000) / (now - countStart);
       shownFps = (presented * 1000) / (now - countStart);
-      counted = 0;
       presented = 0;
+      const gfxTasks = game?.info().gfxTasks ?? countedGfx;
+      gameFps = ((gfxTasks - countedGfx) * 1000) / (now - countStart);
+      countedGfx = gfxTasks;
+      counted = 0;
       countStart = now;
     }
     updateOverlay();
@@ -254,10 +291,13 @@ async function loop(): Promise<void> {
 
 async function boot(): Promise<void> {
   try {
-    const onServer = await serverHasSaves();
-    const rom = await loadCartridge((done, total) => setStatus(`Loading game files: ${done} / ${total}`));
-    setStatus('Starting...');
-    const started = await startGame(rom, renderer, sound);
+    // The slow path shows progress as bytes; a load under SLOW_LOAD_MS shows the one short status only.
+    const loadStart = performance.now();
+    const cartridge = loadCartridge((bytes, total) => {
+      if (total > 0 && performance.now() - loadStart > SLOW_LOAD_MS) setStatus(`Loading: ${(bytes / 1e6).toFixed(0)} / ${(total / 1e6).toFixed(0)} MB`);
+    });
+    const [onServer, rom] = await Promise.all([serverHasSaves(), cartridge, wasm.module]);
+    const started = await startGame(rom, renderer, sound, wasm, undefined, bootHz);
     if (onServer) {
       const moved = await migrateToServer(
         { sram: indexedDbStore(), states: indexedDbStates() },
@@ -270,7 +310,7 @@ async function boot(): Promise<void> {
     await sync.restore();
     saves = sync;
     try {
-      states = new SaveStates(started.states, onServer ? serverStates() : indexedDbStates(), await started.buildId());
+      states = new SaveStates(started.states, onServer ? serverStates() : indexedDbStates(), STATE_VERSION, bootHz);
     } catch (err) {
       console.error('save states are not available:', err);
     }

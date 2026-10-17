@@ -10,15 +10,26 @@ declare function registerProcessor(name: string, processor: new () => AudioWorkl
 
 class GameAudioProcessor extends AudioWorkletProcessor {
   private queue = new ResamplingQueue();
+  private received = 0;
+  private blocks = 0;
+  private underruns = 0;
 
   constructor() {
     super();
-    this.port.onmessage = (e: MessageEvent<{ samples: Float32Array; hz: number }>) => this.queue.push(e.data.samples, e.data.hz);
+    this.port.onmessage = (e: MessageEvent<{ samples: Float32Array; hz: number }>) => {
+      this.received += e.data.samples.length >> 1;
+      this.queue.push(e.data.samples, e.data.hz);
+    };
   }
 
   process(_inputs: Float32Array[][], outputs: Float32Array[][]): boolean {
     const [left, right] = outputs[0] ?? [];
-    if (left && right) this.queue.pull(left, right, sampleRate);
+    if (left && right) {
+      if (this.received > 0 && this.queue.queuedSeconds <= 0) this.underruns++;
+      this.queue.pull(left, right, sampleRate);
+    }
+    // Progress report for the page's debug overlay, about four times a second.
+    if (++this.blocks % 128 === 0) this.port.postMessage({ blocks: this.blocks, received: this.received, underruns: this.underruns, queued: this.queue.queuedSeconds });
     return true;
   }
 }

@@ -28,6 +28,7 @@ enum {
   VS_BLACK = 0x20,
 };
 
+static uint32_t vi_hz = RT_VI_HZ_PAL;
 static uint64_t next_retrace;
 static uint32_t retraces;
 static uint32_t since_notice;
@@ -37,6 +38,9 @@ static uint32_t nxt(void) { return rd32(OS_VI_NEXT); }
 static void state_or(uint32_t ctx, unsigned bits) { wr16(ctx + VC_STATE, rd16(ctx + VC_STATE) | bits); }
 static void state_clear(uint32_t ctx, unsigned bits) { wr16(ctx + VC_STATE, rd16(ctx + VC_STATE) & ~bits); }
 
+void rt_set_vi_hz(uint32_t hz) { vi_hz = hz == RT_VI_HZ_NTSC ? RT_VI_HZ_NTSC : RT_VI_HZ_PAL; }
+uint32_t rt_vi_hz(void) { return vi_hz; }
+
 void vi_reset(void) {
   next_retrace = 0;
   retraces = 0;
@@ -44,7 +48,7 @@ void vi_reset(void) {
 }
 
 // At the retrace the pending edits take effect and the game's retrace queue is notified.
-static void retrace(uint32_t a, uint32_t b) {
+void te_vi_retrace(uint32_t a, uint32_t b) {
   (void)a; (void)b;
   uint32_t c = cur(), n = nxt();
   unsigned st = rd16(n + VC_STATE);
@@ -63,8 +67,8 @@ static void retrace(uint32_t a, uint32_t b) {
     since_notice = 0;
     mq_try_send(rd32(n + VC_QUEUE), rd32(n + VC_MESSAGE));
   }
-  next_retrace += RT_CPU_COUNTER / RT_VI_HZ;
-  rt_schedule(next_retrace, retrace, 0, 0);
+  next_retrace += RT_CPU_COUNTER / vi_hz;
+  rt_schedule(next_retrace, TE_VI_RETRACE, 0, 0);
 }
 
 void rt_osCreateViManager(Cpu *c) {
@@ -76,8 +80,8 @@ void rt_osCreateViManager(Cpu *c) {
   wr32(OS_VI_NEXT, OS_VI_CONTEXTS + VI_CONTEXT_SIZE);
   wr16(OS_VI_CONTEXTS + VC_STATE, VS_MODE);
   wr16(OS_VI_CONTEXTS + VI_CONTEXT_SIZE + VC_STATE, VS_MODE);
-  next_retrace = rt_clock() + RT_CPU_COUNTER / RT_VI_HZ;
-  rt_schedule(next_retrace, retrace, 0, 0);
+  next_retrace = rt_clock() + RT_CPU_COUNTER / vi_hz;
+  rt_schedule(next_retrace, TE_VI_RETRACE, 0, 0);
 }
 
 void rt_osViSetMode(Cpu *c) {
@@ -139,7 +143,7 @@ void rt_osViSetEvent(Cpu *c) {
 void rt_osViGetNextFramebuffer(Cpu *c) { RET(rd32(nxt() + VC_FRAMEBUFFER)); }
 
 void rt_osViGetCurrentFramebuffer(Cpu *c) {
-  rt_poll(16);
+  rt_poll(c, BS_VIGETFB, 16);
   RET(rd32(cur() + VC_FRAMEBUFFER));
 }
 
@@ -149,4 +153,26 @@ void rt_vi_get(RtVi *out) {
   out->mode = c ? rd32(c + VC_MODE) : 0;
   out->black = c ? (rd16(c + VC_STATE) & VS_BLACK) != 0 : 0;
   out->retraces = retraces;
+}
+
+// ---- Saved state -------------------------------------------------------------------------------------------
+// The contexts themselves are in RDRAM.
+
+int vi_save(Writer *w) {
+  put64(w, next_retrace);
+  put32(w, retraces);
+  put32(w, since_notice);
+  return 1;
+}
+
+int vi_load(Reader *r, int apply) {
+  uint64_t next = get64(r);
+  uint32_t n = get32(r), since = get32(r);
+  if (r->bad) return rt_state_refuse("the video interface state is damaged");
+  if (apply) {
+    next_retrace = next;
+    retraces = n;
+    since_notice = since;
+  }
+  return 1;
 }
