@@ -8,6 +8,19 @@ export interface AudioSink {
   push(bytes: Uint8Array, hz: number): void;
 }
 
+/** A tenth of a second of 8-bit mono silence as a WAV data URI. */
+function silentWav(): string {
+  const samples = 800;
+  const bytes = new Uint8Array(44 + samples).fill(0x80);
+  const dv = new DataView(bytes.buffer);
+  const tag = (at: number, text: string) => [...text].forEach((c, i) => (bytes[at + i] = c.charCodeAt(0)));
+  tag(0, 'RIFF'); dv.setUint32(4, 36 + samples, true); tag(8, 'WAVE'); tag(12, 'fmt ');
+  dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+  dv.setUint32(24, 8000, true); dv.setUint32(28, 8000, true); dv.setUint16(32, 1, true); dv.setUint16(34, 8, true);
+  tag(36, 'data'); dv.setUint32(40, samples, true);
+  return `data:audio/wav;base64,${btoa(String.fromCharCode(...bytes))}`;
+}
+
 export class AudioOutput implements AudioSink {
   private context: AudioContext | null = null;
   private node: AudioWorkletNode | null = null;
@@ -16,6 +29,7 @@ export class AudioOutput implements AudioSink {
   private levels = new Float32Array(1024);
   private muted = false;
   private starting: Promise<AudioContext> | null = null;
+  private keepAlive: HTMLAudioElement | null = null;
   private module = 'not loaded';
   private error = '';
   private pushed = 0;
@@ -68,9 +82,18 @@ export class AudioOutput implements AudioSink {
     // `audioSession` (iOS 17) makes web audio ignore the ringer switch.
     const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
     if (session) session.type = 'playback';
-    if (this.context?.state === 'suspended') void this.context.resume().catch(() => undefined);
+    // Older iOS ignores `audioSession`; a playing media element moves the page to the playback category, which the
+    // ringer switch does not mute.
+    if (!this.keepAlive) {
+      const el = new Audio(silentWav());
+      el.loop = true;
+      el.setAttribute('playsinline', '');
+      this.keepAlive = el;
+    }
+    void this.keepAlive.play().catch(() => undefined);
+    if (this.context && this.context.state !== 'running') void this.context.resume().catch(() => undefined);
     const context = await this.start();
-    if (context.state === 'suspended') await context.resume();
+    if (context.state !== 'running') await context.resume();
   }
 
   /** Lines for the debug overlay: everything needed to tell why there is no sound. */
