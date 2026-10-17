@@ -16,17 +16,30 @@ export class AudioOutput implements AudioSink {
   private levels = new Float32Array(1024);
   private muted = false;
   private starting: Promise<AudioContext> | null = null;
+  private module = 'not loaded';
+  private error = '';
+  private pushed = 0;
+  private worklet: { blocks: number; received: number; underruns: number; queued: number } | null = null;
 
   /** Creates the context and loads the worklet, once. A failure is forgotten so that the next gesture tries again. */
   private start(): Promise<AudioContext> {
     this.starting ??= (async () => {
-      const context = new AudioContext({ latencyHint: 'interactive' });
+      let context: AudioContext;
+      try {
+        context = new AudioContext({ latencyHint: 'interactive' });
+      } catch (err) {
+        this.error = `new AudioContext: ${String(err)}`;
+        throw err;
+      }
       // iOS Safari lets a context start only from a call made inside the gesture handler, not after the awaits below.
       this.context = context;
       void context.resume().catch(() => undefined);
       try {
         await context.audioWorklet.addModule(workletUrl);
+        this.module = 'loaded';
       } catch (err) {
+        this.module = `failed: ${String(err)}`;
+        this.error = `addModule: ${String(err)}`;
         void context.close();
         throw err;
       }
@@ -36,6 +49,7 @@ export class AudioOutput implements AudioSink {
       const analyser = context.createAnalyser();
       node.connect(gain).connect(context.destination);
       gain.connect(analyser);
+      node.port.onmessage = (e: MessageEvent<NonNullable<AudioOutput['worklet']>>) => (this.worklet = e.data);
       this.node = node;
       this.gain = gain;
       this.analyser = analyser;
@@ -43,6 +57,7 @@ export class AudioOutput implements AudioSink {
     })().catch((err: unknown) => {
       this.starting = null;
       this.context = null;
+      this.error ||= String(err);
       throw err;
     });
     return this.starting;
@@ -56,6 +71,20 @@ export class AudioOutput implements AudioSink {
     if (this.context?.state === 'suspended') void this.context.resume().catch(() => undefined);
     const context = await this.start();
     if (context.state === 'suspended') await context.resume();
+  }
+
+  /** Lines for the debug overlay: everything needed to tell why there is no sound. */
+  status(): string[] {
+    const c = this.context;
+    const ios = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const w = this.worklet;
+    return [
+      `audio context ${c?.state ?? 'not created'}  rate ${c ? `${c.sampleRate} Hz (requested: device default)` : '-'}  base latency ${c ? c.baseLatency.toFixed(3) : '-'} s`,
+      `audio worklet ${this.module}  ${workletUrl}`,
+      `audio frames pushed ${this.pushed}${w ? `  played ${w.blocks * 128} received ${w.received} queued ${w.queued.toFixed(3)} s underruns ${w.underruns}` : '  (no worklet report yet)'}`,
+      this.error ? `audio error: ${this.error}` : '',
+      ios ? 'iOS: the ring/silent switch mutes web audio' : '',
+    ].filter(Boolean);
   }
 
   get state(): string {
@@ -80,6 +109,7 @@ export class AudioOutput implements AudioSink {
   push(bytes: Uint8Array, hz: number): void {
     if (!this.node || this.context?.state !== 'running') return;
     const samples = decodeStereo(bytes);
+    this.pushed += samples.length >> 1;
     this.node.port.postMessage({ samples, hz }, [samples.buffer]);
   }
 }

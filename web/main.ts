@@ -150,6 +150,7 @@ function updateOverlay(): void {
     game ? `video framebuffer 0x${game.framebuffer().toString(16)}` : '',
     `culling ${renderer.cullMode}  resolution ${renderer.resolutionScale}x`,
     g ? `audio tasks ${g.audioTasks}  sound ${audio.state === 'running' ? `on, level ${audio.level().toFixed(3)}` : 'off: press a key'}` : '',
+    ...audio.status(),
     g?.renderError ? `render error: ${g.renderError}` : '',
     g?.audioError ? `audio error: ${g.audioError}` : '',
     ...s.problems,
