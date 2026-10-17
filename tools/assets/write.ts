@@ -1,7 +1,8 @@
 // Writes the classified ROM as `<dir>/<type>/<name>` files plus `<dir>/manifest.json`, and rebuilds the cartridge image
 // from them. The runtime reads the image through the manifest, so the game runs without the ROM.
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { packImage } from './pack.ts';
 import type { AssetEntry, Classification, TableInfo } from './classify.ts';
 
 export interface ManifestEntry extends Omit<AssetEntry, 'file'> {
@@ -67,4 +68,12 @@ export function readCartridge(dir: string): Uint8Array {
   const image = new Uint8Array(manifest.rom.size);
   for (const e of manifest.entries) image.set(readFileSync(join(dir, e.path)), e.romStart);
   return image;
+}
+
+/** Writes the cartridge image as a pack file, replacing `file` only once the new one is complete. */
+export async function writePack(image: Uint8Array, file: string): Promise<void> {
+  const temp = `${file}.tmp`;
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(temp, await packImage(image));
+  renameSync(temp, file);
 }

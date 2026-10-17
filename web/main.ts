@@ -7,9 +7,12 @@ import { indexedDbStore, SaveSync, serverHasSaves, serverStore } from './saves.t
 import { indexedDbStates, SaveStates, serverStates } from './savestate.ts';
 import { migrateToServer } from './migrate.ts';
 import { FastForward } from './fastforward.ts';
+import { fetchWasm, preloadModule } from './wasm.ts';
+import { mark, timingLines } from './timing.ts';
 import { FramePacer, loadHz, saveHz, type Hz } from './mode.ts';
 
 const FAST_BUDGET_MS = 12;
+const SLOW_LOAD_MS = 500;
 
 const status = document.getElementById('status')!;
 const overlay = document.getElementById('overlay') as HTMLPreElement;
@@ -50,6 +53,10 @@ const setStatus = (text: string, error = false) => {
 
 // Whole multiples of the 320x240 the game addresses, enough to fill the canvas as displayed.
 const displayScale = () => Math.min(4, Math.max(1, Math.ceil((canvas.clientWidth * devicePixelRatio) / 320)));
+
+// Started now so the module downloads and compiles while the cartridge image loads.
+const wasm = fetchWasm();
+preloadModule();
 
 let renderer: Renderer;
 try {
@@ -129,6 +136,7 @@ function updateOverlay(): void {
   const g = game?.info();
   overlay.textContent = [
     `${fps.toFixed(0)} fps (${bootHz} Hz mode)  game ${gameFps.toFixed(1)} frames/s`,
+    ...timingLines(),
     g ? `frame ${g.frames}  retraces ${g.retraces}  gfx tasks ${g.gfxTasks}${g.idle ? '  IDLE' : ''}` : 'no game',
     `last task: ${s.commands} commands, ${s.batches} batches, ${s.triangles} triangles, ${s.rects} rects`,
     `unknown commands ${s.unknown}  problems ${s.problems.length}`,
@@ -181,7 +189,10 @@ async function loop(): Promise<void> {
       counted++;
       stepped = true;
     }
-    if (game && stepped) renderer.present(game.framebuffer());
+    if (game && stepped) {
+      renderer.present(game.framebuffer());
+      mark('firstFrame');
+    }
     if (now - countStart >= 1000) {
       fps = (counted * 1000) / (now - countStart);
       const gfxTasks = game?.info().gfxTasks ?? countedGfx;
@@ -197,10 +208,13 @@ async function loop(): Promise<void> {
 
 async function boot(): Promise<void> {
   try {
-    const onServer = await serverHasSaves();
-    const rom = await loadCartridge((done, total) => setStatus(`Loading game files: ${done} / ${total}`));
-    setStatus('Starting...');
-    const started = await startGame(rom, renderer, sound, undefined, bootHz);
+    // The slow path shows progress as bytes; a load under SLOW_LOAD_MS shows the one short status only.
+    const loadStart = performance.now();
+    const cartridge = loadCartridge((bytes, total) => {
+      if (total > 0 && performance.now() - loadStart > SLOW_LOAD_MS) setStatus(`Loading: ${(bytes / 1e6).toFixed(0)} / ${(total / 1e6).toFixed(0)} MB`);
+    });
+    const [onServer, rom] = await Promise.all([serverHasSaves(), cartridge, wasm.module]);
+    const started = await startGame(rom, renderer, sound, wasm, undefined, bootHz);
     if (onServer) {
       const moved = await migrateToServer(
         { sram: indexedDbStore(), states: indexedDbStates() },

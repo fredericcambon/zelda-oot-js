@@ -4,7 +4,8 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { analyze } from '../analyze/run.ts';
 import { classify } from '../assets/classify.ts';
-import { buildManifest, writeAssets } from '../assets/write.ts';
+import { PACK_FILE } from '../assets/pack.ts';
+import { buildManifest, writeAssets, writePack } from '../assets/write.ts';
 import { loadContext, romPathFromEnv } from '../analyze/context.ts';
 import type { Inventory } from '../analyze/types.ts';
 import { generate } from '../recomp/generate.ts';
@@ -61,7 +62,7 @@ async function main(): Promise<number> {
       return outcome(false);
     });
 
-    await step(3, 'classify and write the assets', () => {
+    await step(3, 'classify, write the assets and the pack', async () => {
       const assetsDir = resolve(values.dist!, 'assets');
       const key = hashKey('assets', analysisKey, sourceHash(['tools/assets/classify.ts', 'tools/assets/write.ts']));
       rmSync(assetsDir, { recursive: true, force: true });
@@ -75,6 +76,10 @@ async function main(): Promise<number> {
       const manifest = JSON.parse(readFileSync(join(assetsDir, 'manifest.json'), 'utf8')) as { entries: { type: string }[] };
       const unknown = manifest.entries.filter((e) => e.type === 'unknown').length;
       log(`wrote ${manifest.entries.length} assets to ${assetsDir} (${unknown} without a type, each with its reason in the manifest)`);
+      // The entries tile the ROM (checked by buildManifest), so the cartridge image is the ROM itself.
+      const packFile = resolve(values.dist!, PACK_FILE);
+      await writePack(ctx.rom, packFile);
+      log(`wrote ${packFile}`);
       return outcome(hit);
     });
 
