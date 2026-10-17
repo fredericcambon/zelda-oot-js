@@ -108,19 +108,31 @@ export class Cache {
   }
 
   /**
-   * Copies the entry's files below `dest`, checking every size and hash. Returns undefined, and drops the entry,
-   * when it is missing, unreadable or does not match its manifest. Files already written below `dest` stay.
+   * Copies the entry's files below `dest`. Every size and hash is checked, and `accept` (when given) may veto a file's
+   * bytes, before anything is written. Returns undefined, and drops the entry, when it is missing, unreadable, does not
+   * match its manifest or is vetoed. A failure to write below `dest` is a miss too, but leaves the sound entry alone.
    */
-  restore(kind: string, key: string, dest: string): CacheHit | undefined {
+  restore(kind: string, key: string, dest: string, accept?: (path: string, data: Buffer) => boolean): CacheHit | undefined {
     const dir = this.entryDir(kind, key);
     if (!existsSync(dir)) return undefined;
+    let manifest: EntryManifest;
+    const loaded: { path: string; data: Buffer }[] = [];
     try {
-      const manifest = JSON.parse(readFileSync(join(dir, MANIFEST), 'utf8')) as EntryManifest;
+      manifest = JSON.parse(readFileSync(join(dir, MANIFEST), 'utf8')) as EntryManifest;
       if (manifest.version !== 1 || !Array.isArray(manifest.files)) throw new Error('unknown manifest');
       for (const f of manifest.files) {
         const data = readFileSync(join(dir, f.path));
         if (data.length !== f.size || sha1(data) !== f.sha1) throw new Error(`${f.path} does not match its manifest`);
-        const target = join(dest, f.path);
+        if (accept && !accept(f.path, data)) throw new Error(`${f.path} is not acceptable`);
+        loaded.push({ path: f.path, data });
+      }
+    } catch {
+      this.drop(dir);
+      return undefined;
+    }
+    try {
+      for (const { path, data } of loaded) {
+        const target = join(dest, path);
         mkdirSync(dirname(target), { recursive: true });
         const part = `${target}.part-${process.pid}`;
         writeFileSync(part, data);
@@ -128,11 +140,11 @@ export class Cache {
       }
       const now = new Date();
       utimesSync(join(dir, MANIFEST), now, now);
-      return { meta: manifest.meta };
     } catch {
-      this.drop(dir);
+      // The destination is busy or unwritable (another process holds the file); the entry itself is sound.
       return undefined;
     }
+    return { meta: manifest.meta };
   }
 
   /** Stores `files` (paths relative to `root`) as an entry. A failure to store is not an error: the build just stays uncached. */
