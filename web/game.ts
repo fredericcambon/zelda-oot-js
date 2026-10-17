@@ -9,6 +9,8 @@ import type { PadState } from './input.ts';
 import type { Renderer } from './renderer.ts';
 import type { SaveMemory } from './saves.ts';
 import { compress, decompress, type StateSource } from './savestate.ts';
+import { mark } from './timing.ts';
+import { MODULE_URL, type WasmBuild } from './wasm.ts';
 import { loadState, saveState, type StateCore } from '../tools/runtime/snapshot.ts';
 
 export interface Game {
@@ -25,12 +27,25 @@ export interface Game {
   info(): { frames: number; retraces: number; gfxTasks: number; audioTasks: number; idle: boolean; renderError: string; audioError: string };
 }
 
-export async function startGame(rom: Uint8Array, renderer: Renderer, audio: AudioSink, moduleUrl = '/oot.js', hz: Hz = 50): Promise<Game> {
+export async function startGame(rom: Uint8Array, renderer: Renderer, audio: AudioSink, wasm: WasmBuild, moduleUrl = MODULE_URL, hz: Hz = 50): Promise<Game> {
   let renderError = '';
   let audioError = '';
   const synth = new Synth();
   const guestRam = () => mod.HEAPU8.subarray(mod._oot_rdram(), mod._oot_rdram() + RDRAM_SIZE);
-  const mod = await startModule<StateCore>(moduleUrl, rom, {
+  // The module's start-up promise never settles when the hook below fails, so the failure is raced against it.
+  let failInstantiation!: (err: unknown) => void;
+  const instantiationFailed = new Promise<never>((_, reject) => (failInstantiation = reject));
+  const started = startModule<StateCore>(moduleUrl, rom, {
+    instantiateWasm: (imports: WebAssembly.Imports, done: (instance: WebAssembly.Instance) => void) => {
+      wasm.module
+        .then((module) => WebAssembly.instantiate(module, imports))
+        .then((instance) => {
+          done(instance);
+          mark('instantiated');
+        })
+        .catch(failInstantiation);
+      return {};
+    },
     onGfxTask: (data: number) => {
       try {
         renderer.drawTask(new DisplayListInterpreter().run(guestRam(), data >>> 0));
@@ -52,6 +67,7 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
       audio.push(guestRam().slice(at, at + length), hz);
     },
   }, hz);
+  const mod = await Promise.race([started, instantiationFailed]);
   const view = () => new DataView(mod.HEAPU8.buffer, mod._oot_rdram(), RDRAM_SIZE);
   const sram = () => mod.HEAPU8.subarray(mod._oot_sram(), mod._oot_sram() + mod._oot_sram_size());
   return {
