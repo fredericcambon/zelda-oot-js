@@ -1,5 +1,6 @@
 // Readable descriptions of a save memory image and of the sample container.
 import { parseContainer, payloadStats } from './container.ts';
+import { describeRecord } from './record.ts';
 import { BACKUP, FIELDS, PRIMARY, RECORD_SIZE, readField, recordAt, verify, type FieldValue } from './sram.ts';
 
 function fields(record: Uint8Array): Record<string, FieldValue> {
@@ -22,6 +23,7 @@ export function dumpSram(sram: Uint8Array): object {
         backupOffset: BACKUP[s.slot],
         recordSize: RECORD_SIZE,
         fields: s.used ? fields(recordAt(sram, loaded)) : undefined,
+        decoded: s.used ? describeRecord(recordAt(sram, loaded)) : undefined,
       };
     }),
   };

@@ -2,7 +2,7 @@
 
 Evidence from the PAL 1.0 ROM (SHA-1 `328A1F1BEBA30CE5E178F031662019EB32C5F3B5`). Addresses are virtual; `npx tsx tools/analyze/disasm.ts code <start> <end>` lists them. Names are our labels for addresses, not claims about the original. A statement marked *observed* comes from running the built game on a save image (`tools/saves/game.test.ts`), not from reading code alone.
 
-`npm run save -- dump sram <sram.bin>` and `npm run save -- verify <sram.bin>` implement this document (`tools/saves/sram.ts`).
+`npm run save -- dump sram <sram.bin>`, `verify`, `new`, `set` and `import` implement this document (`tools/saves/sram.ts`, `record.ts`, `image.ts`).
 
 ## Routines
 
@@ -80,7 +80,7 @@ Offsets from the start of a record (= from `0x801183D0`). "Evidence" lists addre
 | `+0x2E` | u16 | heart capacity, 16 units per heart | File select draws `(value + 15) >> 4` hearts (`0x8080EBA4`-`0x8080EBBC`). New file `0x30` (template `0x800F9E8C`). |
 | `+0x30` | u16 | current health | File select reads it as the partial-heart value (`0x8080EBA8`-`0x8080EC30`: whole hearts for 16 units, else the remainder); `sram_load_slot` raises it to `0x30` when lower (`0x800909C8`-`0x800909E0`). New file `0x30`. The pairing of capacity and health follows from these two uses. |
 | `+0x66` | u16 | scene index | `sram_load_slot` switches on it (`0x800908C0`-`0x80090988`); new file `0x34` (52, the scene of Link's house, `newgame.md`). |
-| `+0x68` | 10 bytes | position only | Template at `0x800F9EC4`: `FF` x7, `00 11 00`. `0x80090AA4`-`0x80090AC0` scan `+0x69`-`+0x6B` for the value `0x23` and replace it by `0x22`. |
+| `+0x68` | 10 bytes | bytes `+0x68`-`+0x6B`, halfword `+0x70` | Template at `0x800F9EC4`: `FF` x7, `00 11 00`. `0x80090AA4`-`0x80090AC0` scan `+0x69`-`+0x6B` for the value `0x23` and replace it by `0x22`. |
 | `+0x74` | 24 bytes | table of 24 one-byte entries, `0xFF` empty | Template at `0x800F9ED0` (24 x `FF`). `0x80090A98` stores the value `0x22` at `+0x74 + table[0x23]` (table at `0x800F6E94`). The slot meaning of each index is not decoded. |
 | `+0x8C` | 16 bytes | table of 16 one-byte counts, default 0 | Template at `0x800F9ED0 + 24`. Not decoded. |
 | `+0x9C` | u16 | bit field, default `0x1100` | `sram_load_slot` ORs a bit from a table (`0x800F6B54` shifted by `0x800F6C20`, `0x80090AF4`-`0x80090B18`) when a related bit is not set. |
@@ -99,6 +99,34 @@ Offsets from the start of a record (= from `0x801183D0`). "Evidence" lists addre
 ### What the file select copies per slot
 
 At boot (`0x80090F60`-`0x8009120C`) and after every create, copy or rewrite, it copies from each record into its own per-slot arrays: `+0x22` (2 bytes), `+0x24` (8), `+0x2E` (2), `+0xA4` (4), `+0x2C` (2), `+0xCF` (1), `+0x30` (2), to file select offsets `+0x1C9F6`, `+0x1C9FC`, `+0x1CA14`, `+0x1CA1C`, `+0x1CA28`, `+0x1CA2E`, `+0x1CA32`. The listing shows the name, the number from `+0x22`, the hearts from `+0x2E` and `+0x30`, and icons from `+0xA4`; nothing else of the record is read for the list.
+
+## Building and editing saves
+
+`npm run save -- new --slot N --name <name> --out <sram.bin> [--in <sram.bin>] [field=value...]` writes a new file (both copies, checksum sealed) into a fresh 128 KB image, or into `--in`. `set <sram.bin> --slot N field=value... [--out <file>]` edits a file in place. `import <file> --out <sram.bin>` takes a raw save memory image of 32 KB to 128 KB and accepts it only when `verify` accepts it as is; a DexDrive dump is reported unsupported. Every `new`/`set` edit is validated, applied to a copy and sealed with the game's checksum; the command exits 1 when `verify` would not accept the result. `dump sram` adds a `decoded` view of the fields below.
+
+A new file is the record `sram_create_file` writes: the 76, 10 and 96 bytes `save_defaults_new_file` copies from `0x800F9E78`, `0x800F9EC4` and `0x800F9ED0` to `+0x1C`, `+0x68` and `+0x74` (`0x80090590`-`0x800906A8`), the constants of "New file" above, the marker and the name. Template bytes: `+0x2E`/`+0x30` `0x0030`, `+0x33` `0x30`, `+0x40`-`+0x46` and `+0x4A`-`+0x50` `FF`, `+0x66` `0x0034`, `+0x68`-`+0x6E` `FF`, `+0x70` `0x1100`, `+0x74`-`+0x8B` `FF`, `+0x9C` `0x1100`, and `FF` x 19 further on in the `+0x74` block. `tools/saves/game.test.ts` compares the record built here with the one the game writes.
+
+| Field | Record | Evidence |
+| --- | --- | --- |
+| `name` | `+0x24`, 8 bytes | Character codes: `0`-`9` are `0x00`-`0x09`, `A`-`Z` `0x0A`-`0x23`, `a`-`z` `0x24`-`0x3D`, blank `0x3E`, `-` `0x3F`, `.` `0x40`. *Observed*: the file select draws a name character from a 16 x 16, 4-bit intensity texture at `fileSelect + 0xE760 + 15496 + 128 * code` (`0x8080E8FC`-`0x8080E914`: `lbu` of the code, `sll 7`, `addiu 15496`). Read from RAM after a new game, codes `0`, `1`, `9`, `0x0A`, `0x0B`, `0x23`, `0x24`, `0x25`, `0x3D` render as `0`, `1`, `9`, `A`, `B`, `Z`, `a`, `b`, `z`; `0x3F` renders as a dash, `0x40` as a dot, `0x3E` as nothing. The first key of the scripted name entry produced `0x0A`. |
+| `hearts`, `health` | `+0x2E`, `+0x30` | Above. `hearts=N` sets both to `16 * N`; `health` is in hearts and may be fractional. |
+| `count34` | `+0x34`, s16 | The routine (function `0x8007888C`-`0x8007958C`) reads it with `lh 52` (`0x80078D7C`), clamps an increase to the capacity read from the table below (`slt` at `0x80078D88`, `sh 52` at `0x80078DD4`) and a decrease at zero (`0x80078DE0`-`0x80078E14`). |
+| `limit34` | `+0xA0` bits 12-13 | The same routine loads `+0xA0` (`0x80078D54`), ANDs the mask `0x00003000`, the first word of the table at `0x800F6BF0` (`0x80078D58`), shifts by the byte `0x0C` at `0x800F6C28` (`0x80078D60`) and indexes the halfword table at `0x800F6C4C`: 99, 200, 500, 500. `set` refuses a `count34` above the capacity of the chosen `limit34` (0-3). The other fields of the word (3-bit fields at bits 0, 3, 6, 9, 14, 17, 20, from the masks at `0x800F6BF0` and the shifts at `0x800F6C24`) are not edited. |
+| `items.<slot>`, `item=<id>` | `+0x74`, 24 bytes, `FF` empty | The item-give routine `0x8007039C`-`0x80071A18` takes the id as byte `55($sp)`, finds the slot in the byte table at `0x800F6E94` (`0x800703B4`-`0x800703C0`) and stores the id at `+0x74 + slot` (`sb 116(...)`, `0x80071A04`). The table has 56 entries (ids 0-55; the range test `slti 56` is at `0x80071944`): ids 0-7 slots 0-7, 8 slot 7, 9 slot 8, 10-11 slot 9, 12-19 slots 10-17, 20-32 slot 18 (the routine puts these in the first free slot of four from slot 18, `0x800718F8`-`0x80071930`), 33-44 slot 23, 45-55 slot 22. `item=<id>` stores by this table; `items.<slot>` stores the raw id. What each id is called is not established. |
+| `counts8C.<i>` | `+0x8C`, 16 bytes | Ids 3 and 72-79 store a count byte at `+0x8C + slot` (`0x800707F0`-`0x80070800`, `sb 140(...)`), clamped by a halfword table indexed by a field of the word at `+0xA0`. The table has 16 bytes, so `set` accepts slots 0-15; the bytes after it are the equipment word and the upgrade word. |
+| `equip0`-`equip3` | `+0x9C`, `+0x70`, `+0x68` | Ids 59-70 (`0x80070530`-`0x800706E0`) set one bit of the halfword `+0x9C`: the bit is `1 << (id - 59 - 3 * group)` (table of single bits at `0x800F6B50`), shifted by the byte `0x800F6C20 + group` (0, 4, 8, 12). So four groups of three, one nibble each. The groups carry no names: nothing in the binary here says what an index is. The only behaviour found: group 0 writes its item id to `+0x68` (`sb 60,104(t0)`, `0x800705E4`; id 61 also tests the full nibble `0xF`) and sets the low nibble of `+0x70` to 2 (`0x800705E0`-`0x800705F8`), so each nibble of `+0x70` holds the index plus one (new file `0x1100`: groups 2 and 3 at 1). `equip0=n` sets bit `n - 1` of nibble 0 of `+0x9C`, nibble 0 of `+0x70` to `n` and byte `+0x68` to id `58 + n`; `equip1`-`equip3` set the bit of their nibble in `+0x9C` and the nibble of `+0x70`. 0 clears the nibble of `+0x70` (and `+0x68` for `equip0`); the `+0x9C` bit stays. 0 unequips (the owned bit stays). |
+| `byte68.<0..3>` | `+0x68`-`+0x6B` | `sram_load_slot` scans `+0x69`-`+0x6B` for id `0x23` (`0x80090AA4`-`0x80090AC0`); `+0x68` is written by the id-60 case above. The bytes `+0x6C`-`+0x6E` (`FF`) are left alone. |
+| `bitsA4.<bit>` | `+0xA4`, u32 | Ids 102-107 OR the bit `id - 102` (`0x8007040C`-`0x80070428`, the table of single bits at `0x800F6B50` read at `0x800F69B8 + 4 * id`), ids 90-101 the bit `id - 84` (`0x8007044C`-`0x80070474`), ids 108-112 the bit `id - 90` (`0x80070488`-`0x800704B0`, `0x800704C4`-`0x800704EC`), id 113 the bit 23 and also adds one to the halfword `+0xD0` (`0x80070510`-`0x8007052C`). The file select tests bits 0-7 for its icons (`0x8080ED18`-`0x8080ED30`). *Observed*: bit 0 draws a green round icon on the file. What each bit stands for is not established beyond this mapping from ids. |
+| `countD0` | `+0xD0`, u16 | Increased by one with the id 113 above; the file select's three-digit number is `+0x22`, a different field. |
+| `flag3A`, `flag3C` | `+0x3A`, `+0x3C` (bytes) | The routine at `0x80079148`-`0x80079170` sets byte `+0x32` to byte `+0x3C` plus one when `+0x3A` is non-zero and `+0x32` is zero. The handler that loads a chosen file zeroes `+0x33` and `+0x32` (`sb zero,51` at `0x8081160C`, `sb t0,50` at `0x808116BC`, the register holding the zero just read back from `+0x33`), so `+0x33` and `+0x32` in a file do not carry over: the level is rebuilt from these two bytes. `dump` shows `+0x32` and `+0x33` as `level32` and `byte33`; `set` does not write them. The new file's `+0x33` is `0x30`. |
+| `flag04` | `+0x04` | 0 or 1. 1 is the new file's value; non-zero selects entrance `0xBB` (the house of scene 52) and zero `0x5F4` where the scene has no case of its own (`0x80090990`-`0x800909C4`). What the flag means is not established. |
+| `scene` | `+0x66` | The scene Link resumes in. `set` also writes `+0x00` with the entrance `sram_load_slot` will compute (`entranceFor` in `record.ts`, the rules under "Record fields"); the game overwrites `+0x00` itself at load. Scenes are not checked against the scene table: the headless runtime stopped with a thread error after loading a file placed in scene 5. |
+
+*Observed*, on a file built with `new` (`hearts=12`, `bitsA4.0`): the file select's "Open this file?" screen shows the name, twelve hearts and the icon of `bitsA4` bit 0 (frame 2880 of the scripted boot, the A of frame 2700 having selected the file).
+
+## Import of the sample
+
+`import` does not read the sample: its payload does not decode (below), so no field is mapped. The unmapped fields are every row of the field table of "Record fields" (`entranceIndex`, `flag04`, `cutsceneIndex`, `timeOfDay`, `magic`, `counter22`, `name`, `field2C`, `healthCapacity`, `health`, `sceneIndex`, `bytes68`, `itemSlots`, `counts8C`, `bits9C`, `bitsA4`, `flagCF`); `import` prints this list when given the sample. A raw save memory image of 32 KB to 128 KB is imported unchanged when `verify` accepts it as is (PAL signature, language and checksums); any other image is refused as unsupported.
 
 ## The sample file
 
@@ -132,6 +160,5 @@ What this leaves open: the 6,050 bytes before the code could be a compressed or 
 
 ## Not established
 
-- The meaning of the items table (`+0x74`), counts (`+0x8C`), bit fields (`+0x9C`, `+0xA4`, `+0xEDC`), `+0x2C`, `+0x68` and the constants at `+0x1348`.
-- The character table of the name.
+- What each item id, equipment index and quest bit is called (the structure of `+0x74`, `+0x8C`, `+0x9C`, `+0x70`, `+0xA0` and `+0xA4` is established above; the names are not), the other fields of the upgrade word, the magic capacity per level, `+0xEDC`, `+0x2C`, `+0x6C`-`+0x6E` and the constants at `+0x1348`.
 - Event, scene and other flags (the record's `+0xD4`-`+0x1347` is not read by any routine in this document; a new file leaves it zero apart from what is listed).
