@@ -40,16 +40,16 @@ Measured with the scripted new game (`tools/headless/newgame.input`: title, file
 | audio tasks per second | 50.0 | 60.0 |
 | audio interface rate | 31,995 Hz | 32,006 Hz (the NTSC clock over the same divisor) |
 | audio produced per second of virtual time | 31,995 frames | 32,000-32,015 frames |
-| audio buffers | 2,496-2,624 bytes | 2,496-2,624 bytes |
+| audio buffers | about 50 a second, 2,496-2,624 bytes | 60 a second, 2,112-2,240 bytes (one per audio task) |
 | buffers queued after the interface ran dry (`oot_ai_gaps`) | 0 | 0 |
 
-The game fills the audio interface by what it has left to play (`osAiGetLength`), so the 20 % more audio tasks per second each produce proportionally fewer samples (about 533 frames instead of 640) and the interface sees the same 32 kHz stream.
+The sound engine needs two constants changed for this (next section); without them the table's 60 Hz audio column would not hold.
 
 Pitch and tempo, measured on the title music of each mode, recorded before the script presses a key (`tools/headless/spectrum.ts`):
 
 - Pitch: the average spectra of the two recordings have cosine similarity 0.90 over the 20-800 bin range when compared as they are and at most 0.57 when one is stretched by 0.8, 0.9, 1.1 or 1.2.
-- Tempo, without any change to the sound engine: the loudness envelope of the 60 Hz recording matches the 50 Hz one played 1.20 times faster (correlation 0.92). The engine runs its sequences once per audio task and has 50 tasks a second built in (the constants above), so the music follows the retrace rate.
-- Tempo with the divisor patch: `rt_osAiSetFrequency` (called at `0x800B58F8`, before the tempo set-up reads the divisor at `0x800B5A68`) divides the engine's tempo by 1.2 in a 60 Hz boot, by multiplying the float 20.03042 at `0x80125FB0` by 5/6. The envelope then matches the 50 Hz one at speed 1.00 (correlation 0.89): the music plays at the tempo of the 50 Hz mode in real time while the game runs 1.2 times faster. The other direction (multiplying by 1.2) left the music at 1.13 times with poor correlation. The patch is a runtime edit of game data, not an NTSC path of the game, which has none. The cutscene sound is no longer in step with the picture as it is at 50 Hz: the picture is 1.2 times faster, the music is not.
+- Without touching the sound engine, 60 Hz sounds wrong: the engine sizes each audio task for 50 tasks a second (640 frames, from the refresh rate constant) and runs 60, so the game queues only about 50.5 buffers a second and the output of about 10 tasks a second is never played. Measured on the title music, the second difference at the joins between buffers is 410 against 72 at 50 Hz and 66 samples in 45 s jump by more than 6000 against 5. The music also runs 1.20 times faster in real time (loudness envelope match, correlation 0.92), because its sequences advance once per task.
+- What the 60 Hz boot does about it: `rt_osAiSetFrequency` (called at `0x800B58F8`, before the engine reads the two words at `0x800B5904` and `0x800B5A68`) sets the refresh rate at `0x80125FB4` to 60 and multiplies the tempo divisor, the float 20.03042 at `0x80125FB0`, by 5/6. Tasks then make 544 frames, one buffer each, 60 a second (2,112-2,240 bytes); the join measure is 78 against 72 at 50 Hz; and the loudness envelope matches the 50 Hz one at speed 1.00 (correlation 0.88), so the music keeps its 50 Hz real-time tempo while the game runs 1.2 times faster. Only the refresh rate (tempo 1.20) or only the divisor (clicks) is not enough. This is a runtime edit of game data, not an NTSC path of the game, which has none. The music is no longer in step with the picture in cutscenes as it is at 50 Hz.
 
 ### Fallback: not implemented
 

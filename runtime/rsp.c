@@ -142,26 +142,30 @@ static void ai_finished(uint32_t a, uint32_t b) {
   event_send(EVENT_AI);
 }
 
-// The sound engine's tempo divisor, the float 20.03042 stored at 0x80125fb0 by the audio init (0x800b8d80-0x800b8d90) and
-// read by the tempo set-up that follows osAiSetFrequency (0x800b5a68). The engine advances its sequences once per audio
-// task and assumes 50 tasks a second (its refresh rate is the constant 50, 0x800b8d84); at 60 retraces a second the music
-// would play 1.2 times too fast, so a 60 Hz boot divides the engine's tempo by 1.2 (docs/re/tv-type.md).
+// The sound engine's context (audio init, 0x800b8d80-0x800b8d90): a refresh rate, the constant 50 at 0x80125fb4, and a tempo
+// divisor, the float 20.03042 at 0x80125fb0. The refresh rate sizes each audio task (32000 / rate samples, 0x800b5910) and
+// the task runs once per retrace; the sequences advance once per task. At 60 retraces a second the unchanged constants make
+// 640-sample tasks of which a sixth is dropped (clicks) and music 1.2 times too fast. A 60 Hz boot gives the engine the refresh
+// rate 60 (544-sample tasks, one buffer per task) and divides its tempo by 1.2, which keeps the music at the tempo it has
+// at 50 Hz. Both are read after osAiSetFrequency returns (0x800b5904, 0x800b5a68). See docs/re/tv-type.md.
+#define AUDIO_REFRESH_RATE 0x80125fb4u
 #define AUDIO_TEMPO_DIVISOR 0x80125fb0u
-static void slow_sequencer(void) {
+static void retune_sound_engine(void) {
   uint32_t w = rd32(AUDIO_TEMPO_DIVISOR);
   float f;
   memcpy(&f, &w, 4);
-  if (f != 20.03042f) return;
+  if (f != 20.03042f || rd32(AUDIO_REFRESH_RATE) != RT_VI_HZ_PAL) return;
   f = f * RT_VI_HZ_PAL / RT_VI_HZ_NTSC;
   memcpy(&w, &f, 4);
   wr32(AUDIO_TEMPO_DIVISOR, w);
+  wr32(AUDIO_REFRESH_RATE, RT_VI_HZ_NTSC);
 }
 
 // osAiSetFrequency(hz) (0x800d3120): the divisor is the video clock word at 0x80006878 over the rate, rounded to the
 // nearest integer (the float add of 0.5 at 0x800d3154-0x800d316c); below 132 the call fails with -1 (0x800d31ec).
 // The rate it returns is the clock over the divisor (0x800d3234).
 void rt_osAiSetFrequency(Cpu *c) {
-  if (rt_vi_hz() == RT_VI_HZ_NTSC) slow_sequencer();
+  if (rt_vi_hz() == RT_VI_HZ_NTSC) retune_sound_engine();
   float clock = (float)rd32(OS_VI_CLOCK);
   float wanted = (float)ARG(0);
   uint32_t divisor = (uint32_t)(clock / wanted + 0.5f);

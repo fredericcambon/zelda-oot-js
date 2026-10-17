@@ -289,6 +289,7 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
     const problems: string[] = [];
     let frame = 0;
     let bytes = 0;
+    let buffers = 0;
     let smallest = Infinity;
     let largest = 0;
     const game = await bootGame(moduleUrl, cartridge, {
@@ -301,6 +302,7 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
       onAiBuffer: (b) => {
         cap.hooks.onAiBuffer(b);
         bytes += b.length;
+        buffers++;
         smallest = Math.min(smallest, b.length);
         largest = Math.max(largest, b.length);
       },
@@ -332,13 +334,19 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
     const seconds = (WALKED_RIGHT_FRAME - 1) / 60;
     expect(bytes / 4 / seconds / cap.hz).toBeGreaterThan(0.99);
     expect(bytes / 4 / seconds / cap.hz).toBeLessThan(1.01);
-    expect(smallest).toBeGreaterThanOrEqual(2496);
-    expect(largest).toBeLessThanOrEqual(2624);
+    // One buffer per audio task, as many as retraces, each of about 1/60 s.
+    expect(buffers / seconds).toBeGreaterThan(59);
+    expect(buffers / seconds).toBeLessThan(61);
+    expect(smallest).toBeGreaterThanOrEqual(2112);
+    expect(largest).toBeLessThanOrEqual(2240);
     expect(last!.aiGaps).toBe(0);
 
     // Same pitch as at 50 Hz, and the music keeps its real-time tempo while the game runs 1.2 times faster. The script presses Start
     // 40 s into the 60 Hz run, so only the title music before that is compared.
     const palSound = mono(pal), sound = mono(cap).subarray(0, 38 * cap.hz);
+    // No crackle: samples that jump (second difference over 6000 of 32768) stay within a handful of those at 50 Hz (the unfixed 60 Hz mode had dozens).
+    const jumps = (x: Float64Array) => x.reduce((n, v, i) => (i > 1 && Math.abs(v - 2 * x[i - 1]! + x[i - 2]!) > 6000 / 32768 ? n + 1 : n), 0);
+    expect(jumps(sound)).toBeLessThanOrEqual(jumps(palSound) + 10);
     const spectra = [averageSpectrum(palSound), averageSpectrum(sound)] as const;
     const match = [0.85, 0.9, 1, 1.1, 1.2].map((stretch) => similarity(spectra[0], spectra[1], 20, 800, stretch));
     expect(match[2]).toBeGreaterThan(0.8);
