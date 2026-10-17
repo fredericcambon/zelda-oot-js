@@ -121,6 +121,8 @@ A picture is drawn per display refresh (a 60 Hz display shows 3 per game frame, 
 
 **Latency added: one game frame at most.** The picture at the moment a game frame arrives has its moving matrices at the previous frame's values, and reaches the current frame's values one game-frame interval later (`smoothFraction`: 0 at the frame's arrival, 1 one interval later, held at 1 if the next frame is late; `interpolate(plan, 0)` equals the previous frame's matrices, both unit-tested). What is on screen is therefore the game state one game-frame interval old: 60 ms at the 3-retrace spacing measured above. With smoothing off the finished frame appears at the next retrace (up to 20 ms), so the added delay is that interval minus the retrace: at most 60 ms, and nothing while the toggle is off.
 
+Two sliders next to the toggle tune it (stored in localStorage, `SmoothTuning`): **strength** (0 to 100%, default 100) keeps the picture nearer the current frame, 0 showing the game's own frames only; **catch-up** (25 to 100%, default 100) is the share of a game-frame interval the motion takes to reach the current frame, so 50% halves the added delay and holds the current frame for the rest.
+
 Fast-forward: smoothing is off while Tab is held, tasks are drawn as they come, and the kept frames are dropped (the first frame after is drawn as it is).
 
 ### Browser check

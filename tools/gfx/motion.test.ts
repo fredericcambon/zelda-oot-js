@@ -243,6 +243,13 @@ describe('timing', () => {
     expect(smoothFraction(40, 33, 30)).toBe(1);
   });
 
+  it('a shorter span reaches the current frame sooner and holds it, a lower strength stays nearer it', () => {
+    expect(smoothFraction(34.5, 33, 30, { strength: 1, span: 0.5 })).toBe(1);
+    expect(smoothFraction(33.75, 33, 30, { strength: 1, span: 0.5 })).toBeCloseTo(0.5, 12);
+    expect(smoothFraction(33, 33, 30, { strength: 0.5, span: 1 })).toBeCloseTo(0.5, 12);
+    expect(smoothFraction(34.5, 33, 30, { strength: 0, span: 1 })).toBe(1);
+  });
+
   it('stays at 0 before the frame and copes with two frames in one video frame', () => {
     expect(smoothFraction(32, 33, 30)).toBe(0);
     expect(smoothFraction(34, 33, 33)).toBe(1);

@@ -2,7 +2,7 @@
 import { Synth } from '../tools/audio/synth.ts';
 import { runDisplayList } from '../tools/gfx/c-dl.ts';
 import { FrameProfiler } from '../tools/gfx/profile.ts';
-import { finalColorImage, SmoothFrames, smoothFraction, type SmoothCore } from '../tools/gfx/smooth.ts';
+import { FULL_SMOOTHING, finalColorImage, SmoothFrames, smoothFraction, type SmoothCore, type SmoothTuning } from '../tools/gfx/smooth.ts';
 import { shownFramebuffer } from '../tools/gfx/vi.ts';
 import { RDRAM_SIZE, startModule } from '../tools/runtime/instance.ts';
 import type { AudioSink } from './audio.ts';
@@ -32,6 +32,8 @@ export interface Game {
    * them; turning it off drops what was kept, and tasks are drawn as they come.
    */
   setSmooth(on: boolean): void;
+  /** Sets how much of the motion is shown; see SmoothTuning. */
+  tuneSmooth(tuning: SmoothTuning): void;
   /**
    * Draws the picture `sinceFrame` of a video frame (0 to 1) after the last video frame that ran, between the last two game
    * frames, and returns the colour image to show; null when no game frame is kept. Does the work once for pictures that do not change.
@@ -64,6 +66,7 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
   let videoFrames = 0;
   let keptAt = 0, keptBefore = 0;
   let serial = 0;
+  let tuning = FULL_SMOOTHING;
   let drawn = '';
   let lastShown: number | null = null;
   const guestRam = () => mod.HEAPU8.subarray(mod._oot_rdram(), mod._oot_rdram() + RDRAM_SIZE);
@@ -132,9 +135,12 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
       drawn = '';
       if (!on) frames!.forget();
     },
+    tuneSmooth(next) {
+      tuning = next;
+    },
     drawSmooth(sinceFrame) {
       if (!smoothing || !frames!.ready) return null;
-      const t = smoothFraction(videoFrames + sinceFrame, keptAt, keptBefore);
+      const t = smoothFraction(videoFrames + sinceFrame, keptAt, keptBefore, tuning);
       const plan = frames!.plan;
       // With nothing to move the picture is the same all game frame long.
       const still = !plan || plan.stats.cut || plan.entries.length === 0 || t >= 1;

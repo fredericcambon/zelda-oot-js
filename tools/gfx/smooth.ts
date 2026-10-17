@@ -16,12 +16,23 @@ export interface SmoothCore extends GfxGameCore, MotionCore {
  * How far between two kept game frames the picture for time `now` is, with times counted in video frames: the frames ran at
  * `before` and `kept` (the video frame each graphics task ran in). At `kept` the picture is the previous game frame and it
  * reaches the kept one a game-frame interval later, so what is on screen is always one game-frame interval old: the latency
- * smoothing adds. A game frame that is late leaves the picture at the kept frame.
+ * smoothing adds (less with a shorter span). A game frame that is late leaves the picture at the kept frame.
  */
-export function smoothFraction(now: number, kept: number, before: number): number {
-  const period = Math.max(1, kept - before);
-  return Math.min(1, Math.max(0, (now - kept) / period));
+export function smoothFraction(now: number, kept: number, before: number, tuning: SmoothTuning = FULL_SMOOTHING): number {
+  const period = Math.max(1, kept - before) * tuning.span;
+  const raw = Math.min(1, Math.max(0, (now - kept) / period));
+  return 1 - tuning.strength * (1 - raw);
 }
+
+/** How much of the motion between two game frames is shown, both from 0 to 1. */
+export interface SmoothTuning {
+  /** 1 moves everything between the frames; less keeps the picture nearer the current frame; 0 shows the current frame only. */
+  strength: number;
+  /** The share of a game-frame interval the picture takes to reach the current frame; less adds less delay, and holds the current frame for the rest. */
+  span: number;
+}
+
+export const FULL_SMOOTHING: SmoothTuning = { strength: 1, span: 1 };
 
 export class SmoothFrames {
   private readonly tracker = new MotionTracker();

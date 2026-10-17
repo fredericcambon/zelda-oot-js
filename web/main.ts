@@ -52,6 +52,33 @@ smoothToggle.addEventListener('click', () => {
   smoothToggle.blur();
 });
 
+// Percent sliders: how much motion is shown and how fast it catches up to the current game frame.
+const tuneInput = (id: string, key: string): HTMLInputElement => {
+  const input = document.getElementById(id) as HTMLInputElement;
+  try {
+    const stored = Number(localStorage.getItem(key));
+    if (localStorage.getItem(key) !== null && stored >= Number(input.min) && stored <= Number(input.max)) input.value = String(stored);
+  } catch {
+    // Storage may be blocked; the default stays.
+  }
+  input.addEventListener('input', () => {
+    try {
+      localStorage.setItem(key, input.value);
+    } catch {
+      // The choice then lasts until the page is closed.
+    }
+    applyTuning();
+  });
+  // A slider that kept focus would take the arrow keys from the game.
+  input.addEventListener('change', () => input.blur());
+  return input;
+};
+const strengthInput = tuneInput('smooth-strength', 'oot.smooth.strength');
+const spanInput = tuneInput('smooth-span', 'oot.smooth.span');
+function applyTuning(): void {
+  game?.tuneSmooth({ strength: Number(strengthInput.value) / 100, span: Number(spanInput.value) / 100 });
+}
+
 const setStatus = (text: string, error = false) => {
   status.textContent = text;
   status.classList.toggle('error', error);
@@ -182,6 +209,7 @@ async function loop(): Promise<void> {
     }
     // Fast-forward runs frames back to back and has no time for in-between pictures.
     game?.setSmooth(smoothOn && !fastForward.active);
+    applyTuning();
     const now = performance.now();
     // At most three frames of catch-up, so a stalled tab does not trigger a burst.
     acc = Math.min(acc + now - last, FRAME_MS * 3);
