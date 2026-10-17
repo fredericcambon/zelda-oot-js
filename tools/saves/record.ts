@@ -183,6 +183,8 @@ const simple: Record<string, Setter> = {
     const scene = int(v, 0, 0x7f, 'scene');
     put16(r, 0x66, scene);
     put32(r, 0x00, entranceFor(scene, u32(r, 0x04)));
+    // The new file's cutscene index 0xFFF1 selects the cutscene layer of the entrance, which only the house has.
+    put32(r, 0x08, 0);
   },
   countD0: (r, v) => put16(r, 0xd0, int(v, 0, 0xffff, 'countD0')),
   item: (r, v) => {

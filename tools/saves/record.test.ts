@@ -116,5 +116,13 @@ describe('cli', () => {
     expect(r.status).toBe(1);
     expect(r.stderr).toMatch(/unsupported/);
   });
-});
 
+  it('clears the cutscene index when the scene is set, so the entrance is not a cutscene layer', () => {
+    const r = newRecord('Link');
+    const word = (at: number) => new DataView(r.buffer).getUint32(at);
+    expect(word(0x08)).toBe(0xfff1);
+    editRecord(r, [['scene', '5']]);
+    expect(word(0x08)).toBe(0);
+    expect(word(0x00)).toBe(0x10);
+  });
+});
