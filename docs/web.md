@@ -24,6 +24,10 @@
 - **60 Hz mode.** The "60 Hz" button next to Debug (not focusable by mouse, like Debug) stores the choice in `localStorage` (try/catch around every access; off by default). The game is booted at the stored rate, so a change applies at the next page load, which the page says next to the button; it never reloads. The overlay shows the mode and the measured game frames per second. A save state records its mode and a state of the other mode is refused with a message. See `docs/re/tv-type.md`.
 - **Fast-forward.** Holding Tab (its focus change is suppressed) runs frames back to back for about 12 ms of each display frame and drops the game's sound instead of queueing it.
 
+## GitHub Pages
+
+`npm run pages:build` builds the site into git-ignored `dist-pages/` (`vite build --mode pages`: base `/zelda-oot-js/`; the page, `oot.js`, `oot.wasm` and `game.pack` copied from `dist/`, so `npm run port` must have run). `npm run pages:deploy` builds it, then force-pushes it as the single commit of the `gh-pages` branch of `origin` (`tools/pages/deploy.ts`) and enables Pages for that branch with `gh api`; if the API refuses, the script prints the setting to click (Settings > Pages > Deploy from a branch > `gh-pages`, `/ (root)`). The game files are published unencrypted: anyone with the URL can download the cartridge image. There is no saves endpoint on Pages, so saves use IndexedDB. The page and the game files are fetched from `import.meta.env.BASE_URL`; a compressed response to the pack is read without a preallocated length.
+
 ## Shaders
 
 `web/shader.ts` builds one GLSL ES 3.00 fragment shader per `ShaderSpec`: the combiner inputs of both cycles, cycle type, filter mode, alpha compare, fog in shade alpha, and the blender selectors. Colours, tile sizes, masks and shifts are uniforms. Input selector numbering is the one `decodeCombine` already extracts; the meaning of each code, the blender selectors and the other-mode bit positions are from the RDP descriptions on n64brew.dev.

@@ -10,6 +10,8 @@
     "build": "node tools/build.mjs",
     "test": "vitest run",
     "lint": "eslint . && tsc --noEmit",
+    "pages:build": "vite build --config vite.config.ts --mode pages",
+    "pages:deploy": "tsx tools/pages/deploy.ts",
     "dev": "vite --config vite.config.ts",
     "analyze": "tsx tools/analyze/cli.ts",
     "analyze:setup": "node tools/analyze/setup.mjs",
