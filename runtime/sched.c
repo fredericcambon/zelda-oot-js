@@ -6,6 +6,7 @@
 // run queue puts first, with the same ordering rules as the original dispatcher: higher priority first,
 // first come first served among equals.
 #include <emscripten/fiber.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include "rt.h"
 
@@ -102,6 +103,20 @@ static void swap_to_host(void) {
   emscripten_fiber_swap(&me->fiber, &host_fiber);
 }
 
+// A thread whose call chain is being rebuilt already has its place in the guest's lists: the blocking primitives
+// only park its fiber at the site and leave the guest state as it is.
+static int rebuilding(void) { return current && current->cpu.blk_id != 0; }
+
+// Gives the processor to the scheduler at blocking site `site`; returns when the thread runs again.
+static void park(int site) {
+  HostThread *me = current;
+  if (!me) rt_fatal("blocking OS call outside a thread");
+  me->cpu.blk_id = (uint32_t)site;
+  me->cpu.resume = 0;
+  emscripten_fiber_swap(&me->fiber, &host_fiber);
+  me->cpu.blk_id = 0;
+}
+
 static void set_state(uint32_t thread, int state) { wr16(thread + TH_STATE, (uint16_t)state); }
 
 static void make_runnable(uint32_t thread) {
@@ -109,50 +124,58 @@ static void make_runnable(uint32_t thread) {
   list_enqueue(OS_RUNQUEUE, thread);
 }
 
-static void leave_cpu(void) {
-  running = NULL;
-  wr32(OS_RUNNING, 0);
-  swap_to_host();
+static void leave_cpu(int site) {
+  if (!rebuilding()) {
+    running = NULL;
+    wr32(OS_RUNNING, 0);
+  }
+  park(site);
 }
 
 // Puts the running thread behind its equals on the run queue and lets the scheduler choose again.
-static void requeue_running(void) {
-  make_runnable(running->addr);
-  leave_cpu();
+static void requeue_running(int site) {
+  if (!rebuilding()) make_runnable(running->addr);
+  leave_cpu(site);
 }
 
-static void yield_if_preempted(void) {
+static void yield_if_preempted(int site) {
+  if (rebuilding()) { requeue_running(site); return; }
   if (!running || current != running) return;
   uint32_t head = rd32(OS_RUNQUEUE);
   if (head == OS_SENTINEL) return;
-  if ((int32_t)rd32(head + TH_PRI) > (int32_t)rd32(running->addr + TH_PRI)) requeue_running();
+  if ((int32_t)rd32(head + TH_PRI) > (int32_t)rd32(running->addr + TH_PRI)) requeue_running(site);
 }
 
 // Blocks the running thread on a wait list, or on nothing when a timed event will wake it.
-static void block_on(uint32_t head) {
+static void block_on(uint32_t head, int site) {
+  if (rebuilding()) { park(site); return; }
   if (!running || current != running) rt_fatal("blocking OS call outside a thread");
   set_state(running->addr, TS_WAITING);
   if (head) list_enqueue(head, running->addr);
   else wr32(running->addr + TH_QUEUE, 0);
-  leave_cpu();
+  leave_cpu(site);
 }
 
-void rt_poll(uint32_t cycles) {
-  clock_set(rt_clock() + cycles);
-  events_run_due();
-  yield_if_preempted();
+void rt_poll(Cpu *c, int site, uint32_t cycles) {
+  if (!resuming_at(c, site)) {
+    clock_set(rt_clock() + cycles);
+    events_run_due();
+  }
+  yield_if_preempted(site);
 }
 
-static void wake_sleeper(uint32_t thread, uint32_t unused) {
+void te_wake_sleeper(uint32_t thread, uint32_t unused) {
   (void)unused;
   make_runnable(thread);
 }
 
-void thread_sleep_until(uint64_t when) {
-  if (rt_clock() >= when) return;
-  if (!running) rt_fatal("sleep outside a thread");
-  rt_schedule(when, wake_sleeper, running->addr, 0);
-  block_on(0);
+void thread_sleep_until(Cpu *c, uint64_t when, int site) {
+  if (!resuming_at(c, site)) {
+    if (rt_clock() >= when) return;
+    if (!running) rt_fatal("sleep outside a thread");
+    rt_schedule(when, TE_WAKE_SLEEPER, running->addr, 0);
+  }
+  block_on(0, site);
 }
 
 // ---- Fibers --------------------------------------------------------------------------------------------------
@@ -276,6 +299,7 @@ void rt_osCreateThread(Cpu *c) {
 }
 
 void rt_osStartThread(Cpu *c) {
+  if (resuming_at(c, BS_START_YIELD)) { yield_if_preempted(BS_START_YIELD); return; }
   uint32_t t = ARG(0);
   int state = rd16(t + TH_STATE);
   if (state == TS_STOPPED) {
@@ -290,15 +314,16 @@ void rt_osStartThread(Cpu *c) {
     boot_live = 0;
     swap_to_host();
   }
-  yield_if_preempted();
+  yield_if_preempted(BS_START_YIELD);
 }
 
 void rt_osStopThread(Cpu *c) {
+  if (resuming_at(c, BS_STOP_SELF)) { leave_cpu(BS_STOP_SELF); return; }
   uint32_t t = thread_arg(ARG(0));
   int state = rd16(t + TH_STATE);
   if (state == TS_RUNNING) {
     set_state(t, TS_STOPPED);
-    leave_cpu();
+    leave_cpu(BS_STOP_SELF);
   } else if (state == TS_RUNNABLE || state == TS_WAITING) {
     uint32_t q = rd32(t + TH_QUEUE);
     if (q) list_dequeue(q, t);
@@ -324,10 +349,10 @@ void rt_osDestroyThread(Cpu *c) {
     link = node + TH_TLNEXT;
   }
   if (!h) return;
-  rt_cancel(wake_sleeper, t);
+  rt_cancel(TE_WAKE_SLEEPER, t);
   if (h == running) {
     h->dead = 1;
-    leave_cpu();
+    leave_cpu(BS_NONE);
     rt_fatal("destroyed thread resumed");
   }
   free_thread(h);
@@ -340,13 +365,15 @@ __attribute__((noreturn)) static void thread_exit(HostThread *t) {
 }
 
 void rt_osYieldThread(Cpu *c) {
-  (void)c;
-  if (running && current == running) requeue_running();
+  if (resuming_at(c, BS_YIELD_THREAD)) { requeue_running(BS_YIELD_THREAD); return; }
+  if (running && current == running) requeue_running(BS_YIELD_THREAD);
 }
 
 // A thread that lowers itself to priority 0 is the idle loop: its code spins without calling the OS, so it
 // is parked rather than resumed, and time advances while nothing else is runnable.
 void rt_osSetThreadPri(Cpu *c) {
+  if (resuming_at(c, BS_PRI_PARK)) goto park;
+  if (resuming_at(c, BS_PRI_YIELD)) goto yield;
   uint32_t t = thread_arg(ARG(0));
   int32_t pri = (int32_t)ARG(1);
   HostThread *h = find_thread(t);
@@ -365,9 +392,11 @@ void rt_osSetThreadPri(Cpu *c) {
   if (h && h == running && current == running && pri == 0) {
     h->parked = 1;
     set_state(t, TS_RUNNABLE);
-    leave_cpu();
+  park:
+    leave_cpu(BS_PRI_PARK);
   }
-  yield_if_preempted();
+yield:
+  yield_if_preempted(BS_PRI_YIELD);
 }
 
 void rt_osGetThreadId(Cpu *c) {
@@ -398,10 +427,12 @@ static void wake_first(uint32_t head) {
 }
 
 // Waits for room in the queue; returns 0 when `block` is clear and the queue is full.
-static int wait_for_room(uint32_t q, uint32_t block) {
+static int wait_for_room(Cpu *c, uint32_t q, uint32_t block, int site) {
+  if (resuming_at(c, site)) goto wait;
   while (rd32(q + MQ_VALID) >= rd32(q + MQ_COUNT)) {
     if (!block) return 0;
-    block_on(q + MQ_FULL);
+  wait:
+    block_on(q + MQ_FULL, site);
   }
   return 1;
 }
@@ -414,28 +445,35 @@ static void put(uint32_t q, uint32_t slot, uint32_t msg) {
 
 void rt_osSendMesg(Cpu *c) {
   uint32_t q = ARG(0);
-  if (!wait_for_room(q, ARG(2))) { RET(-1); return; }
+  if (resuming_at(c, BS_SEND_YIELD)) goto yield;
+  if (!wait_for_room(c, q, ARG(2), BS_SEND_WAIT)) { RET(-1); return; }
   put(q, (rd32(q + MQ_FIRST) + rd32(q + MQ_VALID)) % rd32(q + MQ_COUNT), ARG(1));
   RET(0);
-  yield_if_preempted();
+yield:
+  yield_if_preempted(BS_SEND_YIELD);
 }
 
 void rt_osJamMesg(Cpu *c) {
   uint32_t q = ARG(0);
-  if (!wait_for_room(q, ARG(2))) { RET(-1); return; }
+  if (resuming_at(c, BS_JAM_YIELD)) goto yield;
+  if (!wait_for_room(c, q, ARG(2), BS_JAM_WAIT)) { RET(-1); return; }
   uint32_t count = rd32(q + MQ_COUNT);
   uint32_t first = (rd32(q + MQ_FIRST) + count - 1) % count;
   wr32(q + MQ_FIRST, first);
   put(q, first, ARG(1));
   RET(0);
-  yield_if_preempted();
+yield:
+  yield_if_preempted(BS_JAM_YIELD);
 }
 
 void rt_osRecvMesg(Cpu *c) {
   uint32_t q = ARG(0), out = ARG(1);
+  if (resuming_at(c, BS_RECV_WAIT)) goto wait;
+  if (resuming_at(c, BS_RECV_YIELD)) goto yield;
   while (rd32(q + MQ_VALID) == 0) {
     if (!ARG(2)) { RET(-1); return; }
-    block_on(q + MQ_MT);
+  wait:
+    block_on(q + MQ_MT, BS_RECV_WAIT);
   }
   uint32_t first = rd32(q + MQ_FIRST);
   if (out) wr32(out, rd32(rd32(q + MQ_MSG) + 4 * first));
@@ -443,7 +481,8 @@ void rt_osRecvMesg(Cpu *c) {
   wr32(q + MQ_VALID, rd32(q + MQ_VALID) - 1);
   wake_first(q + MQ_FULL);
   RET(0);
-  yield_if_preempted();
+yield:
+  yield_if_preempted(BS_RECV_YIELD);
 }
 
 int mq_try_send(uint32_t q, uint32_t msg) {
@@ -498,3 +537,280 @@ void rt_os_internal_set_fpc_csr(Cpu *c) {
 }
 
 void rt_os_internal_get_fpc_csr(Cpu *c) { RET(c->fcsr); }
+
+// ---- Call chains of the threads ---------------------------------------------------------------------------
+// A thread that is not running is parked in a runtime routine, and the generated functions above it hold its
+// host frames. The shadow stack of its context names those frames (OOT_PUSH in runtime/cpu.h), so the chain
+// can be written down in terms of the ROM's functions and call sites and rebuilt in another instance: the
+// outermost function is entered in resume mode, each function jumps to the site on the stack and re-issues the
+// call, and the routine at the end parks the fiber at its blocking site.
+
+// The routine a thread waits in at blocking site `id`.
+static GuestFn blocking_routine(uint32_t id) {
+  switch (id) {
+    case BS_RECV_WAIT: case BS_RECV_YIELD: return rt_osRecvMesg;
+    case BS_SEND_WAIT: case BS_SEND_YIELD: return rt_osSendMesg;
+    case BS_JAM_WAIT: case BS_JAM_YIELD: return rt_osJamMesg;
+    case BS_YIELD_THREAD: return rt_osYieldThread;
+    case BS_STOP_SELF: return rt_osStopThread;
+    case BS_START_YIELD: return rt_osStartThread;
+    case BS_PRI_PARK: case BS_PRI_YIELD: return rt_osSetThreadPri;
+    case BS_GETCOUNT: return rt_osGetCount;
+    case BS_GETTIME: return rt_osGetTime;
+    case BS_AIGETLENGTH: return rt_osAiGetLength;
+    case BS_VIGETFB: return rt_osViGetCurrentFramebuffer;
+    case BS_CONTINIT_SLEEP: return rt_osContInit;
+  }
+  return NULL;
+}
+
+GuestFn rt_resume_target(Cpu *c) {
+  if (c->rpos >= c->shn) return blocking_routine(c->blk_id);
+  uint32_t key = c->sh[c->rpos];
+  if (key == RT_FRAME_OVERLAY_LOAD) return rt_overlay_load;
+  if (key == RT_FRAME_CONT_TRANSFER) return c->sh[c->rpos + 2] ? rt_osContStartReadData : rt_osContStartQuery;
+  return key < oot_site_count ? oot_sites[key].fn : NULL;
+}
+
+// The image whose functions hold the call site `key`.
+static uint32_t image_of_site(uint32_t key) {
+  for (uint32_t k = 0; k < oot_image_count; k++) {
+    if (key >= oot_images[k].first_site && key - oot_images[k].first_site < oot_images[k].site_count) return k;
+  }
+  return 0;
+}
+
+// The frames of a shadow stack: a call site of a generated function, or a runtime routine's frame with its payload.
+enum { CHAIN_END = 0, CHAIN_SITE = 1, CHAIN_RUNTIME = 2, CHAIN_BAD = -1 };
+
+static int chain_next(const Cpu *c, uint32_t *pos, uint32_t *a, uint32_t *b, uint32_t *d) {
+  if (*pos >= c->shn) return CHAIN_END;
+  uint32_t key = c->sh[*pos];
+  if (key < oot_site_count) {
+    *a = key;
+    (*pos)++;
+    return CHAIN_SITE;
+  }
+  if ((key == RT_FRAME_OVERLAY_LOAD || key == RT_FRAME_CONT_TRANSFER) && *pos + 3 <= c->shn) {
+    *a = key;
+    *b = c->sh[*pos + 1];
+    *d = c->sh[*pos + 2];
+    *pos += 3;
+    return CHAIN_RUNTIME;
+  }
+  return CHAIN_BAD;
+}
+
+// The registers a guest program can see; the rest of the context belongs to the host.
+static void put_cpu(Writer *w, const Cpu *c) {
+  for (int k = 0; k < 32; k++) put64(w, c->r[k]);
+  put64(w, c->hi);
+  put64(w, c->lo);
+  put32(w, c->llbit);
+  for (int k = 0; k < 32; k++) put64(w, c->f[k]);
+  put32(w, c->fcsr);
+  put32(w, c->fir);
+  put32(w, c->fr);
+}
+
+static void get_cpu(Reader *r, Cpu *c) {
+  for (int k = 0; k < 32; k++) c->r[k] = get64(r);
+  c->hi = get64(r);
+  c->lo = get64(r);
+  c->llbit = get32(r);
+  for (int k = 0; k < 32; k++) c->f[k] = get64(r);
+  c->fcsr = get32(r);
+  c->fir = get32(r);
+  c->fr = get32(r);
+}
+
+#define THREADS_MAGIC 0x44524854u // "THRD"
+#define FLAG_STARTED 1u
+#define FLAG_PARKED 2u
+// A frame as written: its kind, then three words. A call site (kind 0) is the image, the entry address of the
+// function and the address of the call; a runtime frame (kind 1) is the frame id and its two payload words.
+#define FRAME_SITE 0u
+#define FRAME_RUNTIME 1u
+
+uint32_t rt_threads_describe(uint8_t *buf, uint32_t cap) {
+  rt_state_clear();
+  if (boot_live) return (uint32_t)rt_state_refuse("the game is still booting");
+  if (current) return (uint32_t)rt_state_refuse("the threads are described from the host's context only");
+  if (running) return (uint32_t)rt_state_refuse("thread 0x%08x is running", running->addr);
+  uint32_t count = 0;
+  for (int k = 0; k < MAX_THREADS; k++) {
+    const HostThread *t = &threads[k];
+    if (!t->used) continue;
+    count++;
+    if (t->dead) return (uint32_t)rt_state_refuse("thread 0x%08x is being destroyed", t->addr);
+    if (!t->started) continue;
+    if (!blocking_routine(t->cpu.blk_id)) {
+      return (uint32_t)rt_state_refuse("thread 0x%08x waits at a place the state cannot hold (site %u)", t->addr, t->cpu.blk_id);
+    }
+    uint32_t pos = 0, a, b, d;
+    int frames = 0, kind, ends_waiting = 0;
+    while ((kind = chain_next(&t->cpu, &pos, &a, &b, &d)) > 0) {
+      frames++;
+      ends_waiting = kind == CHAIN_SITE || rt_frame_blocks(a);
+    }
+    if (kind == CHAIN_BAD || frames == 0 || !ends_waiting) {
+      return (uint32_t)rt_state_refuse("the call chain of thread 0x%08x is not one the state can hold", t->addr);
+    }
+  }
+
+  Writer w = { buf, cap, 0 };
+  put32(&w, THREADS_MAGIC);
+  put32(&w, count);
+  put32(&w, 0); // the running thread: none between two frames
+  put32(&w, rt_status);
+  put32(&w, int_mask);
+  for (int k = 0; k < MAX_THREADS; k++) {
+    const HostThread *t = &threads[k];
+    if (!t->used) continue;
+    put32(&w, (uint32_t)k);
+    put32(&w, t->addr);
+    put32(&w, t->entry);
+    put32(&w, (t->started ? FLAG_STARTED : 0) | (t->parked ? FLAG_PARKED : 0));
+    put_cpu(&w, &t->cpu);
+    put32(&w, t->cpu.blk_id);
+    uint32_t frames = 0, pos = 0, a, b, d;
+    while (chain_next(&t->cpu, &pos, &a, &b, &d) > 0) frames++;
+    put32(&w, frames);
+    pos = 0;
+    int kind;
+    while ((kind = chain_next(&t->cpu, &pos, &a, &b, &d)) > 0) {
+      if (kind == CHAIN_SITE) {
+        put32(&w, FRAME_SITE);
+        put32(&w, image_of_site(a));
+        put32(&w, oot_sites[a].entry);
+        put32(&w, oot_sites[a].site);
+      } else {
+        put32(&w, FRAME_RUNTIME);
+        put32(&w, a);
+        put32(&w, b);
+        put32(&w, d);
+      }
+    }
+  }
+  if (buf && w.len > cap) return (uint32_t)rt_state_refuse("the buffer holds %u bytes and the threads need %u", cap, w.len);
+  return w.len;
+}
+
+typedef struct Plan {
+  uint32_t slot, addr, entry, flags, blk;
+  Cpu cpu;
+} Plan;
+
+// The key of the call site at `site` of the function entered at `entry` in `image`, or -1.
+static int64_t find_site(uint32_t image, uint32_t entry, uint32_t site) {
+  for (uint32_t k = 0; k < oot_site_count; k++) {
+    if (oot_sites[k].entry == entry && oot_sites[k].site == site && image_of_site(k) == image) return k;
+  }
+  return -1;
+}
+
+static void run_rebuild(HostThread *t) {
+  emscripten_fiber_init_from_current_context(&host_fiber, host_asyncify_stack, sizeof host_asyncify_stack);
+  current = t;
+  emscripten_fiber_swap(&host_fiber, &t->fiber);
+  current = NULL;
+}
+
+static int rebuild(const uint8_t *buf, uint32_t len, int apply) {
+  rt_state_clear();
+  Reader r = { buf, len, 0, 0 };
+  if (get32(&r) != THREADS_MAGIC) return rt_state_refuse("the thread description is not one this build reads");
+  uint32_t count = get32(&r);
+  uint32_t running_addr = get32(&r);
+  uint32_t status = get32(&r);
+  uint32_t mask = get32(&r);
+  if (r.bad || count > MAX_THREADS) return rt_state_refuse("the thread description is damaged");
+  if (running_addr != 0) return rt_state_refuse("a state with a running thread cannot be loaded");
+  Plan *plans = calloc(count ? count : 1, sizeof *plans);
+  if (!plans) return rt_state_refuse("out of memory");
+  int ok = 0;
+  uint32_t used = 0;
+  for (uint32_t k = 0; k < count; k++) {
+    Plan *p = &plans[k];
+    p->slot = get32(&r);
+    p->addr = get32(&r);
+    p->entry = get32(&r);
+    p->flags = get32(&r);
+    get_cpu(&r, &p->cpu);
+    p->blk = get32(&r);
+    uint32_t frames = get32(&r);
+    if (r.bad || p->slot >= MAX_THREADS || (used & (1u << p->slot))) { rt_state_refuse("the thread description is damaged"); goto done; }
+    used |= 1u << p->slot;
+    for (uint32_t j = 0; j < k; j++) {
+      if (plans[j].addr == p->addr) { rt_state_refuse("thread 0x%08x is described twice", p->addr); goto done; }
+    }
+    int ends_waiting = 0;
+    for (uint32_t j = 0; j < frames; j++) {
+      uint32_t kind = get32(&r), a = get32(&r), b = get32(&r), d = get32(&r);
+      if (r.bad) { rt_state_refuse("the thread description is damaged"); goto done; }
+      if (p->cpu.shn + 3 > OOT_SH_MAX) { rt_state_refuse("the call chain of thread 0x%08x is too deep", p->addr); goto done; }
+      if (kind == FRAME_SITE) {
+        int64_t key = find_site(a, b, d);
+        if (key < 0) { rt_state_refuse("this build has no call site 0x%08x in the function at 0x%08x (image %u)", d, b, a); goto done; }
+        p->cpu.sh[p->cpu.shn++] = (uint32_t)key;
+        ends_waiting = 1;
+      } else if (kind == FRAME_RUNTIME && (a == RT_FRAME_OVERLAY_LOAD || a == RT_FRAME_CONT_TRANSFER)) {
+        ends_waiting = rt_frame_blocks(a);
+        p->cpu.sh[p->cpu.shn++] = a;
+        p->cpu.sh[p->cpu.shn++] = b;
+        p->cpu.sh[p->cpu.shn++] = d;
+      } else {
+        rt_state_refuse("this build has no runtime frame %u", a);
+        goto done;
+      }
+    }
+    if (p->flags & FLAG_STARTED) {
+      if (!blocking_routine(p->blk)) { rt_state_refuse("this build has no blocking site %u", p->blk); goto done; }
+      if (frames == 0 || !ends_waiting) { rt_state_refuse("the call chain of thread 0x%08x is not one this build reads", p->addr); goto done; }
+    } else if (p->blk != 0 || frames != 0) {
+      rt_state_refuse("the thread description is damaged");
+      goto done;
+    }
+  }
+  if (r.bad) { rt_state_refuse("the thread description is damaged"); goto done; }
+
+  if (!apply) {
+    ok = 1;
+    goto done;
+  }
+
+  // Everything checked out: from here on the threads are replaced.
+  for (int k = 0; k < MAX_THREADS; k++) free_thread(&threads[k]);
+  free_thread(&boot_ctx);
+  boot_live = 0;
+  running = NULL;
+  current = NULL;
+  rt_status = status;
+  int_mask = mask;
+  ok = 1;
+  for (uint32_t k = 0; k < count; k++) {
+    Plan *p = &plans[k];
+    HostThread *t = &threads[p->slot];
+    t->used = 1;
+    t->addr = p->addr;
+    t->entry = p->entry;
+    t->parked = (p->flags & FLAG_PARKED) != 0;
+    t->cpu = p->cpu;
+    if (!(p->flags & FLAG_STARTED)) continue;
+    t->cpu.blk_id = p->blk;
+    t->cpu.rpos = 0;
+    t->cpu.resume = 1;
+    start_fiber(t, thread_main);
+    run_rebuild(t);
+    if (t->cpu.blk_id != p->blk || t->cpu.resume || t->cpu.rpos != t->cpu.shn) {
+      ok = rt_state_refuse("the call chain of thread 0x%08x did not rebuild", p->addr);
+      break;
+    }
+  }
+done:
+  free(plans);
+  return ok;
+}
+
+int rt_threads_check(const uint8_t *buf, uint32_t len) { return rebuild(buf, len, 0); }
+int rt_threads_rebuild(const uint8_t *buf, uint32_t len) { return rebuild(buf, len, 1); }

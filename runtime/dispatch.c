@@ -73,10 +73,23 @@ GuestFn oot_lookup(uint32_t addr) {
 }
 
 void rt_call(Cpu *c, uint32_t addr) {
-  GuestFn fn = oot_lookup(addr);
+  GuestFn fn = OOT_RESUMING() ? rt_resume_target(c) : oot_lookup(addr);
   if (!fn) rt_missing(c, addr);
   fn(c);
 }
+
+// ---- Shadow stack ----------------------------------------------------------------------------------------
+
+__attribute__((noreturn)) void rt_sh_overflow(Cpu *c) {
+  (void)c;
+  rt_fatal("the guest call chain is deeper than %d calls", OOT_SH_MAX);
+}
+
+__attribute__((noreturn)) void rt_resume_bad(Cpu *c) {
+  rt_fatal("a rebuilt call chain names call site %u, which the function it entered does not have", c->sh[c->rpos - 1]);
+}
+
+__attribute__((noinline)) void rt_resume_call(Cpu *c, GuestFn fn) { fn(c); }
 
 __attribute__((noreturn)) void rt_missing(Cpu *c, uint32_t addr) {
   log_missing(addr);
@@ -115,10 +128,23 @@ void rt_overlay_unmap(uint32_t link_start) {
 extern void fn_800cd428(Cpu *c) __attribute__((weak));
 
 void rt_overlay_load(Cpu *c) {
-  uint32_t link_start = ARG(2);
-  uint32_t dst = STACK_ARG(4);
+  uint32_t link_start, dst;
+  if (c->resume) {
+    // Re-entered while a call chain is rebuilt: the arguments are in the routine's frame, since the loader below clobbered the registers.
+    if (c->sh[c->rpos] != RT_FRAME_OVERLAY_LOAD) rt_fatal("a rebuilt call chain enters the overlay loader without its frame");
+    link_start = c->sh[c->rpos + 1];
+    dst = c->sh[c->rpos + 2];
+    c->rpos += 3;
+  } else {
+    link_start = ARG(2);
+    dst = STACK_ARG(4);
+    OOT_PUSH(RT_FRAME_OVERLAY_LOAD);
+    OOT_PUSH(link_start);
+    OOT_PUSH(dst);
+  }
   if (!fn_800cd428) rt_missing(c, 0x800cd428);
   fn_800cd428(c);
+  c->shn -= 3;
   if (!rt_overlay_map(link_start, dst)) rt_fatal("overlay_load: no recompiled overlay links at 0x%08x", link_start);
 }
 
@@ -158,3 +184,56 @@ void rt_mtc0(Cpu *c, uint32_t reg, uint64_t value) {
 
 void rt_tlb(Cpu *c, int op, uint32_t pc) { (void)c; (void)op; (void)pc; }
 void rt_cache(Cpu *c, uint32_t op, uint32_t addr) { (void)c; (void)op; (void)addr; }
+
+// ---- Saved state -------------------------------------------------------------------------------------------
+// COP0 registers, and the overlay registry: for every overlay image, where it sits in RAM, if it does.
+
+int dispatch_save(Writer *w) {
+  for (int k = 0; k < 32; k++) put64(w, cop0[k]);
+  return 1;
+}
+
+int dispatch_load(Reader *r, int apply) {
+  uint64_t regs[32];
+  for (int k = 0; k < 32; k++) regs[k] = get64(r);
+  if (r->bad) return rt_state_refuse("the COP0 state is damaged");
+  if (apply) memcpy(cop0, regs, sizeof regs);
+  return 1;
+}
+
+int overlays_save(Writer *w) {
+  uint32_t n = 0;
+  for (uint32_t k = 0; k < oot_image_count; k++) n += oot_images[k].overlay != 0;
+  put32(w, n);
+  for (uint32_t k = 0; k < oot_image_count; k++) {
+    const ImageInfo *im = &oot_images[k];
+    if (!im->overlay) continue;
+    put32(w, k);
+    put32(w, im->link_start);
+    put32(w, (uint32_t)im->loaded);
+    put32(w, im->delta);
+  }
+  return 1;
+}
+
+int overlays_load(Reader *r, int apply) {
+  uint32_t n = get32(r);
+  if (r->bad || n > oot_image_count) return rt_state_refuse("the overlay registry of the state is damaged");
+  if (apply) {
+    for (uint32_t k = 0; k < oot_image_count; k++) {
+      if (oot_images[k].overlay) oot_images[k].loaded = 0;
+    }
+  }
+  for (uint32_t j = 0; j < n; j++) {
+    uint32_t k = get32(r), link = get32(r), loaded = get32(r), delta = get32(r);
+    if (r->bad) return rt_state_refuse("the overlay registry of the state is damaged");
+    if (k >= oot_image_count || !oot_images[k].overlay || oot_images[k].link_start != link || loaded > 1) {
+      return rt_state_refuse("this build has no overlay image %u linked at 0x%08x", k, link);
+    }
+    if (apply) {
+      oot_images[k].loaded = (int)loaded;
+      oot_images[k].delta = delta;
+    }
+  }
+  return 1;
+}

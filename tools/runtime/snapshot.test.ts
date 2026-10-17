@@ -1,110 +1,78 @@
 import { describe, expect, it } from 'vitest';
-import { captureMemory, decodeMemory, encodeMemory, restoreMemory, type SnapshotCore } from './snapshot.ts';
+import { compressState, decompressState, loadState, saveState, stateFormat, STATE_VERSION, type StateCore } from './snapshot.ts';
 
-const exportA = () => 'a';
-const exportB = () => 'b';
-const exportC = () => 'c';
-const SRAM_AT = 0x100;
-const SRAM_SIZE = 8;
-const ROM_AT = 0x200;
-const ROM_SIZE = 0x40;
+const ERROR_AT = 0x10;
 
-/** A module whose memory is a plain array that grows when an allocation does not fit. */
-function fakeModule(length: number): SnapshotCore & { frees: number[] } {
+/** A module whose runtime refuses (when `error` is set) or whose state is the 12 bytes given. */
+function fakeModule(state: Uint8Array, error = ''): StateCore & { loaded: Uint8Array | null; frees: number[] } {
+  const text = new TextEncoder().encode(error + '\0');
   const m = {
-    HEAPU8: new Uint8Array(length),
+    HEAPU8: new Uint8Array(0x1000),
+    loaded: null as Uint8Array | null,
     frees: [] as number[],
-    _malloc(n: number) {
-      if (n > 0x100) {
-        const grown = new Uint8Array(m.HEAPU8.length + n);
-        grown.set(m.HEAPU8);
-        m.HEAPU8 = grown;
-      }
-      return 8;
-    },
+    _malloc: () => 0x100,
     _free: (p: number) => void m.frees.push(p),
-    _oot_rom_base: () => ROM_AT,
-    _oot_rom_size: () => ROM_SIZE,
-    _oot_sram: () => SRAM_AT,
-    _oot_sram_size: () => SRAM_SIZE,
-    Asyncify: {
-      state: 0,
-      currData: null,
-      exportCallStack: [] as unknown[],
-      callStackId: 2,
-      callstackFuncToId: new Map<unknown, number>([[exportB, 0], [exportA, 1]]),
-      callStackIdToFunc: new Map<number, unknown>([[0, exportB], [1, exportA]]),
-      funcWrappers: new Map<unknown, unknown>([[exportA, 0], [exportB, 0], [exportC, 0]]),
+    _oot_state_save(buf: number, cap: number) {
+      if (error) return 0;
+      if (buf) {
+        expect(cap).toBe(state.length);
+        m.HEAPU8.set(state, buf);
+      }
+      return state.length;
     },
+    _oot_state_load(buf: number, len: number) {
+      m.loaded = m.HEAPU8.slice(buf, buf + len);
+    },
+    _oot_state_loaded: () => (error ? 0 : 1),
+    _oot_state_error: () => ERROR_AT,
+    UTF8ToString: (p: number) => (p === ERROR_AT ? error : ''),
   };
-  return m as unknown as SnapshotCore & { frees: number[] };
+  m.HEAPU8.set(text, ERROR_AT);
+  return m as unknown as StateCore & { loaded: Uint8Array | null; frees: number[] };
 }
 
-describe('memory snapshots', () => {
-  it('restores everything but the cartridge image and the save memory', () => {
-    const mod = fakeModule(0x400);
-    mod.HEAPU8.fill(1);
-    mod.HEAPU8.fill(2, SRAM_AT, SRAM_AT + SRAM_SIZE);
-    const snap = captureMemory(mod);
-    mod.HEAPU8.fill(3);
-    restoreMemory(mod, snap);
-    expect(mod.HEAPU8[0]).toBe(1);
-    expect(mod.HEAPU8[0x3ff]).toBe(1);
-    expect(mod.HEAPU8[ROM_AT]).toBe(3);
-    expect(mod.HEAPU8[SRAM_AT]).toBe(3);
+function header(magic: string, version: number): Uint8Array {
+  const out = new Uint8Array(12);
+  out.set(new TextEncoder().encode(magic));
+  new DataView(out.buffer).setUint32(4, version, true);
+  return out;
+}
+
+describe('portable states', () => {
+  it('reads the format of a state from its first bytes', () => {
+    expect(stateFormat(header('OOTP', STATE_VERSION))).toEqual({ kind: 'portable', version: STATE_VERSION });
+    expect(stateFormat(header('OOTP', 7))).toEqual({ kind: 'portable', version: 7 });
+    // The raw memory dump of the earlier format starts with "OOTS" written big-endian.
+    expect(stateFormat(header('OOTS', 0))).toEqual({ kind: 'old' });
+    expect(stateFormat(header('junk', 1))).toEqual({ kind: 'unknown' });
+    expect(stateFormat(new Uint8Array(3))).toEqual({ kind: 'unknown' });
   });
 
-  it('grows a smaller module and clears what it grew into after the state was taken', () => {
-    const mod = fakeModule(0x400);
-    mod.HEAPU8.fill(1);
-    const snap = captureMemory(mod);
-    const small = fakeModule(0x300);
-    restoreMemory(small, snap);
-    expect(small.HEAPU8.length).toBeGreaterThanOrEqual(0x400);
-    expect(small.HEAPU8[0x3ff]).toBe(1);
-
-    const larger = fakeModule(0x800);
-    larger.HEAPU8.fill(9);
-    restoreMemory(larger, snap);
-    expect(larger.HEAPU8[0x7ff]).toBe(0);
-    expect(larger.HEAPU8[0x3ff]).toBe(1);
+  it('copies the state out of the module and frees its buffer', () => {
+    const state = header('OOTP', STATE_VERSION);
+    const mod = fakeModule(state);
+    expect(saveState(mod)).toEqual(state);
+    expect(mod.frees).toEqual([0x100]);
   });
 
-  it('carries the numbers Asyncify handed out to a module that has handed out none', () => {
-    const mod = fakeModule(0x400);
-    const snap = captureMemory(mod);
-    expect(snap.asyncifyFunctions).toEqual([1, 0]);
-    const fresh = fakeModule(0x400);
-    fresh.Asyncify.callstackFuncToId.clear();
-    fresh.Asyncify.callStackIdToFunc.clear();
-    fresh.Asyncify.callStackId = 0;
-    restoreMemory(fresh, decodeMemory(encodeMemory(snap)));
-    expect(fresh.Asyncify.callStackIdToFunc.get(0)).toBe(exportB);
-    expect(fresh.Asyncify.callstackFuncToId.get(exportA)).toBe(1);
-    expect(fresh.Asyncify.callStackId).toBe(2);
+  it('throws the runtime\'s reason when a state is not saved or not loaded', async () => {
+    const mod = fakeModule(new Uint8Array(0), 'the game is still booting');
+    expect(() => saveState(mod)).toThrow('still booting');
+    await expect(loadState(mod, header('OOTP', 9))).rejects.toThrow('still booting');
+    expect(mod.frees).toEqual([0x100]);
   });
 
-  it('refuses to copy a module that is in the middle of a frame', () => {
-    const mod = fakeModule(0x400);
-    mod.Asyncify.state = 1;
-    expect(() => captureMemory(mod)).toThrow('middle of a frame');
+  it('hands a state to the module as it is', async () => {
+    const state = header('OOTP', STATE_VERSION);
+    const mod = fakeModule(state);
+    await loadState(mod, state);
+    expect(mod.loaded).toEqual(state);
   });
 
-  it('refuses a state taken with the cartridge image somewhere else', () => {
-    const mod = fakeModule(0x400);
-    const snap = { ...captureMemory(mod), romStart: 0x300 };
-    expect(() => restoreMemory(mod, snap)).toThrow('different cartridge image');
-  });
-
-  it('round-trips through the byte encoding and rejects other data', () => {
-    const mod = fakeModule(0x400);
-    mod.HEAPU8.forEach((_, i) => (mod.HEAPU8[i] = i * 7));
-    const snap = captureMemory(mod);
-    const back = decodeMemory(encodeMemory(snap));
-    expect(back.length).toBe(snap.length);
-    expect(back.head).toEqual(snap.head);
-    expect(back.tail).toEqual(snap.tail);
-    expect(() => decodeMemory(new Uint8Array(64))).toThrow('not a saved game state');
-    expect(() => decodeMemory(encodeMemory(snap).subarray(0, 100))).toThrow('damaged');
+  it('round-trips through gzip', async () => {
+    const bytes = new Uint8Array(100_000).map((_, i) => (i * 7) & 0xff);
+    const packed = await compressState(bytes);
+    expect(packed.length).toBeLessThan(bytes.length);
+    expect(await decompressState(packed)).toEqual(bytes);
   });
 });

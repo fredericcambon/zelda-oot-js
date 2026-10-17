@@ -118,6 +118,9 @@ function runnerSource(snips: Snippet[], symbols: number[][]): string {
     '',
     'void rt_trap(Cpu *c, int kind, uint32_t pc, uint32_t code) { (void)c; trap_kind = kind; trap_pc = pc; trap_code = code; longjmp(escape, 1); }',
     'void rt_unimpl(Cpu *c, uint32_t pc, uint32_t word) { (void)c; trap_kind = -1; trap_pc = pc; trap_code = word; longjmp(escape, 1); }',
+    'void rt_sh_overflow(Cpu *c) { (void)c; trap_kind = -2; trap_pc = 0; longjmp(escape, 1); }',
+    'void rt_resume_bad(Cpu *c) { (void)c; trap_kind = -2; trap_pc = 0; longjmp(escape, 1); }',
+    'void rt_resume_call(Cpu *c, GuestFn fn) { fn(c); }',
     '',
   ];
   snips.forEach((s, i) => {

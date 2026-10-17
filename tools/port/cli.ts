@@ -77,7 +77,9 @@ async function main(): Promise<number> {
       const unknown = manifest.entries.filter((e) => e.type === 'unknown').length;
       log(`wrote ${manifest.entries.length} assets to ${assetsDir} (${unknown} without a type, each with its reason in the manifest)`);
       // The entries tile the ROM (checked by buildManifest), so the cartridge image is the ROM itself.
-      await writePack(ctx.rom, resolve(values.dist!, PACK_FILE));
+      const packFile = resolve(values.dist!, PACK_FILE);
+      await writePack(ctx.rom, packFile);
+      log(`wrote ${packFile}`);
       return outcome(hit);
     });
 

@@ -13,9 +13,10 @@ export async function loadCartridge(onProgress: (bytes: number, total: number) =
     let received = 0;
     const reader = response.body.getReader();
     for (let r = await reader.read(); !r.done; r = await reader.read()) {
+      if (received + r.value.length > total) throw new Error(`The game file is longer than its ${total} bytes: run \`npm run port -- --rom <path>\` again`);
       pack.set(r.value, received);
       // The header, which names the image size and hash, is the first thing in the file.
-      if (received < PACK_HEADER_SIZE && received + r.value.length >= PACK_HEADER_SIZE) mark('manifest');
+      if (received < PACK_HEADER_SIZE && received + r.value.length >= PACK_HEADER_SIZE) mark('header');
       received += r.value.length;
       onProgress(received, total);
     }

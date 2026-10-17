@@ -1,5 +1,5 @@
 // Milestones of the page load, in milliseconds since the navigation started (performance.now() counts from there).
-export const MILESTONES = ['manifest', 'cartridge', 'compiled', 'instantiated', 'firstFrame'] as const;
+export const MILESTONES = ['header', 'cartridge', 'compiled', 'instantiated', 'firstFrame'] as const;
 export type Milestone = (typeof MILESTONES)[number];
 
 const marks: Partial<Record<Milestone, number>> = {};

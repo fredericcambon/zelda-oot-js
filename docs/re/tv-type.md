@@ -57,7 +57,7 @@ The alternative (60 frames per real second of the PAL game at its 50 Hz virtual 
 
 ## Using it
 
-- Page: the "60 Hz" button next to Debug stores the choice in `localStorage` and applies at the next page load (the TV type is read once at boot; a running game cannot change it). The page says so next to the button and does not reload.
+- Page: the "60 Hz" button next to Debug is on unless the stored choice says otherwise; it stores the choice in `localStorage` and applies at the next page load (the TV type is read once at boot; a running game cannot change it). The page says so next to the button and does not reload.
 - Headless: `npm run headless -- --hz 60 ...`; `bootGame(url, rom, { hz: 60 })`.
 - Save states record the mode they were taken in (`X-Hz` on the saves endpoint). A state of the other mode is refused with a message.
 - Test: `tools/headless/headless.test.ts` ("plays the new game in 60 Hz mode ...", needs `OOT_ROM`).

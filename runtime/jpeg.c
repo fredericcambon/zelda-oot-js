@@ -89,3 +89,15 @@ void rt_jpeg_task(const RspTask *task) {
     for (int i = 0; i < 256; i++) wr16(mb + 2 * i, pixels[i]);
   }
 }
+
+int jpeg_save(Writer *w) {
+  put32(w, tasks_done);
+  return 1;
+}
+
+int jpeg_load(Reader *r, int apply) {
+  uint32_t n = get32(r);
+  if (r->bad) return rt_state_refuse("the JPEG decoder state is damaged");
+  if (apply) tasks_done = n;
+  return 1;
+}

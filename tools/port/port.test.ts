@@ -49,7 +49,7 @@ describe.skipIf(!rom || !existsSync(rom))('whole ROM', () => {
     expect(first.log).toContain('cache miss');
     const second = port('second');
     expect(second.log).not.toContain('cache miss');
-    for (const step of ['analyse', 'classify and write the assets', 'recompile']) expect(second.log, step).toContain(`${step}: cache hit`);
+    for (const step of ['analyse', 'classify, write the assets and the pack', 'recompile']) expect(second.log, step).toContain(`${step}: cache hit`);
     expect(second.log).toMatch(/compiling 0 of \d+ C files \(0 up to date, \d+ from the cache\)/);
     expect(second.log).toContain('link: cache hit');
     expect(second.seconds).toBeLessThan(60);

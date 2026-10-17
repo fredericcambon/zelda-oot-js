@@ -22,6 +22,24 @@ export interface EmitOptions {
   delta?: string;
   /** Targets of the jump tables, by the address of the `jr` that dispatches through each. */
   jumpTables?: ReadonlyMap<number, readonly number[]>;
+  /** Key of the function's first call site; its sites take consecutive keys from here (see `CallSite`). */
+  siteBase?: number;
+  /**
+   * Whether a direct call to the function at a guest address cannot suspend the thread, so that it needs no frame on the
+   * shadow stack. Defaults to false: every call keeps a frame.
+   */
+  frameless?: (addr: number) => boolean;
+}
+
+/**
+ * A place where a recompiled function calls another: the C function holds a frame for the callee there. Calls push
+ * their key on the thread's shadow stack, and the function can be re-entered at the site (runtime/cpu.h, OOT_PUSH).
+ */
+export interface CallSite {
+  /** Unique within a build: the value that is pushed, and the index of the site in the generated table. */
+  key: number;
+  /** Guest address of the call or transfer; the address just past the function for the fall-through into the next one. */
+  addr: number;
 }
 
 const R_MIPS_LO16 = 6;
@@ -215,10 +233,29 @@ interface Ctx {
   /** Labels that a branch from a later address jumps back to: loop heads. */
   loops: Set<number>;
   callees: Set<number>;
+  siteBase: number;
+  sites: CallSite[];
+  frameless: (addr: number) => boolean;
+  /** Whether the function calls through the dispatch tables. */
+  indirect: boolean;
+  /** Code that re-issues each call when the function is re-entered at its site. */
+  resumes: string[];
 }
 
 const inside = (x: Ctx, addr: number) => addr >= x.start && addr < x.end;
 const label = (addr: number) => `L_${hex8(addr)}`;
+
+/**
+ * A call at `addr` that keeps a frame on the shadow stack. `resume` is the same call as made when the function is
+ * re-entered at the site. Nothing of the function's C state is read after the call, so control may enter at the
+ * label after it from anywhere.
+ */
+function callSite(x: Ctx, addr: number, call: string, resume: string): string {
+  const key = x.siteBase + x.sites.length;
+  x.sites.push({ key, addr });
+  x.resumes.push(`Q_${key}: ${resume} goto D_${key};`);
+  return `OOT_PUSH(${key}); ${call} D_${key}:; OOT_POP();`;
+}
 
 /** Control-transfer code for the branch `i`, with its delay slot `slot` folded in. */
 function branch(x: Ctx, i: Insn, slot: Insn): string {
@@ -228,7 +265,12 @@ function branch(x: Ctx, i: Insn, slot: Insn): string {
   const link = `c->r[31] = 0x${hex8(next)}u;`;
   const callTo = (t: number) => {
     x.callees.add(t);
-    return `${x.symbol(t)}(c);`;
+    const sym = x.symbol(t);
+    return x.frameless(t) ? `${sym}(c);` : callSite(x, pc, `${sym}(c);`, `rt_resume_call(c, ${sym});`);
+  };
+  const callIndirect = () => {
+    x.indirect = true;
+    return callSite(x, pc, 'rt_call(c, t);', 'rt_call(c, 0);');
   };
   // A transfer to another function is a tail call.
   const goTo = (t: number) => {
@@ -240,15 +282,16 @@ function branch(x: Ctx, i: Insn, slot: Insn): string {
     case 'return': return `{ ${slotCode} return; }`;
     case 'jr': {
       const targets = x.jumpTables?.get(i.addr);
-      if (!targets) return `{ uint32_t t = ${U32(i.rs)}; ${slotCode} rt_call(c, t); return; }`;
+      if (!targets) return `{ uint32_t t = ${U32(i.rs)}; ${slotCode} ${callIndirect()} return; }`;
       // Dispatch on the target address itself: no index expression has to be recovered. Overlay tables
-      // hold loaded addresses, so the value is brought back to the link address first.
+      // hold loaded addresses, so the value is brought back to the link address first. A target in another
+      // function takes the lookup of the default case, which keeps one call site per jump.
       const key = x.delta ? `t - ${x.delta}` : 't';
-      const cases = [...new Set(targets)].map((a) => `case 0x${hex8(a)}u: ${goTo(a)}`);
-      return `{ uint32_t t = ${U32(i.rs)}; ${slotCode} switch (${key}) { ${cases.join(' ')} default: rt_call(c, t); return; } }`;
+      const cases = [...new Set(targets)].filter((a) => inside(x, a)).map((a) => `case 0x${hex8(a)}u: ${goTo(a)}`);
+      return `{ uint32_t t = ${U32(i.rs)}; ${slotCode} switch (${key}) { ${cases.join(' ')} default: ${callIndirect()} return; } }`;
     }
     case 'jalr':
-      return `{ uint32_t t = ${U32(i.rs)}; ${i.rd === 0 ? '' : `c->r[${i.rd}] = 0x${hex8(next)}u;`} ${slotCode} rt_call(c, t); }`;
+      return `{ uint32_t t = ${U32(i.rs)}; ${i.rd === 0 ? '' : `c->r[${i.rd}] = 0x${hex8(next)}u;`} ${slotCode} ${callIndirect()} }`;
     case 'jump': return `{ ${slotCode} ${goTo(i.target!)} }`;
     case 'call':
       if (i.op === 'jal') return `{ ${link} ${slotCode} ${callTo(i.target!)} }`;
@@ -281,6 +324,40 @@ export interface Recompiled {
   code: string;
   /** Guest addresses of the functions this one calls or tail-calls. */
   callees: number[];
+  /** The function's call sites, in the order of their keys. */
+  sites: CallSite[];
+  /** Whether the function calls through the dispatch tables, whose targets are not known. */
+  indirect: boolean;
+}
+
+const DECLARATION = /^(?:u?int(?:8|16|32|64)_t|int|unsigned|float|double)\s+(\w+)\s*[=;]/;
+const TOKEN = /\{|\}|\bD_\d+:|\b(?:u?int(?:8|16|32|64)_t|int|unsigned|float|double)\s+\w+\s*[=;]|(?<!->)(?<!\w)[A-Za-z_]\w*/g;
+
+/**
+ * What makes a function unsafe to re-enter at a call site: a C local that is declared outside the call and used
+ * after it, or a local of the function itself. Re-entering skips the code before the call, so such a value would be
+ * lost; every value that outlives a call must live in the CPU context or in guest memory.
+ */
+export function liveLocalsAfterCalls(body: string): string[] {
+  const code = body.replace(/\/\*[\s\S]*?\*\//g, ' ');
+  const problems: string[] = [];
+  // One map per open brace: the name of each local, and whether a call has returned since its declaration.
+  const scopes: Map<string, boolean>[] = [new Map()];
+  for (const m of code.matchAll(TOKEN)) {
+    const t = m[0];
+    const declared = DECLARATION.exec(t)?.[1];
+    if (t === '{') scopes.push(new Map());
+    else if (t === '}') scopes.pop();
+    else if (/^D_\d+:$/.test(t)) for (const scope of scopes) for (const name of scope.keys()) scope.set(name, true);
+    else if (declared) {
+      if (scopes.length === 1) problems.push(`declares the function-level local ${declared}`);
+      scopes[scopes.length - 1]!.set(declared, false);
+    } else {
+      const scope = [...scopes].reverse().find((sc) => sc.has(t));
+      if (scope?.get(t)) problems.push(`uses the local ${t} after a call`);
+    }
+  }
+  return problems;
 }
 
 export function recompileFunction(f: FuncInput, opts: EmitOptions = {}): Recompiled {
@@ -288,7 +365,8 @@ export function recompileFunction(f: FuncInput, opts: EmitOptions = {}): Recompi
   const insns = f.words.map((w, k) => decode(w, (f.addr + 4 * k) >>> 0));
   const x: Ctx = {
     start: f.addr, end: f.addr + 4 * insns.length, symbol: opts.callee ?? symbol, labels: new Set(), loops: new Set(), callees: new Set(),
-    relocs: opts.relocs, delta: opts.delta, jumpTables: opts.jumpTables,
+    relocs: opts.relocs, delta: opts.delta, jumpTables: opts.jumpTables, siteBase: opts.siteBase ?? 0, sites: [], resumes: [],
+    frameless: opts.frameless ?? (() => false), indirect: false,
   };
 
   // A delay slot never holds a branch, so index k+1 after a control insn is always its slot.
@@ -334,14 +412,31 @@ export function recompileFunction(f: FuncInput, opts: EmitOptions = {}): Recompi
   if (x.labels.has(x.end)) body.push(`${label(x.end)}:;`);
   if (last === undefined || !terminates(last)) {
     x.callees.add(x.end);
-    body.push(`  ${x.symbol(x.end)}(c);`);
+    const sym = x.symbol(x.end);
+    body.push(`  ${x.frameless(x.end) ? `${sym}(c);` : callSite(x, x.end, `${sym}(c);`, `rt_resume_call(c, ${sym});`)}`);
   }
 
+  const problems = liveLocalsAfterCalls(body.join('\n'));
+  if (problems.length > 0) throw new Error(`${hex8(f.addr)}: ${[...new Set(problems)].join('; ')}`);
+
+  // A function entered in resume mode takes its call site from the shadow stack, re-issues the call and carries on after it.
+  const enter = x.sites.length === 0 ? [] : ['  if (OOT_RESUMING()) goto resume_entry;'];
+  const resume = x.sites.length === 0 ? [] : [
+    '  return;',
+    'resume_entry:',
+    '  switch (OOT_RESUME_SITE()) {',
+    ...x.sites.map((site) => `  case ${site.key}: goto Q_${site.key};`),
+    '  default: rt_resume_bad(c);',
+    '  }',
+    ...x.resumes.map((r) => `  ${r}`),
+  ];
   const name = symbol(f.addr);
   return {
     name,
-    code: `void ${name}(Cpu *c) {\n  OOT_TRACE_ENTER(0x${hex8(f.addr)}u);\n${body.join('\n')}\n}\n`,
+    code: `void ${name}(Cpu *c) {\n  OOT_TRACE_ENTER(0x${hex8(f.addr)}u);\n${[...enter, ...body, ...resume].join('\n')}\n}\n`,
     callees: [...x.callees].sort((a, b) => a - b),
+    sites: x.sites,
+    indirect: x.indirect,
   };
 }
 
