@@ -80,4 +80,15 @@ describe('game files', () => {
     writeFileSync(join(dist, 'game.pack'), damaged);
     await expect(page('/game.pack')).rejects.toThrow(/does not match its hash/);
   });
+
+  it('reports a body longer than its Content-Length as a broken game file', async () => {
+    const url = new URL('/game.pack', base).href;
+    const real = globalThis.fetch;
+    globalThis.fetch = async () => new Response(new Uint8Array(100), { headers: { 'content-length': '10' } });
+    try {
+      await expect(loadCartridge(() => {}, url)).rejects.toThrow(/longer than its 10 bytes.*npm run port/);
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
 });

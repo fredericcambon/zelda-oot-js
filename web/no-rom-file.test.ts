@@ -23,6 +23,6 @@ describe('web shell', () => {
 
   it('fetches only through a URL parameter that names the pack or the wasm', () => {
     const fetched = sources.flatMap((s) => [...s.text.matchAll(/fetch\(\s*([^)]*)\)/g)].map((m) => m[1]!));
-    for (const arg of fetched) expect(arg).toMatch(/base|index\.json|url/);
+    for (const arg of fetched) expect(arg.trim()).toMatch(/^(url|.*\bbase\b.*|.*index\.json.*)$/);
   });
 });
