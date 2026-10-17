@@ -21,6 +21,9 @@ export class AudioOutput implements AudioSink {
   private start(): Promise<AudioContext> {
     this.starting ??= (async () => {
       const context = new AudioContext({ latencyHint: 'interactive' });
+      // iOS Safari lets a context start only from a call made inside the gesture handler, not after the awaits below.
+      this.context = context;
+      void context.resume().catch(() => undefined);
       try {
         await context.audioWorklet.addModule(workletUrl);
       } catch (err) {
@@ -33,13 +36,13 @@ export class AudioOutput implements AudioSink {
       const analyser = context.createAnalyser();
       node.connect(gain).connect(context.destination);
       gain.connect(analyser);
-      this.context = context;
       this.node = node;
       this.gain = gain;
       this.analyser = analyser;
       return context;
     })().catch((err: unknown) => {
       this.starting = null;
+      this.context = null;
       throw err;
     });
     return this.starting;
@@ -47,6 +50,10 @@ export class AudioOutput implements AudioSink {
 
   /** Starts playing; call from a user gesture. */
   async resume(): Promise<void> {
+    // `audioSession` (iOS 17) makes web audio ignore the ringer switch.
+    const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
+    if (session) session.type = 'playback';
+    if (this.context?.state === 'suspended') void this.context.resume().catch(() => undefined);
     const context = await this.start();
     if (context.state === 'suspended') await context.resume();
   }
