@@ -1,18 +1,13 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { loadContext } from '../analyze/context.ts';
-import { analyze } from '../analyze/run.ts';
-import { classify } from '../assets/classify.ts';
-import { buildManifest, readCartridge, writeAssets } from '../assets/write.ts';
+import { readCartridge } from '../assets/write.ts';
 import { DisplayListInterpreter } from '../gfx/dl.ts';
 import { bootGame } from '../headless/boot.ts';
 import { padAt, parseInput } from '../headless/input.ts';
-import { compileAll, link, runtimeSources } from '../port/build.ts';
-import { generate } from '../recomp/generate.ts';
-import { testCache } from '../recomp/test-base.ts';
-import { ensureToolchain } from '../recomp/toolchain.ts';
+import { loadBase, loadCoverage } from '../recomp/test-base.ts';
 import { renderScenes, renderStatic, replaceBlock } from './render.ts';
 import { mergeReports, sweepScenes, type SceneSweepReport } from './scenes.ts';
 import { BOOT_HALT_UCODE, JPEG_UCODE, staticSweep } from './static.ts';
@@ -21,22 +16,9 @@ const rom = process.env.OOT_ROM;
 const work = resolve('out', 'sweep-test');
 const inputPath = fileURLToPath(new URL('../headless/newgame.input', import.meta.url));
 
-let built: Promise<{ moduleUrl: string; dist: string; inventory: Awaited<ReturnType<typeof analyze>> }> | undefined;
-
-/** Analyses, recompiles and links the game as a coverage build, once for every test of this file. */
+/** The coverage build made by the global setup, with the inventory it was made from. */
 function buildGame() {
-  built ??= (async () => {
-    const inventory = await analyze({ romPath: rom!, outDir: work, workDir: join(work, 'work'), useGhidra: false });
-    const cDir = join(work, 'c');
-    const ctx = loadContext(rom!);
-    expect(generate(ctx, inventory, cDir).problems).toEqual([]);
-    const dist = join(work, 'dist');
-    const opts = { cDir, objDir: join(work, 'obj'), distDir: dist, toolchain: ensureToolchain(), coverage: true, cache: testCache(), log: () => {} };
-    const out = await link(opts, await compileAll(opts, runtimeSources()));
-    writeAssets(ctx.rom, buildManifest(ctx.sha1, ctx.rom.length, classify(ctx, inventory)), join(dist, 'assets'));
-    return { moduleUrl: pathToFileURL(out).href, dist, inventory };
-  })();
-  return built;
+  return { ...loadCoverage(), inventory: loadBase().inventory };
 }
 
 describe('report blocks', () => {
@@ -74,7 +56,7 @@ describe('report blocks', () => {
 
 describe.skipIf(!rom || !existsSync(rom))('gap sweep', () => {
   it('lists every RSP task, with the boot halt task and the type-4 task', async () => {
-    const { inventory } = await buildGame();
+    const { inventory } = buildGame();
     const s = staticSweep(loadContext(rom!), inventory, resolve('runtime'));
     const kinds = s.tasks.tasks.map((t) => `${t.type}:${t.ucode?.toString(16)}`);
     expect(kinds).toContain(`4:${BOOT_HALT_UCODE.toString(16)}`);
@@ -101,7 +83,7 @@ describe.skipIf(!rom || !existsSync(rom))('gap sweep', () => {
   }, 600_000);
 
   it('sweeps five entrances and writes the report', async () => {
-    const { dist, inventory } = await buildGame();
+    const { dist, inventory } = buildGame();
     const entrances = [0, 5, 100, 205, 465];
     const dumpDir = join(work, 'frames');
     const report = await sweepScenes({ dist, entrances, frames: 60, startFrame: 19000, input: inputPath, dumpDir, dumpsPerScene: 1, log: () => {} });
@@ -124,7 +106,7 @@ describe.skipIf(!rom || !existsSync(rom))('gap sweep', () => {
   }, 900_000);
 
   it('runs well above 3 frames per second with the display lists interpreted', async () => {
-    const { moduleUrl, dist } = await buildGame();
+    const { moduleUrl, dist } = buildGame();
     const script = parseInput(readFileSync(inputPath, 'utf8'), 'newgame.input');
     const interpreter = new DisplayListInterpreter();
     const game = await bootGame(moduleUrl, readCartridge(join(dist, 'assets')), { onGfxTask: (task) => interpreter.run(task.ram, task.data) });
