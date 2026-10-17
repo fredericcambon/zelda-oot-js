@@ -8,7 +8,9 @@ import type { Hz } from './mode.ts';
 import type { PadState } from './input.ts';
 import type { Renderer } from './renderer.ts';
 import type { SaveMemory } from './saves.ts';
-import { buildIdOf, compress, decompress, type StateSource } from './savestate.ts';
+import { compress, decompress, type StateSource } from './savestate.ts';
+import { mark } from './timing.ts';
+import { MODULE_URL, type WasmBuild } from './wasm.ts';
 import { captureMemory, decodeMemory, encodeMemory, restoreMemory, type SnapshotCore } from '../tools/runtime/snapshot.ts';
 
 export interface Game {
@@ -27,12 +29,19 @@ export interface Game {
   info(): { frames: number; retraces: number; gfxTasks: number; audioTasks: number; idle: boolean; renderError: string; audioError: string };
 }
 
-export async function startGame(rom: Uint8Array, renderer: Renderer, audio: AudioSink, moduleUrl = '/oot.js', hz: Hz = 50): Promise<Game> {
+export async function startGame(rom: Uint8Array, renderer: Renderer, audio: AudioSink, wasm: WasmBuild, moduleUrl = MODULE_URL, hz: Hz = 50): Promise<Game> {
   let renderError = '';
   let audioError = '';
   const synth = new Synth();
   const guestRam = () => mod.HEAPU8.subarray(mod._oot_rdram(), mod._oot_rdram() + RDRAM_SIZE);
   const mod = await startModule<SnapshotCore>(moduleUrl, rom, {
+    instantiateWasm: (imports: WebAssembly.Imports, done: (instance: WebAssembly.Instance) => void) => {
+      void wasm.module.then(async (module) => {
+        done(await WebAssembly.instantiate(module, imports));
+        mark('instantiated');
+      });
+      return {};
+    },
     onGfxTask: (data: number) => {
       try {
         renderer.drawTask(new DisplayListInterpreter().run(guestRam(), data >>> 0));
@@ -66,10 +75,7 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
       capture: () => compress(encodeMemory(captureMemory(mod))),
       apply: async (data) => restoreMemory(mod, decodeMemory(await decompress(data))),
     },
-    buildId: async () => {
-      const wasmUrl = moduleUrl.replace(/\.js$/, '.wasm');
-      return buildIdOf(await (await fetch(wasmUrl)).arrayBuffer());
-    },
+    buildId: () => wasm.buildId,
     async frame() {
       try {
         await mod._oot_frame();

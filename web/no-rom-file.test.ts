@@ -21,8 +21,8 @@ describe('web shell', () => {
     for (const s of sources) expect(s.text, s.name).not.toMatch(pattern);
   });
 
-  it('requests only the game files under /game-data/, /oot.js, the module it loads and its wasm', () => {
+  it('fetches only through a URL parameter that names the pack or the wasm', () => {
     const fetched = sources.flatMap((s) => [...s.text.matchAll(/fetch\(\s*([^)]*)\)/g)].map((m) => m[1]!));
-    for (const arg of fetched) expect(arg).toMatch(/base|index\.json|wasmUrl/);
+    for (const arg of fetched) expect(arg).toMatch(/base|index\.json|url/);
   });
 });
