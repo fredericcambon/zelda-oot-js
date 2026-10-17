@@ -12,6 +12,7 @@ import { readCommands, roomList } from './scene.ts';
 import { findAnimations, findSkeletons } from './skeleton.ts';
 import { findRangeTables } from './tables.ts';
 import { sha1Hex } from '../rom/rom.ts';
+import { packImage, unpackImage } from './pack.ts';
 import { buildManifest, readCartridge, tilingProblem, writeAssets } from './write.ts';
 
 function words(...w: number[]): Uint8Array {
@@ -194,6 +195,9 @@ describe.skipIf(!rom || !existsSync(rom))('classification of the ROM', () => {
     const image = readCartridge(dir);
     expect(Buffer.from(image).equals(Buffer.from(ctx.rom))).toBe(true);
     expect(sha1Hex(image)).toBe('328a1f1beba30ce5e178f031662019eb32c5f3b5');
+    // The pack `npm run port` writes holds the image the individual assets rebuild, byte for byte.
+    const packed = await unpackImage(await packImage(ctx.rom));
+    expect(Buffer.from(packed).equals(Buffer.from(image))).toBe(true);
     const onDisk = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')) as typeof manifest;
     expect(onDisk.entries.length).toBe(manifest.entries.length);
   }, 600_000);
