@@ -102,6 +102,15 @@ export class TouchPad {
 /** True when the device has a touch screen as primary pointer. */
 export const hasCoarsePointer = (): boolean => matchMedia('(pointer: coarse)').matches;
 
+/** Fullscreen and the landscape lock both need a user gesture; browsers without them (iOS Safari on a page) ignore the request. */
+function enterLandscapeFullscreen(): void {
+  const root = document.documentElement;
+  if (document.fullscreenElement || !root.requestFullscreen) return;
+  root.requestFullscreen({ navigationUI: 'hide' })
+    .then(() => screen.orientation.lock('landscape'))
+    .catch(() => undefined);
+}
+
 /** Builds the overlay inside `layer` and shows it on touch devices (coarse pointer, or the first touchstart). */
 export class TouchControls {
   readonly pad = new TouchPad();
@@ -123,6 +132,7 @@ export class TouchControls {
       this.drawStick();
     });
     addEventListener('blur', () => this.pad.reset());
+    layer.addEventListener('pointerdown', enterLandscapeFullscreen, { once: true });
   }
 
   poll(): PadState {
