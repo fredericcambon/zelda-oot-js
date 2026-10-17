@@ -7,7 +7,7 @@ import type { AudioSink } from './audio.ts';
 import type { PadState } from './input.ts';
 import type { Renderer } from './renderer.ts';
 import type { SaveMemory } from './saves.ts';
-import { buildIdOf, compress, decompress, type StateSource } from './savestate.ts';
+import { compress, decompress, type StateSource } from './savestate.ts';
 import { loadState, saveState, type StateCore } from '../tools/runtime/snapshot.ts';
 
 export interface Game {
@@ -17,8 +17,6 @@ export interface Game {
   saveMemory: SaveMemory;
   /** Save states of the game; capture and apply only between two frames. */
   states: StateSource;
-  /** Identifies the game module build (the hash of its wasm file). */
-  buildId(): Promise<string>;
   /** Runs the game for one video frame. Rejects with the game's own message when it stops. */
   frame(): Promise<void>;
   /** Address of the colour image the video interface shows. */
@@ -64,10 +62,6 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
     states: {
       capture: () => compress(saveState(mod)),
       apply: async (data) => loadState(mod, await decompress(data)),
-    },
-    buildId: async () => {
-      const wasmUrl = moduleUrl.replace(/\.js$/, '.wasm');
-      return buildIdOf(await (await fetch(wasmUrl)).arrayBuffer());
     },
     async frame() {
       try {

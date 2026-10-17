@@ -5,6 +5,7 @@ import { loadCartridge } from './cartridge.ts';
 import { Input } from './input.ts';
 import { indexedDbStore, SaveSync, serverHasSaves, serverStore } from './saves.ts';
 import { indexedDbStates, SaveStates, serverStates } from './savestate.ts';
+import { STATE_VERSION } from '../tools/runtime/snapshot.ts';
 import { migrateToServer } from './migrate.ts';
 import { FastForward } from './fastforward.ts';
 
@@ -61,7 +62,7 @@ const showNotice = (text: string) => {
   notice.textContent = text;
   notice.hidden = false;
   clearTimeout(noticeTimer);
-  noticeTimer = window.setTimeout(() => (notice.hidden = true), 2000);
+  noticeTimer = window.setTimeout(() => (notice.hidden = true), text.length > 30 ? 5000 : 2000);
 };
 
 // 5 saves to the current slot, 6 loads it and 7 moves to the next slot.
@@ -186,7 +187,7 @@ async function boot(): Promise<void> {
     await sync.restore();
     saves = sync;
     try {
-      states = new SaveStates(started.states, onServer ? serverStates() : indexedDbStates(), await started.buildId());
+      states = new SaveStates(started.states, onServer ? serverStates() : indexedDbStates(), STATE_VERSION);
     } catch (err) {
       console.error('save states are not available:', err);
     }
