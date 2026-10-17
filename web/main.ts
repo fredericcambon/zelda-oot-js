@@ -7,9 +7,9 @@ import { indexedDbStore, SaveSync, serverHasSaves, serverStore } from './saves.t
 import { indexedDbStates, SaveStates, serverStates } from './savestate.ts';
 import { migrateToServer } from './migrate.ts';
 import { FastForward } from './fastforward.ts';
-import { FramePacer, loadHz, saveHz, type Hz } from './mode.ts';
 import { fetchWasm, preloadModule } from './wasm.ts';
 import { mark, timingLines } from './timing.ts';
+import { FramePacer, loadHz, saveHz, type Hz } from './mode.ts';
 
 const FAST_BUDGET_MS = 12;
 const SLOW_LOAD_MS = 500;

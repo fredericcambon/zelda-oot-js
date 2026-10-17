@@ -34,12 +34,18 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
   let audioError = '';
   const synth = new Synth();
   const guestRam = () => mod.HEAPU8.subarray(mod._oot_rdram(), mod._oot_rdram() + RDRAM_SIZE);
-  const mod = await startModule<SnapshotCore>(moduleUrl, rom, {
+  // The module's start-up promise never settles when the hook below fails, so the failure is raced against it.
+  let failInstantiation!: (err: unknown) => void;
+  const instantiationFailed = new Promise<never>((_, reject) => (failInstantiation = reject));
+  const started = startModule<SnapshotCore>(moduleUrl, rom, {
     instantiateWasm: (imports: WebAssembly.Imports, done: (instance: WebAssembly.Instance) => void) => {
-      void wasm.module.then(async (module) => {
-        done(await WebAssembly.instantiate(module, imports));
-        mark('instantiated');
-      });
+      wasm.module
+        .then((module) => WebAssembly.instantiate(module, imports))
+        .then((instance) => {
+          done(instance);
+          mark('instantiated');
+        })
+        .catch(failInstantiation);
       return {};
     },
     onGfxTask: (data: number) => {
@@ -63,6 +69,7 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
       audio.push(guestRam().slice(at, at + length), hz);
     },
   }, hz);
+  const mod = await Promise.race([started, instantiationFailed]);
   const view = () => new DataView(mod.HEAPU8.buffer, mod._oot_rdram(), RDRAM_SIZE);
   const sram = () => mod.HEAPU8.subarray(mod._oot_sram(), mod._oot_sram() + mod._oot_sram_size());
   return {
