@@ -22,7 +22,8 @@ try {
   run('git', ['init', '-q', '-b', 'gh-pages'], work);
   run('git', ['add', '-A'], work);
   run('git', ['-c', 'user.name=pages-deploy', '-c', 'user.email=pages-deploy@localhost', 'commit', '-q', '-m', 'Deploy'], work);
-  run('git', ['push', '--force', remote, 'gh-pages'], work);
+  // The GitHub CLI's login owns the repository; a cached git credential may belong to another account.
+  run('git', ['-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential', 'push', '--force', remote, 'gh-pages'], work);
 } finally {
   rmSync(work, { recursive: true, force: true });
 }
@@ -30,8 +31,11 @@ try {
 const owner = repo.split('/')[0]!.toLowerCase();
 const url = `https://${owner}.github.io/${repo.split('/')[1]}/`;
 try {
-  run('gh', ['api', '-X', 'POST', `repos/${repo}/pages`, '-f', 'source[branch]=gh-pages', '-f', 'source[path]=/']);
-} catch {
-  console.log(`Pages could not be enabled by the API (it may already be on). If ${url} does not load: Settings > Pages > Source: Deploy from a branch > gh-pages, / (root).`);
+  execFileSync('gh', ['api', '-X', 'POST', `repos/${repo}/pages`, '--input', '-'], { input: JSON.stringify({ source: { branch: 'gh-pages', path: '/' } }), stdio: ['pipe', 'ignore', 'pipe'] });
+} catch (err) {
+  // 409: Pages is already on for this repository.
+  if (!String((err as { stderr?: unknown }).stderr).includes('already enabled')) {
+    console.log(`Pages could not be enabled by the API. If ${url} does not load: Settings > Pages > Source: Deploy from a branch > gh-pages, / (root).`);
+  }
 }
 console.log(`Published: ${url}`);

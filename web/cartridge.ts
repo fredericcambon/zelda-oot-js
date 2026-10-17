@@ -5,7 +5,8 @@ import { mark } from './timing.ts';
 export async function loadCartridge(onProgress: (bytes: number, total: number) => void, url = `${import.meta.env.BASE_URL}${PACK_FILE}`): Promise<Uint8Array> {
   const response = await fetch(url);
   if (!response.ok || !response.body) throw new Error(MISSING_PACK_MESSAGE);
-  const total = Number(response.headers.get('content-length')) || 0;
+  // A compressing host reports the compressed length, which is not the size of the body.
+  const total = response.headers.has('content-encoding') ? 0 : Number(response.headers.get('content-length')) || 0;
   // Without a length the body is read in one piece, without progress.
   const pack = total > 0 ? new Uint8Array(total) : new Uint8Array(await response.arrayBuffer());
   if (total > 0) {
