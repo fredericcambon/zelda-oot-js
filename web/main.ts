@@ -2,7 +2,8 @@ import { AudioOutput } from './audio.ts';
 import { startGame, type Game } from './game.ts';
 import { Renderer, type CullMode } from './renderer.ts';
 import { loadCartridge } from './cartridge.ts';
-import { Input } from './input.ts';
+import { Input, mergePads } from './input.ts';
+import { TouchControls } from './touch.ts';
 import { indexedDbStore, SaveSync, serverHasSaves, serverStore } from './saves.ts';
 import { indexedDbStates, SaveStates, serverStates } from './savestate.ts';
 import { migrateToServer } from './migrate.ts';
@@ -66,6 +67,7 @@ let states: SaveStates | null = null;
 let pendingState: (() => Promise<string>) | null = null;
 let noticeTimer = 0;
 const input = new Input();
+const touch = new TouchControls(document.getElementById('touch-layer') as HTMLElement, document.getElementById('touch-toggle') as HTMLButtonElement);
 const audio = new AudioOutput();
 const fastForward = new FastForward();
 // Sound is dropped while fast-forwarding: the buffers would pile up faster than they play.
@@ -170,7 +172,7 @@ async function loop(): Promise<void> {
       if (fastForward.active) pacer.reset();
       else due--;
       try {
-        game.setPad(input.poll());
+        game.setPad(mergePads(input.poll(), touch.poll()));
         await game.frame();
         saves?.flush().catch((err) => setStatus(`Could not store the save: ${err instanceof Error ? err.message : String(err)}`, true));
       } catch (err) {
