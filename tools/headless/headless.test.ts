@@ -18,11 +18,13 @@ import { DisplayListInterpreter, type Batch, type DisplayListResult } from '../g
 import { encodePng } from '../gfx/png.ts';
 import { HEIGHT, SoftRenderer, WIDTH } from '../gfx/raster.ts';
 import { bootGame, type Game } from './boot.ts';
+import { averageSpectrum, envelope, playbackSpeed, similarity } from './spectrum.ts';
 import { padAt, parseInput } from './input.ts';
 import { compressState, STATE_VERSION } from '../runtime/snapshot.ts';
 import { RDRAM_SIZE } from '../runtime/instance.ts';
 import { encodeThreads, parseThreads } from '../runtime/threads.ts';
-import { FILE_SELECT_INIT_LINKED, FILE_SELECT_RECORD, RECORD, fileSelectLoaded, linkPosition, playState } from './state.ts';
+import { FILE_SELECT_INIT_LINKED, FILE_SELECT_RECORD, RECORD, fileSelectLoaded, linkPosition, playState, requestEntrance } from './state.ts';
+import { compareWithMicrocode } from '../gfx/ucode-compare.ts';
 
 const rom = process.env.OOT_ROM;
 const FRAMES = 300;
@@ -85,7 +87,7 @@ async function buildVariant(optimize: string): Promise<{ moduleUrl: string; cart
   const opts = { cDir: join(work, 'c'), objDir: join(variant, 'obj'), distDir: join(variant, 'dist'), optimize, toolchain: ensureToolchain(), log: () => {} };
   const objects = await compileAll(opts, runtimeSources());
   const out = join(opts.distDir, 'oot.js');
-  const newest = Math.max(...objects.map((o) => statSync(o).mtimeMs));
+  const newest = Math.max(...objects.map((o) => statSync(o.path).mtimeMs));
   if (!existsSync(out) || !existsSync(join(opts.distDir, 'oot.wasm')) || statSync(join(opts.distDir, 'oot.wasm')).mtimeMs < newest) await link(opts, objects);
   return { moduleUrl: pathToFileURL(out).href, cartridge: base.cartridge };
 }
@@ -369,6 +371,92 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
     expect(same / (320 * 240)).toBeGreaterThan(0.85);
   }, 3_600_000);
 
+  it('plays the new game in 60 Hz mode at 20 game frames per second with the sound of the 50 Hz mode', async () => {
+    const { moduleUrl, cartridge } = await buildGame();
+    const mono = (cap: AudioCapture) => {
+      const s = cap.samples();
+      return Float64Array.from({ length: s.length / 2 }, (_, i) => (s[2 * i]! + s[2 * i + 1]!) / 65536);
+    };
+
+    // 50 Hz: the title music, for comparison.
+    const pal = new AudioCapture();
+    const palGame = await bootGame(moduleUrl, cartridge, { hz: 50, ...pal.hooks });
+    for (let k = 0; k < 50 * 50; k++) expect((await palGame.frame()).fatal).toBeUndefined();
+
+    // 60 Hz: the whole script, every display list interpreted.
+    const cap = new AudioCapture();
+    const interpreter = new DisplayListInterpreter();
+    const problems: string[] = [];
+    let frame = 0;
+    let bytes = 0;
+    let buffers = 0;
+    let smallest = Infinity;
+    let largest = 0;
+    const game = await bootGame(moduleUrl, cartridge, {
+      hz: 60,
+      onGfxTask: (task) => {
+        const result = interpreter.run(task.ram, task.data);
+        problems.push(...result.unknown.map((u) => `frame ${frame} unknown 0x${u.w0.toString(16)}`), ...result.problems);
+      },
+      onAudioTask: cap.hooks.onAudioTask,
+      onAiBuffer: (b) => {
+        cap.hooks.onAiBuffer(b);
+        bytes += b.length;
+        buffers++;
+        smallest = Math.min(smallest, b.length);
+        largest = Math.max(largest, b.length);
+      },
+    });
+    expect(game.rd32(0x80000300)).toBe(1);
+    const WINDOW = [9000, 18000] as const;
+    let gfxAtStart = 0;
+    let last;
+    for (frame = 1; frame <= WALKED_RIGHT_FRAME; frame++) {
+      const pad = padAt(SCRIPT, frame);
+      game.setPad(pad.buttons, pad.x, pad.y);
+      last = await game.frame();
+      expect(last.fatal, `frame ${frame}`).toBeUndefined();
+      expect(last.alive, `frame ${frame}`).toBe(true);
+      if (frame === WINDOW[0]) gfxAtStart = last.gfxTasks;
+      if (frame === WINDOW[1]) {
+        // 9000 retraces of virtual time at 60 Hz are 150 s.
+        const perSecond = (last.gfxTasks - gfxAtStart) / ((WINDOW[1] - WINDOW[0]) / 60);
+        expect(perSecond).toBeGreaterThan(20 * 0.98);
+        expect(perSecond).toBeLessThan(20 * 1.02);
+      }
+      if (frame === FOREST_FRAME) expect(playState((a) => game.rd32(a))?.scene).not.toBe(HOUSE_SCENE);
+    }
+    expect(playState((a) => game.rd32(a))?.scene).toBe(HOUSE_SCENE);
+    expect(problems).toEqual([]);
+
+    // The audio interface keeps its rate (the NTSC clock over the divisor), is fed what it plays and never runs dry.
+    expect(cap.hz).toBe(Math.floor(0x02e6d354 / 1521));
+    const seconds = (WALKED_RIGHT_FRAME - 1) / 60;
+    expect(bytes / 4 / seconds / cap.hz).toBeGreaterThan(0.99);
+    expect(bytes / 4 / seconds / cap.hz).toBeLessThan(1.01);
+    // One buffer per audio task, as many as retraces, each of about 1/60 s.
+    expect(buffers / seconds).toBeGreaterThan(59);
+    expect(buffers / seconds).toBeLessThan(61);
+    expect(smallest).toBeGreaterThanOrEqual(2112);
+    expect(largest).toBeLessThanOrEqual(2240);
+    expect(last!.aiGaps).toBe(0);
+
+    // Same pitch as at 50 Hz, and the music keeps its real-time tempo while the game runs 1.2 times faster. The script presses Start
+    // 40 s into the 60 Hz run, so only the title music before that is compared.
+    const palSound = mono(pal), sound = mono(cap).subarray(0, 38 * cap.hz);
+    // No crackle: samples that jump (second difference over 6000 of 32768) stay within a handful of those at 50 Hz (the unfixed 60 Hz mode had dozens).
+    const jumps = (x: Float64Array) => x.reduce((n, v, i) => (i > 1 && Math.abs(v - 2 * x[i - 1]! + x[i - 2]!) > 6000 / 32768 ? n + 1 : n), 0);
+    expect(jumps(sound)).toBeLessThanOrEqual(jumps(palSound) + 10);
+    const spectra = [averageSpectrum(palSound), averageSpectrum(sound)] as const;
+    const match = [0.85, 0.9, 1, 1.1, 1.2].map((stretch) => similarity(spectra[0], spectra[1], 20, 800, stretch));
+    expect(match[2]).toBeGreaterThan(0.8);
+    expect(match[2]).toBe(Math.max(...match));
+    const pace = playbackSpeed(envelope(palSound, 320), envelope(sound, 320), 1500, 3500);
+    expect(pace.correlation).toBeGreaterThan(0.8);
+    expect(pace.speed).toBeGreaterThan(0.98);
+    expect(pace.speed).toBeLessThan(1.02);
+  }, 3_600_000);
+
   it('saves a portable state and loads it into a fresh game, which replays the same frames, pictures, sound, position and memory', async () => {
     const { moduleUrl, cartridge } = await buildGame();
     const start = () => startReplayable(moduleUrl, cartridge);
@@ -628,4 +716,124 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
       expect(darker).toBeGreaterThan(50);
     }, 3_600_000);
   });
+});
+
+/**
+ * Kokiri Forest and the houses around it, entered the way the scene sweep enters them: from Link's house under control (frame
+ * ${CONTROL_FRAME}) the game is made to load the entrance, and an A tap every 40 frames gets through the cutscene that follows.
+ * The forest is entrance 238 (spawn 0 of scene 85); the others are the entrances the forest scene's exit list names that lead to
+ * scenes 52, 45, 38, 39, 40 and 41 (docs/re/display-lists.md section 9).
+ */
+describe.skipIf(!rom || !existsSync(rom))('Kokiri Forest and its interiors', () => {
+  const TAP_A = parseInput('tap A 100 4000 40 3', 'tap');
+  const FOREST_ENTRANCE = 238;
+  const INTERIOR_ENTRANCES = [626, 193, 201, 156, 1075, 1079];
+  /** A frame of the forest with Link on the platform in front of his house, the ladder on screen and the path decal under it. */
+  const PLATFORM_FRAME = 2448;
+
+  /** Plays the new game to Link's house, loads `entrance` and runs `frames` frames, calling `onTask` for the tasks after `from`. */
+  async function visit(entrance: number, frames: number, from: number, onTask: (task: { ram: Uint8Array; data: number; task: number }, frame: number) => void) {
+    const { moduleUrl, cartridge } = await buildGame();
+    let frame = 0;
+    let record = false;
+    const game = await bootGame(moduleUrl, cartridge, { onGfxTask: (t) => { if (record) onTask(t, frame); } });
+    while (frame < CONTROL_FRAME) {
+      frame++;
+      const pad = padAt(SCRIPT, frame);
+      game.setPad(pad.buttons, pad.x, pad.y);
+      expect((await game.frame()).fatal, `frame ${frame}`).toBeUndefined();
+    }
+    game.setPad(0, 0, 0);
+    const ram = game.ram();
+    const write32 = (addr: number, value: number) => new DataView(ram.buffer, ram.byteOffset, ram.byteLength).setUint32(addr & 0x7fffff, value >>> 0);
+    requestEntrance(game.rd32, write32, playState(game.rd32)!, entrance);
+    for (let k = 1; k <= frames; k++) {
+      frame = CONTROL_FRAME + k;
+      record = k >= from;
+      const pad = padAt(TAP_A, k);
+      game.setPad(pad.buttons, pad.x, pad.y);
+      expect((await game.frame()).fatal, `frame ${k}`).toBeUndefined();
+    }
+    return { game, scene: playState(game.rd32)?.scene };
+  }
+
+  it('draws the forest without an unknown command or an inconsistency, and its display lists agree with the microcode', async () => {
+    const interpreter = new DisplayListInterpreter();
+    const unknown: string[] = [];
+    let compared = 0;
+    const worst = { colour: 0, texture: 0, uncovered: 0 };
+    const { scene } = await visit(FOREST_ENTRANCE, 2410, 1, (task, frame) => {
+      const k = frame - CONTROL_FRAME;
+      const result = interpreter.run(task.ram, task.data);
+      unknown.push(...result.unknown.map((u) => `frame ${k} 0x${u.w0.toString(16)}`), ...result.problems.map((p) => `frame ${k} ${p}`));
+      if (k >= 2400) {
+        const c = compareWithMicrocode(task.ram, task.data, task.task);
+        compared++;
+        worst.colour = Math.max(worst.colour, c.colourError);
+        worst.texture = Math.max(worst.texture, c.textureError);
+        worst.uncovered = Math.max(worst.uncovered, c.coverageDifference);
+      }
+    });
+    expect(scene).toBe(85);
+    expect(unknown).toEqual([]);
+    expect(compared).toBeGreaterThan(0);
+    // Lit colours and fog factors agree with the microcode within its rounding (a few of 255), texture coordinates exactly
+    // to one unit of 10.5 fixed point, and the triangles cover the same pixels but for 1 in 100.
+    expect(worst.colour).toBeLessThanOrEqual(6);
+    expect(worst.texture).toBeLessThanOrEqual(1);
+    expect(worst.uncovered).toBeLessThan(0.01);
+  }, 3_600_000);
+
+  it('draws the interiors without an unknown command and as the microcode does', async () => {
+    for (const entrance of INTERIOR_ENTRANCES) {
+      const interpreter = new DisplayListInterpreter();
+      const unknown: string[] = [];
+      let compared = 0;
+      const worst = { colour: 0, texture: 0, uncovered: 0 };
+      await visit(entrance, 202, 1, (task, frame) => {
+        const k = frame - CONTROL_FRAME;
+        const result = interpreter.run(task.ram, task.data);
+        unknown.push(...result.unknown.map((u) => `frame ${k} 0x${u.w0.toString(16)}`), ...result.problems);
+        if (k >= 200) {
+          const c = compareWithMicrocode(task.ram, task.data, task.task);
+          compared++;
+          worst.colour = Math.max(worst.colour, c.colourError);
+          worst.texture = Math.max(worst.texture, c.textureError);
+          worst.uncovered = Math.max(worst.uncovered, c.coverageDifference);
+        }
+      });
+      expect(unknown, `entrance ${entrance}`).toEqual([]);
+      expect(compared, `entrance ${entrance}`).toBeGreaterThan(0);
+      expect(worst.colour, `entrance ${entrance}`).toBeLessThanOrEqual(6);
+      expect(worst.texture, `entrance ${entrance}`).toBeLessThanOrEqual(1);
+      expect(worst.uncovered, `entrance ${entrance}`).toBeLessThan(0.01);
+    }
+  }, 3_600_000);
+
+  it('draws the decal surfaces (the path, the leaves, the shadow) over the ground they lie on', async () => {
+    const results: DisplayListResult[] = [];
+    const interpreter = new DisplayListInterpreter();
+    await visit(FOREST_ENTRANCE, PLATFORM_FRAME, PLATFORM_FRAME - DRAW_LEAD + 1, (task) => results.push(interpreter.run(task.ram, task.data)));
+    const isPath = (b: Batch) => b.kind === 'triangles' && ((b.state.otherModeL >>> 10) & 3) === 3;
+    const paths = results.flatMap((r) => r.batches.filter(isPath));
+    expect(paths.length).toBeGreaterThan(0);
+    const render = (keep: (b: Batch) => boolean) => {
+      const soft = new SoftRenderer();
+      for (const r of results) soft.drawTask({ ...r, batches: r.batches.filter(keep) });
+      return soft;
+    };
+    const alone = new SoftRenderer();
+    for (const r of results) alone.drawTask({ ...r, batches: r.batches.filter(isPath) });
+    const full = render(() => true);
+    const bare = render((b) => !isPath(b));
+    // Pixels where the path changes the picture: most of what it covers on its own, the rest being hidden by nearer things.
+    let changed = 0;
+    for (const [address, a] of full.images) {
+      const b = bare.image(address)!;
+      for (let i = 0; i < a.length; i += 4) if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2]) changed++;
+    }
+    // Decals blend with what is under them and some are hidden by nearer things: 57% of the area changes at this frame.
+    expect(alone.pixelsWritten).toBeGreaterThan(1000);
+    expect(changed).toBeGreaterThan(alone.pixelsWritten * 0.4);
+  }, 3_600_000);
 });

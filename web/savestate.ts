@@ -1,5 +1,6 @@
 // Save states: the portable state of the running game, one per slot, kept with the version of its format. A state loads
 // into any build that reads that version.
+import type { Hz } from './mode.ts';
 
 export const SLOT_COUNT = 4;
 /** The `format` of a state saved as a dump of one build's memory, which no build can load any more. */
@@ -9,6 +10,8 @@ export interface StateRecord {
   /** Version of the portable state format; OLD_FORMAT for the build-locked memory dumps kept before it existed. */
   format: number;
   savedAt: number;
+  /** The video rate the game was booted at; a state without it comes from before the 60 Hz mode and is a 50 Hz one. */
+  hz?: Hz;
   data: Uint8Array;
 }
 
@@ -75,12 +78,12 @@ export function serverStates(fetcher: typeof fetch = fetch): StateStore {
       const r = await fetcher(`/api/saves/state/${slot}`);
       if (r.status === 404) return null;
       if (!r.ok) throw new Error(`could not read slot ${slot}: ${r.status}`);
-      return { format: Number(r.headers.get('X-State-Format')) || OLD_FORMAT, savedAt: Number(r.headers.get('X-Saved-At')) || 0, data: new Uint8Array(await r.arrayBuffer()) };
+      return { format: Number(r.headers.get('X-State-Format')) || OLD_FORMAT, savedAt: Number(r.headers.get('X-Saved-At')) || 0, hz: r.headers.get('X-Hz') === '60' ? 60 : 50, data: new Uint8Array(await r.arrayBuffer()) };
     },
     async put(slot, record) {
       const r = await fetcher(`/api/saves/state/${slot}`, {
         method: 'PUT',
-        headers: { 'X-State-Format': String(record.format), 'X-Saved-At': String(record.savedAt) },
+        headers: { 'X-State-Format': String(record.format), 'X-Saved-At': String(record.savedAt), 'X-Hz': String(record.hz ?? 50) },
         body: record.data.slice(),
       });
       if (!r.ok) throw new Error(`could not store slot ${slot}: ${r.status}`);
@@ -92,8 +95,9 @@ export function serverStates(fetcher: typeof fetch = fetch): StateStore {
 function asRecord(v: unknown): StateRecord | null {
   const r = v as (Partial<StateRecord> & { build?: unknown }) | null;
   if (!r || typeof r.savedAt !== 'number' || !(r.data instanceof Uint8Array)) return null;
-  if (typeof r.format === 'number') return { format: r.format, savedAt: r.savedAt, data: r.data };
-  return typeof r.build === 'string' ? { format: OLD_FORMAT, savedAt: r.savedAt, data: r.data } : null;
+  if (r.hz !== undefined && r.hz !== 50 && r.hz !== 60) return null;
+  if (typeof r.format === 'number') return { format: r.format, savedAt: r.savedAt, hz: r.hz, data: r.data };
+  return typeof r.build === 'string' ? { format: OLD_FORMAT, savedAt: r.savedAt, hz: r.hz, data: r.data } : null;
 }
 
 /** Gzip, so that the untouched parts of the memory cost almost nothing to store. */
@@ -114,10 +118,16 @@ export function formatMismatch(record: StateRecord, readable: number, slot: numb
   return null;
 }
 
+/** The message that explains why a stored state cannot load at the rate the game was booted at, or null when it can. */
+export function modeMismatch(record: StateRecord, hz: Hz, slot: number): string | null {
+  const saved = record.hz ?? 50;
+  return saved === hz ? null : `Slot ${slot} was saved in ${saved} Hz mode; switch the mode and reload the page to load it`;
+}
+
 export class SaveStates {
   private current = 1;
 
-  constructor(private readonly source: StateSource, private readonly store: StateStore, private readonly format: number) {}
+  constructor(private readonly source: StateSource, private readonly store: StateStore, private readonly format: number, private readonly hz: Hz = 50) {}
 
   get slot(): number {
     return this.current;
@@ -132,7 +142,7 @@ export class SaveStates {
 
   async save(): Promise<string> {
     const slot = this.current;
-    await this.store.put(slot, { format: this.format, savedAt: Date.now(), data: await this.source.capture() });
+    await this.store.put(slot, { format: this.format, savedAt: Date.now(), hz: this.hz, data: await this.source.capture() });
     return `Saved slot ${slot}`;
   }
 
@@ -142,6 +152,8 @@ export class SaveStates {
     if (!record) return `Slot ${slot} empty`;
     const mismatch = formatMismatch(record, this.format, slot);
     if (mismatch) return mismatch;
+    const wrongMode = modeMismatch(record, this.hz, slot);
+    if (wrongMode) return wrongMode;
     try {
       await this.source.apply(record.data);
     } catch (err) {

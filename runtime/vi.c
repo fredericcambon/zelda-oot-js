@@ -28,6 +28,7 @@ enum {
   VS_BLACK = 0x20,
 };
 
+static uint32_t vi_hz = RT_VI_HZ_PAL;
 static uint64_t next_retrace;
 static uint32_t retraces;
 static uint32_t since_notice;
@@ -36,6 +37,9 @@ static uint32_t cur(void) { return rd32(OS_VI_CURRENT); }
 static uint32_t nxt(void) { return rd32(OS_VI_NEXT); }
 static void state_or(uint32_t ctx, unsigned bits) { wr16(ctx + VC_STATE, rd16(ctx + VC_STATE) | bits); }
 static void state_clear(uint32_t ctx, unsigned bits) { wr16(ctx + VC_STATE, rd16(ctx + VC_STATE) & ~bits); }
+
+void rt_set_vi_hz(uint32_t hz) { vi_hz = hz == RT_VI_HZ_NTSC ? RT_VI_HZ_NTSC : RT_VI_HZ_PAL; }
+uint32_t rt_vi_hz(void) { return vi_hz; }
 
 void vi_reset(void) {
   next_retrace = 0;
@@ -63,7 +67,7 @@ void te_vi_retrace(uint32_t a, uint32_t b) {
     since_notice = 0;
     mq_try_send(rd32(n + VC_QUEUE), rd32(n + VC_MESSAGE));
   }
-  next_retrace += RT_CPU_COUNTER / RT_VI_HZ;
+  next_retrace += RT_CPU_COUNTER / vi_hz;
   rt_schedule(next_retrace, TE_VI_RETRACE, 0, 0);
 }
 
@@ -76,7 +80,7 @@ void rt_osCreateViManager(Cpu *c) {
   wr32(OS_VI_NEXT, OS_VI_CONTEXTS + VI_CONTEXT_SIZE);
   wr16(OS_VI_CONTEXTS + VC_STATE, VS_MODE);
   wr16(OS_VI_CONTEXTS + VI_CONTEXT_SIZE + VC_STATE, VS_MODE);
-  next_retrace = rt_clock() + RT_CPU_COUNTER / RT_VI_HZ;
+  next_retrace = rt_clock() + RT_CPU_COUNTER / vi_hz;
   rt_schedule(next_retrace, TE_VI_RETRACE, 0, 0);
 }
 

@@ -1,9 +1,11 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { loadContext } from '../analyze/context.ts';
 import { analyze } from '../analyze/run.ts';
 import { generate } from '../recomp/generate.ts';
+import { listTree } from './cache.ts';
 import { ensureToolchain } from '../recomp/toolchain.ts';
 import { compileAll, link, runtimeSources } from './build.ts';
 
@@ -29,5 +31,32 @@ describe.skipIf(!rom || !existsSync(rom))('whole ROM', () => {
     const out = await link(opts, objects);
     expect(existsSync(out)).toBe(true);
     expect(existsSync(join(work, 'dist', 'oot.wasm'))).toBe(true);
+  }, 3_600_000);
+
+  it('serves a second port into fresh folders entirely from the shared cache, byte for byte, in under a minute', () => {
+    const base = resolve('out', 'port-cache-test');
+    rmSync(base, { recursive: true, force: true });
+    const port = (run: string) => {
+      const dirs = ['out', 'work', 'generated', 'dist'].map((d) => join(base, run, d));
+      const t0 = performance.now();
+      const r = spawnSync('npx', ['tsx', 'tools/port/cli.ts', '--no-ghidra', '--out', dirs[0]!, '--work', dirs[1]!, '--generated', dirs[2]!, '--dist', dirs[3]!], {
+        encoding: 'utf8', shell: true, env: { ...process.env, OOT_CACHE_DIR: join(base, 'cache') }, maxBuffer: 1 << 28,
+      });
+      expect(r.status, r.stdout + r.stderr).toBe(0);
+      return { dist: dirs[3]!, log: r.stdout, seconds: (performance.now() - t0) / 1000 };
+    };
+    const first = port('first');
+    expect(first.log).toContain('cache miss');
+    const second = port('second');
+    expect(second.log).not.toContain('cache miss');
+    for (const step of ['analyse', 'classify and write the assets', 'recompile']) expect(second.log, step).toContain(`${step}: cache hit`);
+    expect(second.log).toMatch(/compiling 0 of \d+ C files \(0 up to date, \d+ from the cache\)/);
+    expect(second.log).toContain('link: cache hit');
+    expect(second.seconds).toBeLessThan(60);
+
+    const files = listTree(first.dist);
+    expect(files.length).toBeGreaterThan(1000);
+    expect(listTree(second.dist)).toEqual(files);
+    for (const f of files) expect(readFileSync(join(second.dist, f)).equals(readFileSync(join(first.dist, f))), f).toBe(true);
   }, 3_600_000);
 });

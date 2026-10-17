@@ -2,7 +2,6 @@
 // shaders. A shader depends only on the `ShaderSpec` derived from the draw state; colours, tile sizes and the like are
 // uniforms, so a handful of programs cover a whole scene.
 import type { DrawState } from '../tools/gfx/dl.ts';
-import { Geo } from '../tools/gfx/opcodes.ts';
 
 /** Cycle type, bits 20-21 of the high half of the other modes. */
 export const CycleType = { ONE: 0, TWO: 1, COPY: 2, FILL: 3 } as const;
@@ -25,8 +24,6 @@ export interface ShaderSpec {
   copy: boolean;
   rgb: [[number, number, number, number], [number, number, number, number]];
   alpha: [[number, number, number, number], [number, number, number, number]];
-  /** The vertex alpha carries the fog factor (the geometry mode's fog bit). */
-  fogInShadeAlpha: boolean;
   /** Bilinear (3-point) texture filtering instead of nearest. */
   bilerp: boolean;
   alphaCompare: boolean;
@@ -78,8 +75,8 @@ export function specOf(state: DrawState): ShaderSpec {
     copy: type === CycleType.COPY,
     rgb: [c0.rgb, c1.rgb],
     alpha: [c0.alpha, c1.alpha],
-    fogInShadeAlpha: (state.geometryMode & Geo.FOG) !== 0,
-    bilerp: ((state.otherModeH >>> 12) & 3) !== 0,
+    // A copy-mode rectangle takes the texel under each pixel, whatever the filter field says.
+    bilerp: type !== CycleType.COPY && ((state.otherModeH >>> 12) & 3) !== 0,
     alphaCompare: (state.otherModeL & OtherL.ALPHA_COMPARE_MASK) === 1,
     coverageTimesAlpha: (state.otherModeL & OtherL.CVG_TIMES_ALPHA) !== 0,
     alphaFromCoverage: (state.otherModeL & OtherL.ALPHA_CVG_SELECT) !== 0,
@@ -90,7 +87,7 @@ export function specOf(state: DrawState): ShaderSpec {
 
 /** Stable text for a spec, used as the program cache key. */
 export function specKey(s: ShaderSpec): string {
-  return JSON.stringify([s.cycles, s.copy, s.cycles === 2 ? s.rgb : s.rgb[0], s.cycles === 2 ? s.alpha : s.alpha[0], s.fogInShadeAlpha, s.bilerp, s.alphaCompare, s.coverageTimesAlpha, s.alphaFromCoverage, s.cycles === 2 ? s.blend : s.blend[0], s.framebufferBlend]);
+  return JSON.stringify([s.cycles, s.copy, s.cycles === 2 ? s.rgb : s.rgb[0], s.cycles === 2 ? s.alpha : s.alpha[0], s.bilerp, s.alphaCompare, s.coverageTimesAlpha, s.alphaFromCoverage, s.cycles === 2 ? s.blend : s.blend[0], s.framebufferBlend]);
 }
 
 // ---- Combiner -------------------------------------------------------------------------------------------------------
@@ -115,7 +112,7 @@ export function rgbInput(slot: 0 | 1 | 2 | 3, code: number, i: Inputs): string |
       case 1: return `${i.texel0}.rgb`;
       case 2: return `${i.texel1}.rgb`;
       case 3: return 'uPrim.rgb';
-      case 4: return 'vColor.rgb';
+      case 4: return 'shade.rgb';
       case 5: return 'uEnv.rgb';
       default: return null;
     }
@@ -290,13 +287,16 @@ layout(location = 1) in vec4 aColor;
 layout(location = 2) in vec2 aUv;
 out vec4 vColor;
 out vec2 vUv;
-out vec2 vDepth;
+// 0.5 for triangles, whose viewport is twice the screen (renderer.ts); 1 for rectangles.
+uniform float uXyScale;
 void main() {
   // A vertex in front of the near plane is drawn at the nearest depth instead of being clipped away.
-  gl_Position = vec4(aPos.xy, aPos.w > 0.0 ? max(aPos.z, -aPos.w) : aPos.z, aPos.w);
-  vColor = aColor;
+  gl_Position = vec4(aPos.xy * uXyScale, aPos.w > 0.0 ? max(aPos.z, -aPos.w) : aPos.z, aPos.w);
+  // The shade (colour and fog factor) is interpolated linearly in screen space on the console, not corrected for
+  // perspective like the texture coordinates: scaled by w here, and by 1 / w of the pixel in the fragment shader, the
+  // perspective-correct interpolation of GL gives the linear one.
+  vColor = aColor * aPos.w;
   vUv = aUv;
-  vDepth = aPos.zw;
 }
 `;
 
@@ -307,14 +307,11 @@ precision highp int;
 ${spec.bilerp ? '#define BILERP 1' : ''}
 in vec4 vColor;
 in vec2 vUv;
-in vec2 vDepth;
 out vec4 outColor;
 uniform vec4 uPrim;
 uniform vec4 uEnv;
 uniform vec4 uFog;
 uniform vec4 uBlend;
-// Fog factor of a pixel: clamp(z / w * x + y, 0, 255) / 255.
-uniform vec2 uFogLine;
 uniform float uPrimLod;
 uniform sampler2D uTex0;
 uniform sampler2D uTex1;
@@ -328,7 +325,8 @@ ${WRAP_FUNCTION}
 ${textureFunction(0)}
 ${textureFunction(1)}
 void main() {
-${spec.fogInShadeAlpha ? '  float shadeAlpha = vDepth.y > 0.0 ? clamp(vDepth.x / vDepth.y * uFogLine.x + uFogLine.y, 0.0, 255.0) / 255.0 : 0.0;' : '  float shadeAlpha = vColor.a;'}
+  vec4 shade = vColor * gl_FragCoord.w;
+  float shadeAlpha = shade.a;
   vec4 t0 = sample0(vUv);
   vec4 t1 = sample1(vUv);
 ${combinerSource(spec)}

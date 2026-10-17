@@ -2,9 +2,9 @@
 // save made in one running copy of the page is found by the next. Only this machine may use it.
 //
 //   GET|PUT /api/saves/sram          the cartridge's save memory
-//   GET|PUT /api/saves/state/<1-4>   a save state; the version of its format travels in the X-State-Format header
+//   GET|PUT /api/saves/state/<1-4>   a save state; the version of its format travels in the X-State-Format header, its video rate in X-Hz
 //
-// A state is state-<n>.bin with state-<n>.bin.format beside it (version, a line break, then the time it was saved).
+// A state is state-<n>.bin with state-<n>.bin.format beside it (version, saved-at time and video rate, one per line).
 // States kept before the portable format have state-<n>.bin.build instead; they are served as format 0 and never deleted.
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -79,9 +79,10 @@ export function savesMiddleware(dir: string) {
         }
         res.setHeader('Content-Type', 'application/octet-stream');
         if (name !== 'sram') {
-          const [format = '0', savedAt = '0'] = readMeta(meta) ?? ['0', readMeta(legacyMeta)?.[1] ?? '0'];
+          const [format = '0', savedAt = '0', hz = '50'] = readMeta(meta) ?? ['0', ...(readMeta(legacyMeta) ?? []).slice(1)];
           res.setHeader('X-State-Format', format);
           res.setHeader('X-Saved-At', savedAt);
+          res.setHeader('X-Hz', hz);
         }
         res.end(data);
       } else if (req.method === 'PUT') {
@@ -96,7 +97,9 @@ export function savesMiddleware(dir: string) {
         if (name !== 'sram') {
           const format = String(req.headers['x-state-format'] ?? '');
           if (!/^[0-9]{1,9}$/.test(format)) return reply(res, 400, 'bad state format');
-          write(meta, `${Number(format)}\n${Number(req.headers['x-saved-at']) || Date.now()}`);
+          write(meta, `${Number(format)}
+${Number(req.headers['x-saved-at']) || Date.now()}
+${req.headers['x-hz'] === '60' ? 60 : 50}`);
         }
         write(file, body);
         reply(res, 204);

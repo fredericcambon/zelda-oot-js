@@ -12,6 +12,7 @@ const TH_ENTRY = 0x11c;
 
 interface OotModule extends StateCore {
   _oot_jpeg_tasks(): number;
+  _oot_ai_gaps(): number;
   _oot_rd32(addr: number): number;
   _oot_trace_count?(): number;
   _oot_trace_at?(back: number): number;
@@ -49,6 +50,8 @@ export interface FrameResult {
   gfxTasks: number;
   audioTasks: number;
   jpegTasks: number;
+  /** Buffers queued to the audio interface after it had run dry. */
+  aiGaps: number;
   newThreads: string[];
   /** One line per thread: address, id, priority, state and the queue it waits on. */
   threadStates: string[];
@@ -92,6 +95,8 @@ export interface BootOptions {
   onAudioTask?: (task: AudioTask) => void;
   /** Called synchronously when the game queues a buffer to the audio interface. */
   onAiBuffer?: (buffer: AiBuffer) => void;
+  /** The video rate to boot at: 60 boots the NTSC cartridge variant (see docs/re/tv-type.md); the default is the PAL 50. */
+  hz?: 50 | 60;
 }
 
 export interface Game {
@@ -145,7 +150,7 @@ export async function bootGame(moduleUrl: string, rom: Uint8Array, options: Boot
     onAudioTask: (data: number, size: number, microcode: number, microcodeData: number) =>
       options.onAudioTask?.({ data: data >>> 0, size: size >>> 0, microcode: microcode >>> 0, microcodeData: microcodeData >>> 0, ram: guestRam() }),
     onAiBuffer: (addr: number, length: number, hz: number) => options.onAiBuffer?.({ addr: addr >>> 0, length: length >>> 0, hz: hz >>> 0, ram: guestRam() }),
-  });
+  }, options.hz);
 
   const rd32 = (addr: number) => mod._oot_rd32(addr) >>> 0;
   const seen = new Set<number>();
@@ -180,7 +185,7 @@ export async function bootGame(moduleUrl: string, rom: Uint8Array, options: Boot
       });
       return {
         threadStates, frame: mod._oot_frames(), alive, retraces: mod._oot_retraces(), gfxTasks: mod._oot_gfx_tasks(),
-        audioTasks: mod._oot_audio_tasks(), jpegTasks: mod._oot_jpeg_tasks(), newThreads, fatal,
+        audioTasks: mod._oot_audio_tasks(), jpegTasks: mod._oot_jpeg_tasks(), aiGaps: mod._oot_ai_gaps(), newThreads, fatal,
       };
     },
     framebuffer: () => shownFramebuffer(rd32),

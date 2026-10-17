@@ -9,7 +9,7 @@ function state(over: Partial<DrawState> = {}): DrawState {
     geometryMode: 0, otherModeH: 0, otherModeL: 0, combine: decodeCombine(0, 0), primColor: { ...rgba, minLod: 0, lodFrac: 0 },
     envColor: rgba, fogColor: rgba, blendColor: rgba, fillColor: 0, texture: { on: false, level: 0, tile: 0, scaleS: 0, scaleT: 0 },
     tiles: [], textures: [null, null], viewport: { scale: [0, 0, 0], trans: [0, 0, 0] }, scissor: { mode: 0, xh: 0, yh: 0, xl: 0, yl: 0 },
-    fog: { multiplier: 0, offset: 0 }, colorImage: { fmt: 0, siz: 2, width: 320, addr: 0 }, depthImage: 0, ...over,
+    colorImage: { fmt: 0, siz: 2, width: 320, addr: 0 }, depthImage: 0, ...over,
   };
 }
 
@@ -48,7 +48,7 @@ describe('shader generation', () => {
     // (TEXEL0 - 0) * SHADE + 0, alpha TEXEL0 * SHADE
     const s = state({ combine: combine([1, 15, 4, 7], [1, 7, 4, 7]) });
     const src = fragmentSource(specOf(s));
-    expect(src).toContain('clamp(t0.rgb * vColor.rgb, 0.0, 1.0)');
+    expect(src).toContain('clamp(t0.rgb * shade.rgb, 0.0, 1.0)');
     expect(src).toContain('clamp(t0.a * shadeAlpha, 0.0, 1.0)');
     expect(src).toContain('#version 300 es');
   });
@@ -61,12 +61,16 @@ describe('shader generation', () => {
     expect(spec.cycles).toBe(2);
     const src = fragmentSource(spec);
     expect(src).toContain('t0.rgb * uPrim.rgb');
-    expect(src).toContain('t1.rgb * vColor.rgb');
+    expect(src).toContain('t1.rgb * shade.rgb');
   });
 
-  it("uses the fog factor of the pixel's depth as shade alpha only with the fog geometry bit", () => {
-    expect(fragmentSource(specOf(state()))).toContain('float shadeAlpha = vColor.a;');
-    expect(fragmentSource(specOf(state({ geometryMode: 0x10000 })))).toContain('clamp(vDepth.x / vDepth.y * uFogLine.x + uFogLine.y, 0.0, 255.0) / 255.0');
+  it('interpolates the shade linearly in screen space, not corrected for perspective like the texture coordinates', () => {
+    // The vertex shader scales the colour (whose alpha is the fog factor under the fog geometry bit) by w; the fragment shader
+    // undoes it with the interpolated 1 / w, which turns GL's perspective-correct interpolation into the linear one.
+    expect(VERTEX_SHADER).toContain('vColor = aColor * aPos.w;');
+    const src = fragmentSource(specOf(state({ geometryMode: 0x10000 })));
+    expect(src).toContain('vec4 shade = vColor * gl_FragCoord.w;');
+    expect(src).toContain('float shadeAlpha = shade.a;');
   });
 
   it('turns on bilinear filtering, alpha test and framebuffer blending from the other modes', () => {
@@ -110,9 +114,10 @@ describe('shader generation', () => {
     expect(specKey(edge)).not.toBe(specKey(plain));
   });
 
-  it('copies the texel in copy mode', () => {
-    const s = specOf(state({ otherModeH: CycleType.COPY << 20 }));
+  it('copies the texel in copy mode, and never filters it', () => {
+    const s = specOf(state({ otherModeH: (CycleType.COPY << 20) | (2 << 12) }));
     expect(s.copy).toBe(true);
+    expect(s.bilerp).toBe(false);
     const src = fragmentSource(s);
     expect(src).toContain('vec3 cRgb = t0.rgb;');
     expect(src).toContain('if (cA < 0.5) discard;');

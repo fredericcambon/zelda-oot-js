@@ -15,7 +15,7 @@ function state(over: Partial<DrawState> = {}): DrawState {
     geometryMode: 0, otherModeH: 0, otherModeL: 0, combine: decodeCombine(0, 0), primColor: { ...rgba, minLod: 0, lodFrac: 0 },
     envColor: rgba, fogColor: rgba, blendColor: rgba, fillColor: 0, texture: { on: false, level: 0, tile: 0, scaleS: 0, scaleT: 0 },
     tiles: [tile], textures: [null, null], viewport: { scale: [0, 0, 0], trans: [0, 0, 0] }, scissor: { mode: 0, xh: 0, yh: 0, xl: 0, yl: 0 },
-    fog: { multiplier: 0, offset: 0 }, colorImage: { fmt: 0, siz: 3, width: 320, addr: IMAGE }, depthImage: 0, ...over,
+    colorImage: { fmt: 0, siz: 3, width: 320, addr: IMAGE }, depthImage: 0, ...over,
   };
 }
 
@@ -28,16 +28,18 @@ function combine(rgb: [number, number, number, number], alpha: [number, number, 
   return decodeCombine(w0 >>> 0, w1 >>> 0);
 }
 
-/** Two triangles over the whole screen at clip depth `z` (w = 1), texture coordinates spanning `uSpan` texels across. */
-function screen(s: DrawState, z = 0, uSpan = 1): TriangleBatch {
+/**
+ * Two triangles over the whole screen at clip depth `z` (w = 1), texture coordinates spanning `uSpan` texels across, the
+ * vertex alpha (the shade alpha: the fog factor with the fog geometry bit) being `alpha`.
+ */
+function screen(s: DrawState, z = 0, uSpan = 1, alpha = 1): TriangleBatch {
   const corners = [[-1, 1, 0, 0], [-1, -1, 0, 1], [1, -1, uSpan, 1], [-1, 1, 0, 0], [1, -1, uSpan, 1], [1, 1, uSpan, 0]] as const;
   return {
     kind: 'triangles',
     state: s,
     positions: Float32Array.from(corners.flatMap(([x, y]) => [x, y, z, 1])),
-    colors: new Float32Array(24).fill(1),
+    colors: Float32Array.from(corners.flatMap(() => [1, 1, 1, alpha])),
     uvs: Float32Array.from(corners.flatMap(([, , u, v]) => [u, v])),
-    fog: new Float32Array(6),
   };
 }
 
@@ -129,7 +131,8 @@ describe('the shadow under Link', () => {
       // Intensity 255, alpha 255: the combiner scales both by the primitive colour.
       textures: [strip([[255, 255, 255, 255]]), null],
     });
-    const shadow = screen(shadowState);
+    // The fog factor of the ground under Link is 0.
+    const shadow = screen(shadowState, 0, 1, 0);
     soft.drawTask(task(screen(floor), shadow));
     return pixel(soft.image(IMAGE)!, 160, 120);
   };
@@ -145,37 +148,84 @@ describe('fog', () => {
   // First blender cycle mixes the fog colour in by the shade alpha, which is the fog factor; the second cycle outputs the pixel.
   const FOG_BLEND = 0xc8112078;
   const FOG = 0x10000;
-
-  // A floor triangle with one vertex behind the eye (w < 0, z / w = 2): the fog of a pixel follows its own depth, so the
-  // ground just in front of the eye stays unfogged although that vertex is as foggy as can be.
-  it('does not take the fog of a vertex behind the eye into the pixels in front of it', () => {
+  const fogged = (alpha: number) => {
     const soft = new SoftRenderer();
     const s = state({
       otherModeH: TWO_CYCLES, otherModeL: FOG_BLEND, geometryMode: FOG, combine: combine([15, 15, 31, 3], [7, 7, 7, 6]),
-      primColor: { r: 0, g: 0, b: 0, a: 255, minLod: 0, lodFrac: 0 }, fogColor: { r: 255, g: 255, b: 255, a: 0 }, fog: { multiplier: 255, offset: 0 },
+      primColor: { r: 0, g: 0, b: 0, a: 255, minLod: 0, lodFrac: 0 }, fogColor: { r: 255, g: 255, b: 255, a: 0 },
     });
+    soft.drawTask(task(screen(s, 0, 1, alpha)));
+    return pixel(soft.image(IMAGE)!, 160, 120)[0];
+  };
+
+  it('fades to the fog colour with the shade alpha, which carries the fog factor', () => {
+    expect(fogged(0)).toBe(0);
+    expect(fogged(0.5)).toBeGreaterThan(120);
+    expect(fogged(0.5)).toBeLessThan(135);
+    expect(fogged(1)).toBe(255);
+  });
+});
+
+describe('shade interpolation', () => {
+  // A triangle from the eye's near side (w = 1, colour 0) to its far side (w = 4, colour 1): halfway across the screen the
+  // texture coordinate is corrected for perspective, the colour is simply the average of the two.
+  it('is linear in screen space while texture coordinates are corrected for perspective', () => {
+    const soft = new SoftRenderer();
+    const s = state({ combine: combine([15, 15, 31, 4], [7, 7, 7, 6]) });
+    // x and y are in clip space, so the screen x of a vertex is x / w: -1 / 1 and 4 / 4 put the two ends at -1 and 1.
     const batch: TriangleBatch = {
       kind: 'triangles', state: s,
-      positions: Float32Array.of(-1, -1, -0.2, 1, 1, -1, -0.2, 1, 0, 2, -2, -1),
-      colors: new Float32Array(12).fill(1), uvs: new Float32Array(6), fog: Float32Array.of(0, 0, 1),
+      positions: Float32Array.of(-1, -1, 0, 1, 4, -1, 0, 4, -1, 1, 0, 1),
+      colors: Float32Array.of(0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 1),
+      uvs: new Float32Array(6),
     };
     soft.drawTask(task(batch));
-    expect(pixel(soft.image(IMAGE)!, 160, 200)[0]).toBeLessThan(5);
+    const mid = pixel(soft.image(IMAGE)!, 160, 150)[0];
+    expect(mid).toBeGreaterThan(110);
+    expect(mid).toBeLessThan(145);
+  });
+});
+
+describe('texture filtering', () => {
+  const bilerp = 2 << 12;
+  const draw = (otherModeH: number) => {
+    const soft = new SoftRenderer();
+    const s = state({ otherModeH, combine: TEXEL_TIMES_SHADE, textures: [strip([[0, 0, 0, 255], [255, 255, 255, 255]]), null] });
+    soft.drawTask(task(screen(s, 0, 2)));
+    return soft.image(IMAGE)!;
+  };
+
+  it('blends neighbouring texels with the three-point filter, and takes the nearest one without it', () => {
+    // The two texels meet at x = 160: halfway between their centres the filtered colour is the average.
+    expect(pixel(draw(bilerp), 160, 120)[0]).toBeGreaterThan(110);
+    expect(pixel(draw(bilerp), 160, 120)[0]).toBeLessThan(145);
+    expect(pixel(draw(0), 150, 120)[0]).toBe(0);
+    expect(pixel(draw(0), 170, 120)[0]).toBe(255);
   });
 
-  it('fades to the fog colour with the depth of the pixel', () => {
-    const at = (z: number) => {
-      const soft = new SoftRenderer();
-      const s = state({
-        otherModeH: TWO_CYCLES, otherModeL: FOG_BLEND, geometryMode: FOG, combine: combine([15, 15, 31, 3], [7, 7, 7, 6]),
-        primColor: { r: 0, g: 0, b: 0, a: 255, minLod: 0, lodFrac: 0 }, fogColor: { r: 255, g: 255, b: 255, a: 0 }, fog: { multiplier: 255, offset: 0 },
-      });
-      soft.drawTask(task(screen(s, z)));
-      return pixel(soft.image(IMAGE)!, 160, 120)[0];
-    };
-    expect(at(0.5)).toBeGreaterThan(120);
-    expect(at(0.5)).toBeLessThan(135);
-    expect(at(-0.5)).toBe(0);
-    expect(at(1)).toBe(255);
+  it('does not filter a copy-mode rectangle', () => {
+    expect(pixel(draw(bilerp | (2 << 20)), 150, 120)[0]).toBe(0);
+  });
+});
+
+describe('depth modes', () => {
+  const COMPARE_AND_UPDATE = 0x30;
+  const DECAL = 3 << 10;
+  const ZBUFFER = 1;
+  const draw = (decal: boolean) => {
+    const soft = new SoftRenderer();
+    const ground = state({ geometryMode: ZBUFFER, otherModeL: COMPARE_AND_UPDATE, combine: combine([15, 15, 31, 3], [7, 7, 7, 6]), primColor: { r: 200, g: 0, b: 0, a: 255, minLod: 0, lodFrac: 0 } });
+    const path = state({ geometryMode: ZBUFFER, otherModeL: (decal ? DECAL : 0) | 0x10, combine: combine([15, 15, 31, 3], [7, 7, 7, 6]), primColor: { r: 0, g: 200, b: 0, a: 255, minLod: 0, lodFrac: 0 } });
+    // The second surface lies on the first but is a hair behind it at the sample point.
+    soft.drawTask(task(screen(ground, 0.5), screen(path, 0.5 + 1e-7)));
+    return pixel(soft.image(IMAGE)!, 160, 120);
+  };
+
+  it('lets a decal lie on the surface under it', () => {
+    expect(draw(true)).toEqual([0, 200, 0]);
+  });
+
+  it('hides a surface that is behind another one when it is not a decal', () => {
+    expect(draw(false)).toEqual([200, 0, 0]);
   });
 });

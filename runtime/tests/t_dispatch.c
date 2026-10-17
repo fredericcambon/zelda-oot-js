@@ -130,6 +130,18 @@ TEST(boot_state_describes_a_pal_cartridge) {
   CHECK_EQ(rd32(OS_MEM_SIZE), RDRAM_SIZE);
 }
 
+TEST(boot_state_describes_an_ntsc_cartridge_at_60_hz) {
+  rt_set_vi_hz(60);
+  rt_boot_state();
+  CHECK_EQ(rd32(OS_TV_TYPE), 1);
+  CHECK_EQ(rd32(OS_ROM_BASE), 0xb0000000u);
+  rt_set_vi_hz(50);
+  rt_boot_state();
+  CHECK_EQ(rd32(OS_TV_TYPE), 0);
+  rt_set_vi_hz(75);
+  CHECK_EQ(rt_vi_hz(), 50);
+}
+
 TEST(initialisation_derives_the_clock_rates_and_enables_the_fpu) {
   wr32(OS_CLOCK_RATE, 0);
   wr32(OS_CLOCK_RATE + 4, 62500000u);

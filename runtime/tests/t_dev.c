@@ -280,7 +280,7 @@ TEST(save_memory_access_outside_the_store_is_fatal) {
 
 #define VI_MODE 0x80530000u
 #define VI_FB 0x80600000u
-#define VI_PERIOD (RT_CPU_COUNTER / RT_VI_HZ)
+#define VI_PERIOD (RT_CPU_COUNTER / rt_vi_hz())
 #define VI_NEXT_CTX() rd32(0x80006944u)
 #define VI_CUR_CTX() rd32(0x80006940u)
 
@@ -300,6 +300,7 @@ TEST(the_vi_manager_sets_up_two_contexts) {
 }
 
 TEST(video_edits_take_effect_at_the_next_retrace_every_20_ms) {
+  CHECK_EQ(rt_vi_hz(), 50);
   start_vi();
   mk_queue(&host, QUEUE_A, 16);
   os(&host, rt_osViSetEvent, QUEUE_A, 99, 1, 0);
@@ -327,6 +328,22 @@ TEST(video_edits_take_effect_at_the_next_retrace_every_20_ms) {
   rt_vi_get(&vi);
   CHECK_EQ(vi.retraces, 10);
   CHECK_EQ(rd32(QUEUE_A + MQ_VALID), 10);
+}
+
+TEST(at_60_hz_the_retrace_comes_every_16_67_ms) {
+  rt_set_vi_hz(60);
+  start_vi();
+  mk_queue(&host, QUEUE_A, 16);
+  os(&host, rt_osViSetEvent, QUEUE_A, 7, 1, 0);
+  CHECK_EQ(VI_PERIOD, 781250);
+  rt_run(VI_PERIOD - 1);
+  CHECK_EQ(rd32(QUEUE_A + MQ_VALID), 0);
+  rt_run(60 * VI_PERIOD);
+  RtVi vi;
+  rt_vi_get(&vi);
+  CHECK_EQ(vi.retraces, 60);
+  CHECK_EQ(rt_clock(), RT_CPU_COUNTER);
+  rt_set_vi_hz(RT_VI_HZ_PAL);
 }
 
 TEST(a_retrace_count_of_two_notifies_every_other_retrace) {
@@ -621,6 +638,18 @@ TEST(the_audio_interface_holds_two_buffers_and_signals_each_end) {
   rt_run(t0 + 3 * AI_BUFFER_CYCLES);
   CHECK_EQ(rd32(QUEUE_A + MQ_VALID), 3);
   CHECK_EQ(os(&host, rt_osAiGetLength, 0, 0, 0, 0), 0);
+}
+
+TEST(a_buffer_queued_after_the_interface_ran_dry_counts_as_a_gap) {
+  uint64_t t0 = rt_clock();
+  os(&host, rt_osAiSetNextBuffer, 0x80590000u, AI_BUFFER, 0, 0);
+  os(&host, rt_osAiSetNextBuffer, 0x80594000u, AI_BUFFER, 0, 0);
+  rt_run(t0 + AI_BUFFER_CYCLES);
+  os(&host, rt_osAiSetNextBuffer, 0x80598000u, AI_BUFFER, 0, 0);
+  CHECK_EQ(rt_ai_gaps(), 0);
+  rt_run(t0 + 4 * AI_BUFFER_CYCLES);
+  os(&host, rt_osAiSetNextBuffer, 0x80590000u, AI_BUFFER, 0, 0);
+  CHECK_EQ(rt_ai_gaps(), 1);
 }
 
 TEST(the_audio_rate_sets_how_long_a_buffer_plays) {

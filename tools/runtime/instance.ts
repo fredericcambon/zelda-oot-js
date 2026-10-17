@@ -5,6 +5,7 @@ export interface OotCore {
   HEAPU8: Uint8Array;
   _malloc(n: number): number;
   _oot_boot(rom: number, size: number): void;
+  _oot_set_hz(hz: number): void;
   _oot_frame(): void | Promise<void>;
   _oot_idle(): number;
   _oot_frames(): number;
@@ -22,12 +23,13 @@ export interface OotCore {
 
 export const RDRAM_SIZE = 0x800000;
 
-/** Instantiates the module at `moduleUrl`, copies `rom` into its memory and calls `oot_boot`. */
-export async function startModule<M extends OotCore>(moduleUrl: string, rom: Uint8Array, options: object): Promise<M> {
+/** Instantiates the module at `moduleUrl`, copies `rom` into its memory and calls `oot_boot`; `hz` 60 boots the NTSC cartridge variant, 50 the PAL one. */
+export async function startModule<M extends OotCore>(moduleUrl: string, rom: Uint8Array, options: object, hz: 50 | 60 = 50): Promise<M> {
   const factory = (await import(/* @vite-ignore */ moduleUrl)).default as (opts: object) => Promise<M>;
   const mod = await factory({ print: () => {}, printErr: (m: string) => console.error(m), ...options });
   const copy = mod._malloc(rom.length);
   mod.HEAPU8.set(rom, copy);
+  mod._oot_set_hz(hz);
   mod._oot_boot(copy, rom.length);
   return mod;
 }

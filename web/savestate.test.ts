@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compress, decompress, formatMismatch, OLD_FORMAT, SaveStates, SLOT_COUNT, type StateRecord, type StateSource, type StateStore } from './savestate.ts';
+import { compress, decompress, formatMismatch, modeMismatch, OLD_FORMAT, SaveStates, SLOT_COUNT, type StateRecord, type StateSource, type StateStore } from './savestate.ts';
 
 function memoryStore(): StateStore & { records: Map<number, StateRecord> } {
   const records = new Map<number, StateRecord>();
@@ -71,6 +71,34 @@ describe('SaveStates', () => {
     const store = memoryStore();
     await new SaveStates(game, store, 1).save();
     expect(await new SaveStates(game, store, 1).load()).toBe('Slot 1 cannot be loaded: function 0x80001234 is not in this build');
+  });
+});
+
+describe('video rate of a state', () => {
+  it('is recorded with the state', async () => {
+    const store = memoryStore();
+    await new SaveStates(fakeGame(), store, 1, 60).save();
+    expect(store.records.get(1)?.hz).toBe(60);
+    await new SaveStates(fakeGame(), store, 1).save();
+    expect(store.records.get(1)?.hz).toBe(50);
+  });
+
+  it('must match the mode the game was booted in, and the game is left alone otherwise', async () => {
+    const game = fakeGame();
+    const store = memoryStore();
+    game.value = 5;
+    await new SaveStates(game, store, 1, 60).save();
+    game.value = 6;
+    expect(await new SaveStates(game, store, 1, 50).load()).toBe('Slot 1 was saved in 60 Hz mode; switch the mode and reload the page to load it');
+    expect(game.value).toBe(6);
+    expect(await new SaveStates(game, store, 1, 60).load()).toBe('Loaded slot 1');
+    expect(game.value).toBe(5);
+  });
+
+  it('treats a state without a rate as a 50 Hz one', () => {
+    const old: StateRecord = { format: 1, savedAt: 0, data: new Uint8Array() };
+    expect(modeMismatch(old, 50, 1)).toBeNull();
+    expect(modeMismatch(old, 60, 1)).toContain('50 Hz');
   });
 });
 
