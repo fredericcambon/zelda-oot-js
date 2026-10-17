@@ -2,7 +2,11 @@
 
 export const Op = {
   VTX: 0x01,
+  /** Modifies a field of a loaded vertex (colour, texture coordinates, screen position or depth). */
+  MODIFYVTX: 0x02,
   CULLDL: 0x03,
+  /** Branches to the address of the preceding RDPHALF_1 when a loaded vertex's w is below the command's value. */
+  BRANCH_Z: 0x04,
   TRI1: 0x05,
   TRI2: 0x06,
   QUAD: 0x07,

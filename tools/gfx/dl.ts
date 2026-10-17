@@ -80,7 +80,6 @@ export interface DrawState {
   textures: [DecodedTexture | null, DecodedTexture | null];
   viewport: Viewport;
   scissor: { mode: number; xh: number; yh: number; xl: number; yl: number };
-  fog: { multiplier: number; offset: number };
   colorImage: { fmt: number; siz: number; width: number; addr: number };
   depthImage: number;
 }
@@ -90,15 +89,13 @@ export interface TriangleBatch {
   state: DrawState;
   /** Three consecutive vertices per triangle. Positions are clip-space (x, y, z, w), four floats each. */
   positions: Float32Array;
-  /** Colours in 0..1 (lit when lighting was on), four floats per vertex. */
-  colors: Float32Array;
   /**
-   * Texture coordinates in texels of the vertex's own S10.5 value times the texture command's scale, two floats per
-   * vertex. With texture generation on they are the generated coordinates in 0..1 instead.
+   * Colours in 0..1 (lit when lighting was on), four floats per vertex. With the geometry mode's fog bit the alpha is the
+   * fog factor, as in the microcode's vertex records.
    */
+  colors: Float32Array;
+  /** Texture coordinates in texels (the S10.5 value times the texture command's scale, divided by 32), two floats per vertex. */
   uvs: Float32Array;
-  /** Fog factor in 0..1 per vertex (0 when fog is off). */
-  fog: Float32Array;
 }
 
 export interface RectBatch {
@@ -177,7 +174,54 @@ interface Vertex {
   color: [number, number, number, number];
   s: number;
   t: number;
-  fog: number;
+}
+
+/** How far outside the screen's edge a vertex may be before the microcode clips the triangle: the planes sit at twice w. */
+const GUARD_BAND = 2;
+
+/** Signed distances of a vertex from the planes, positive inside, in the order the clipper takes them. */
+const GUARD_PLANES: ((v: Vertex) => number)[] = [
+  (v) => v.clip[0] + GUARD_BAND * v.clip[3],
+  (v) => v.clip[1] + GUARD_BAND * v.clip[3],
+  (v) => GUARD_BAND * v.clip[3] - v.clip[0],
+  (v) => GUARD_BAND * v.clip[3] - v.clip[1],
+  (v) => v.clip[3] - v.clip[2],
+];
+
+const outsideGuardBand = (v: Vertex): boolean => v.clip[3] <= 0 || GUARD_PLANES.some((d) => d(v) < 0);
+
+function interpolate(a: Vertex, b: Vertex, t: number): Vertex {
+  const lerp = (x: number, y: number) => x + (y - x) * t;
+  return {
+    clip: a.clip.map((x, i) => lerp(x, b.clip[i]!)) as Vertex['clip'],
+    color: a.color.map((x, i) => lerp(x, b.color[i]!)) as Vertex['color'],
+    s: lerp(a.s, b.s),
+    t: lerp(a.t, b.t),
+  };
+}
+
+/**
+ * Clips a triangle to the guard band, one plane after the other. The polygon starts at the triangle's third vertex and each
+ * plane's pass walks it emitting, for every vertex, the crossing with the edge from the one before it and then the vertex when
+ * it is inside; this reproduces which vertex the microcode's fan of triangles starts from (the fan's first vertex fixes how
+ * the shade is interpolated across a clipped floor).
+ */
+function clipToGuardBand([a, b, c]: [Vertex, Vertex, Vertex]): Vertex[] {
+  let poly = [c, a, b];
+  for (const distance of GUARD_PLANES) {
+    const out: Vertex[] = [];
+    for (let i = 0; i < poly.length; i++) {
+      const prev = poly[(i + poly.length - 1) % poly.length]!, cur = poly[i]!;
+      const dp = distance(prev), dc = distance(cur);
+      if (dc >= 0) {
+        if (dp < 0) out.push(interpolate(prev, cur, dp / (dp - dc)));
+        out.push(cur);
+      } else if (dp >= 0) out.push(interpolate(prev, cur, dp / (dp - dc)));
+    }
+    poly = out;
+    if (poly.length < 3) return [];
+  }
+  return poly;
 }
 
 function newTile(): TileState {
@@ -235,13 +279,13 @@ export class DisplayListInterpreter {
   private textureCache = new Map<string, DecodedTexture | null>();
   /** Decoded background pictures by address and checksum; kept across runs so a renderer can reuse its upload of an unchanged picture. */
   private bgImages = new Map<string, DecodedTexture>();
-  /** Data pointer of the microcode the last RDPHALF_1 announced, and whether the loaded microcode is the 2D one. */
-  private ucodeData = 0;
+  /** The word of the last RDPHALF_1: the data pointer of a microcode about to be loaded, or the target of a branch on depth. */
+  private rdpHalf1 = 0;
   private ucode2d = false;
   /** Hashes of ranges of the texture memory, valid until the next load into it. */
   private tmemHashes = new Map<number, number>();
   private result!: DisplayListResult;
-  private current: { batch: TriangleBatch; pos: number[]; col: number[]; uv: number[]; fog: number[] } | null = null;
+  private current: { batch: TriangleBatch; pos: number[]; col: number[]; uv: number[] } | null = null;
 
   /** Interprets the list starting at `start` (a segmented address) in `ram`, a big-endian image indexed by physical address. */
   run(ram: Uint8Array, start: number, opts: RunOptions = {}): DisplayListResult {
@@ -285,6 +329,14 @@ export class DisplayListInterpreter {
             else pc = back;
           }
           break;
+        case Op.BRANCH_Z: {
+          // Branch (without return) to the address of the last RDPHALF_1 when the vertex's w, the distance from the eye, is
+          // below the command's value; the comparison is of the integer part of w.
+          const v = this.verts[(w0 & 0xfff) / 2];
+          const target = this.address(this.rdpHalf1);
+          if (v && target >= 0 && Math.floor(v.clip[3]) < (w1 | 0)) pc = target;
+          break;
+        }
         case Op.TEXRECT: {
           const h1 = pc + 8 <= ram.length ? this.dv.getUint32(pc) >>> 24 : 0;
           const h2 = pc + 16 <= ram.length ? this.dv.getUint32(pc + 8) >>> 24 : 0;
@@ -334,7 +386,7 @@ export class DisplayListInterpreter {
     this.numLights = 0;
     this.lightSlots = Array.from({ length: 10 }, () => new Uint8Array(16));
     this.snapshot = null;
-    this.ucodeData = 0;
+    this.rdpHalf1 = 0;
     this.ucode2d = false;
     this.current = null;
   }
@@ -368,6 +420,7 @@ export class DisplayListInterpreter {
         this.triangle((w0 >>> 16) & 255, (w0 >>> 8) & 255, w0 & 255);
         this.triangle((w1 >>> 16) & 255, (w1 >>> 8) & 255, w1 & 255);
         break;
+      case Op.MODIFYVTX: this.modifyVertex(w0, w1); break;
       case Op.TEXTURE:
         this.texture = { on: (w0 & 0xff) !== 0, level: (w0 >>> 11) & 7, tile: (w0 >>> 8) & 7, scaleS: w1 >>> 16, scaleT: w1 & 0xffff };
         this.invalidate();
@@ -380,8 +433,8 @@ export class DisplayListInterpreter {
       case Op.MTX: this.loadMatrix(w0, w1); break;
       case Op.MOVEWORD: this.moveWord(w0, w1); break;
       case Op.MOVEMEM: this.moveMem(w0, w1); break;
-      case Op.RDPHALF_1: this.ucodeData = w1; break;
-      case Op.LOAD_UCODE: this.ucode2d = this.hasSignature(this.ucodeData, S2DEX_SIGNATURE); break;
+      case Op.RDPHALF_1: this.rdpHalf1 = w1; break;
+      case Op.LOAD_UCODE: this.ucode2d = this.hasSignature(this.rdpHalf1, S2DEX_SIGNATURE); break;
       case Op.BG_1CYC:
       case Op.BG_COPY:
         if (!this.ucode2d) return false;
@@ -481,9 +534,8 @@ export class DisplayListInterpreter {
     const m = this.mvp;
     const lighting = (this.geometryMode & Geo.LIGHTING) !== 0;
     const texgen = (this.geometryMode & Geo.TEXTURE_GEN) !== 0;
+    const linear = (this.geometryMode & Geo.TEXTURE_GEN_LINEAR) !== 0;
     const fogOn = (this.geometryMode & Geo.FOG) !== 0;
-    const scaleS = this.texture.scaleS / 0x10000;
-    const scaleT = this.texture.scaleT / 0x10000;
     for (let i = 0; i < n; i++) {
       const a = addr + i * 16;
       const x = this.dv.getInt16(a), y = this.dv.getInt16(a + 2), z = this.dv.getInt16(a + 4);
@@ -493,45 +545,68 @@ export class DisplayListInterpreter {
         x * m[2]! + y * m[6]! + z * m[10]! + m[14]!,
         x * m[3]! + y * m[7]! + z * m[11]! + m[15]!,
       ];
-      const alpha = this.ram[a + 15]! / 255;
-      let col: Vertex['color'];
-      let s = this.dv.getInt16(a + 8) / 32 * scaleS;
-      let t = this.dv.getInt16(a + 10) / 32 * scaleT;
+      let alpha = this.ram[a + 15]! / 255;
+      let col: [number, number, number];
+      let s = scaleCoordinate(this.dv.getInt16(a + 8), this.texture.scaleS);
+      let t = scaleCoordinate(this.dv.getInt16(a + 10), this.texture.scaleT);
       if (lighting) {
-        const normal = this.viewNormal(this.dv.getInt8(a + 12), this.dv.getInt8(a + 13), this.dv.getInt8(a + 14));
-        col = this.light(normal, alpha);
+        const normal: [number, number, number] = [this.dv.getInt8(a + 12), this.dv.getInt8(a + 13), this.dv.getInt8(a + 14)];
+        col = this.light(normal);
         if (texgen) {
-          const lx = this.lightSlots[0]!, ly = this.lightSlots[1]!;
-          s = (dot3(normal, lx) * 0.5 + 0.5);
-          t = (dot3(normal, ly) * 0.5 + 0.5);
+          s = scaleCoordinate(generatedCoordinate(along(normal, this.modelDirection(0)), linear), this.texture.scaleS);
+          t = scaleCoordinate(generatedCoordinate(along(normal, this.modelDirection(1)), linear), this.texture.scaleT);
         }
-      } else col = [this.ram[a + 12]! / 255, this.ram[a + 13]! / 255, this.ram[a + 14]! / 255, alpha];
-      let fog = 0;
-      if (fogOn && clip[3] !== 0) {
-        fog = Math.min(255, Math.max(0, (clip[2] / clip[3]) * this.fog.multiplier + this.fog.offset)) / 255;
-      }
-      this.verts[v0 + i] = { clip, color: col, s, t, fog };
+      } else col = [this.ram[a + 12]! / 255, this.ram[a + 13]! / 255, this.ram[a + 14]! / 255];
+      // With the fog bit the vertex's alpha byte carries the fog factor instead.
+      if (fogOn) alpha = this.fogFactor(clip);
+      this.verts[v0 + i] = { clip, color: [col[0], col[1], col[2], alpha], s: s / 32, t: t / 32 };
     }
   }
 
-  private viewNormal(nx: number, ny: number, nz: number): [number, number, number] {
+  /**
+   * Fog factor 0..1 of a vertex: `clamp(z / w * multiplier + offset, 0, 255) / 255`. A vertex at or behind the eye (w <= 0)
+   * is treated as infinitely far in front of the near plane (the depth the microcode stores for it is the lowest), so the
+   * factor is the clamp of the offset alone when the multiplier is zero, 0 for a positive multiplier and 1 for a negative one.
+   */
+  private fogFactor(clip: Vertex['clip']): number {
+    const { multiplier, offset } = this.fog;
+    const w = clip[3];
+    const value = w > 0 ? (clip[2] / w) * multiplier + offset : multiplier === 0 ? offset : multiplier > 0 ? -Infinity : Infinity;
+    return Math.min(255, Math.max(0, value)) / 255;
+  }
+
+  /**
+   * The direction of a light or look-at slot in the model's space, in the units of a normal's bytes (127 for a unit vector).
+   * The microcode multiplies the slot's direction bytes by the 3x3 part of the model-view matrix into a 24.8 fixed-point
+   * vector V, sums the squares of its components (each truncated to an integer, S = sum of floor(V^2 / 65536)) and scales V by
+   * the reciprocal square root of S (1 when S is below 2), keeping half of it and saturating each component to a byte. A
+   * matrix that scales so that the vector stays below about 1.6 long therefore gives a vector that is not of unit length: the
+   * game's actor matrices (scale 0.01) make the light about 1.2 times as strong as a unit vector, and a scale far below
+   * that dims it.
+   */
+  private modelDirection(slot: number): [number, number, number] {
+    const l = this.lightSlots[slot]!;
+    const d = [(l[8]! << 24) >> 24, (l[9]! << 24) >> 24, (l[10]! << 24) >> 24];
     const m = this.mv;
-    const x = nx * m[0]! + ny * m[4]! + nz * m[8]!;
-    const y = nx * m[1]! + ny * m[5]! + nz * m[9]!;
-    const z = nx * m[2]! + ny * m[6]! + nz * m[10]!;
-    const len = Math.hypot(x, y, z) || 1;
-    return [x / len, y / len, z / len];
+    const v = [0, 1, 2].map((i) => Math.floor((d[0]! * m[i * 4]! + d[1]! * m[i * 4 + 1]! + d[2]! * m[i * 4 + 2]!) * 256));
+    const scale = reciprocalSquareRoot(v.reduce((acc, x) => acc + Math.floor((x * x) / 0x10000), 0));
+    return v.map((x) => Math.max(-128, Math.min(127, Math.floor((x * scale) / 0x100000000)))) as [number, number, number];
   }
 
-  private light(n: [number, number, number], alpha: number): Vertex['color'] {
+  /**
+   * Lit colour in 0..1: the ambient colour plus, for each light, its colour times the cosine of the angle to the normal. The
+   * cosine is the dot product of the normal's bytes with the light's model-space vector over 2^14, 0 when facing away and at
+   * most 1 - 2^-15; each product is truncated to a whole number of 1/255 steps before the sum, which is capped at 255.
+   */
+  private light(n: [number, number, number]): [number, number, number] {
     const amb = this.lightSlots[2 + this.numLights]!;
-    const c = [amb[0]! / 255, amb[1]! / 255, amb[2]! / 255];
+    const c = [amb[0]!, amb[1]!, amb[2]!];
     for (let i = 0; i < this.numLights; i++) {
+      const d = Math.min(32767, Math.max(0, along(n, this.modelDirection(2 + i)) * 2));
       const l = this.lightSlots[2 + i]!;
-      const d = Math.max(0, dot3(n, l));
-      for (let k = 0; k < 3; k++) c[k]! += (l[k]! / 255) * d;
+      for (let k = 0; k < 3; k++) c[k]! += Math.floor((l[k]! * d) / 32768);
     }
-    return [Math.min(1, c[0]!), Math.min(1, c[1]!), Math.min(1, c[2]!), alpha];
+    return [Math.min(255, c[0]!) / 255, Math.min(255, c[1]!) / 255, Math.min(255, c[2]!) / 255];
   }
 
   private moveWord(w0: number, w1: number): void {
@@ -568,16 +643,46 @@ export class DisplayListInterpreter {
     } else this.problem(`movemem to unknown target 0x${index.toString(16)}`);
   }
 
-  private clipFlags(v: Vertex): number {
-    const [x, y, , w] = v.clip;
-    return (x < -w ? 1 : 0) | (x > w ? 2 : 0) | (y < -w ? 4 : 0) | (y > w ? 8 : 0);
+  /**
+   * MODIFYVTX: overwrites a field of a loaded vertex (fields observed by running the microcode, docs/re/display-lists.md section 9; the
+   * screen position and depth are converted back to clip space with the viewport, which is this interpreter's own inverse). `w0[23:16]` names the field and `w0[15:0] / 2` the slot: 0x10 the colour
+   * (`w1` = rgba), 0x14 the texture coordinates (`w1` = s in the high half, t in the low, S10.5, not scaled), 0x18 the screen
+   * position in 10.2 pixel units (x high, y low) and 0x1C the screen depth (high half).
+   */
+  private modifyVertex(w0: number, w1: number): void {
+    const v = this.verts[(w0 & 0xffff) / 2];
+    if (!v) { this.problem(`vertex modification of slot ${(w0 & 0xffff) / 2} that is not loaded`); return; }
+    const where = (w0 >>> 16) & 0xff;
+    const vp = this.viewport;
+    const w = v.clip[3];
+    if (where === 0x10) v.color = [(w1 >>> 24) / 255, ((w1 >>> 16) & 255) / 255, ((w1 >>> 8) & 255) / 255, (w1 & 255) / 255];
+    else if (where === 0x14) { v.s = ((w1 >> 16) | 0) / 32; v.t = ((w1 << 16) >> 16) / 32; }
+    else if (where === 0x18 && vp.scale[0] !== 0 && vp.scale[1] !== 0) {
+      v.clip[0] = (((w1 >> 16) - vp.trans[0]) / vp.scale[0]) * w;
+      v.clip[1] = -((((w1 << 16) >> 16) - vp.trans[1]) / vp.scale[1]) * w;
+    } else if (where === 0x1c && vp.scale[2] !== 0) v.clip[2] = ((((w1 >>> 16) * 4) - vp.trans[2]) / vp.scale[2]) * w;
+    else this.problem(`vertex modification of unknown field 0x${where.toString(16)}`);
   }
 
-  /** CULLDL: the list ends when every vertex of the range lies outside one side of the screen. */
+  /**
+   * The microcode's clip flags of a vertex that decide trivial rejection: for x and for y a bit for `v <= -w` and one for
+   * `v >= w` (the comparison of the vector unit's clip instruction, which treats a negative w by flipping both senses),
+   * plus `w <= 0` and `z >= w` (beyond the far plane). The near plane (`z <= -w`) has no flag in the rejection mask.
+   */
+  private clipFlags(v: Vertex): number {
+    const [x, y, z, w] = v.clip;
+    const side = (c: number) => {
+      const opposite = c < 0 !== w < 0;
+      return ((opposite ? c + w <= 0 : w < 0) ? 1 : 0) | ((opposite ? w < 0 : c - w >= 0) ? 2 : 0);
+    };
+    return side(x) | (side(y) << 2) | (w <= 0 ? 16 : 0) | (z >= w ? 32 : 0);
+  }
+
+  /** CULLDL: the list ends when every vertex of the range shares a clip flag (all outside one side of the view volume). */
   private cullList(w0: number, w1: number): boolean {
     const first = (w0 & 0xffff) / 2;
     const last = (w1 & 0xffff) / 2;
-    let all = 15;
+    let all = 63;
     for (let i = first; i <= last; i++) {
       const v = this.verts[i];
       if (!v) { this.problem(`cull range uses vertex ${i} that is not loaded`); return false; }
@@ -588,15 +693,28 @@ export class DisplayListInterpreter {
 
   // ---- Primitives ------------------------------------------------------------------------------------------------
 
+  /**
+   * A triangle is dropped when its three vertices share a clip flag (all outside one side of the view volume, or all at or
+   * behind the eye, or all beyond the far plane). Otherwise, if any vertex lies outside the guard band (beyond twice w to a
+   * side, behind the eye or past the far plane) the polygon is clipped to it as the microcode's clipper does: against the
+   * planes in the order x low, y low, x high, y high, far, each new vertex taking the linear interpolation, in clip space,
+   * of every field of the edge's two vertices (position, colour, fog factor and texture coordinates); the polygon is then
+   * drawn as a fan. In front of the near plane nothing is clipped.
+   */
   private triangle(a: number, b: number, c: number): void {
     const vs = [a / 2, b / 2, c / 2].map((i) => this.verts[i]);
     if (vs.some((v) => !v)) { this.problem(`triangle uses vertices ${a / 2}, ${b / 2}, ${c / 2} that are not loaded`); return; }
+    const [v0, v1, v2] = vs as [Vertex, Vertex, Vertex];
+    if ((this.clipFlags(v0) & this.clipFlags(v1) & this.clipFlags(v2)) !== 0) return;
+    const polygon = [v0, v1, v2].some(outsideGuardBand) ? clipToGuardBand([v0, v1, v2]) : [v0, v1, v2];
+    if (polygon.length < 3) return;
     const cur = this.currentBatch();
-    for (const v of vs as Vertex[]) {
-      cur.pos.push(...v.clip);
-      cur.col.push(...v.color);
-      cur.uv.push(v.s, v.t);
-      cur.fog.push(v.fog);
+    for (let k = 1; k + 1 < polygon.length; k++) {
+      for (const v of [polygon[0]!, polygon[k]!, polygon[k + 1]!]) {
+        cur.pos.push(...v.clip);
+        cur.col.push(...v.color);
+        cur.uv.push(v.s, v.t);
+      }
     }
   }
 
@@ -605,7 +723,7 @@ export class DisplayListInterpreter {
     this.finishBatch();
     const state = this.takeSnapshot();
     const empty = new Float32Array(0);
-    this.current = { batch: { kind: 'triangles', state, positions: empty, colors: empty, uvs: empty, fog: empty }, pos: [], col: [], uv: [], fog: [] };
+    this.current = { batch: { kind: 'triangles', state, positions: empty, colors: empty, uvs: empty }, pos: [], col: [], uv: [] };
     return this.current;
   }
 
@@ -616,7 +734,6 @@ export class DisplayListInterpreter {
     cur.batch.positions = Float32Array.from(cur.pos);
     cur.batch.colors = Float32Array.from(cur.col);
     cur.batch.uvs = Float32Array.from(cur.uv);
-    cur.batch.fog = Float32Array.from(cur.fog);
     this.result.batches.push(cur.batch);
   }
 
@@ -698,7 +815,7 @@ export class DisplayListInterpreter {
       primColor: this.prim, envColor: this.env, fogColor: this.fogColor, blendColor: this.blend, fillColor: this.fill,
       texture: { ...this.texture }, tiles,
       textures: [this.decodeTile(textureTile), this.decodeTile((textureTile + 1) & 7)],
-      viewport: this.viewport, scissor: this.scissor, fog: this.fog, colorImage: this.cimg, depthImage: this.zimg,
+      viewport: this.viewport, scissor: this.scissor, colorImage: this.cimg, depthImage: this.zimg,
     };
     this.snapshot = state;
     return state;
@@ -825,8 +942,44 @@ export class DisplayListInterpreter {
   }
 }
 
-function dot3(n: [number, number, number], l: Uint8Array): number {
-  // Directions are signed bytes at offset 8; the byte array holds them raw.
-  const d = (k: number) => ((l[8 + k]! << 24) >> 24) / 127;
-  return n[0] * d(0) + n[1] * d(1) + n[2] * d(2);
+/**
+ * The reciprocal square root of the vector unit's divide unit, for a 32-bit integer: about 2^31 / sqrt(x) times sqrt(2) for odd
+ * exponents folded into the table, and 0x7FFFFFFF for 0. The table has 512 entries of 16 bits: the entry for index i is
+ * floor(b / 2) where b is the largest integer below 2^22 / sqrt(a) with a = (i + 512) >> (i & 1); the index is the nine bits
+ * after the leading one of the input, with the lowest replaced by the parity of the leading zero count (n64brew.dev, RSP
+ * divide unit). Its precision is what makes the lighting vectors a unit less than exact.
+ */
+function reciprocalSquareRoot(input: number): number {
+  if (input === 0) return 0x7fffffff;
+  const shift = Math.clz32(input);
+  const index = (((input << shift) >>> 0) & 0x7fc00000) >>> 22;
+  const entry = INVERSE_SQUARE_ROOT_TABLE[(index & 0x1fe) | (shift & 1)]!;
+  return (((0x10000 | entry) << 14) >>> ((31 - shift) >> 1)) >>> 0;
+}
+
+const INVERSE_SQUARE_ROOT_TABLE = Uint16Array.from({ length: 512 }, (_, i) => {
+  const a = (i + 512) >> (i & 1);
+  return Math.ceil(Math.sqrt(2 ** 44 / a)) - 1 >> 1;
+});
+
+/** Dot product of a normal (signed bytes) with a direction in the same units. */
+function along(n: [number, number, number], d: [number, number, number]): number {
+  return n[0] * d[0] + n[1] * d[1] + n[2] * d[2];
+}
+
+/** A texture coordinate in 10.5 fixed point times the texture command's scale (a 16-bit fraction), rounded down. */
+function scaleCoordinate(coordinate: number, scale: number): number {
+  return Math.floor((coordinate * scale) / 0x10000);
+}
+
+/**
+ * The coordinate texture generation makes from `along`, the dot product of the normal with a look-at vector in the model's
+ * space (at most 127 * 127), in 10.5 fixed point before scaling: `0x3FFF + along` for the plain mode and, in the linear
+ * mode, a cubic `0x4000 + 8672 x + 7226 x^3` of `x = along / 16129` fitted to the microcode's output (largest difference 2.3
+ * of 32768).
+ */
+function generatedCoordinate(along: number, linear: boolean): number {
+  if (!linear) return 0x3fff + along;
+  const x = Math.max(-1, Math.min(1, along / 16129));
+  return 0x4000 + 8672 * x + 7226 * x * x * x;
 }

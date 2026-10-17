@@ -41,6 +41,8 @@ interface Target {
 
 const FLOATS_PER_VERTEX = 10;
 const MAX_TEXTURES = 512;
+/** Texture unit that uploads bind on: units 0 and 1 hold the two tiles the combiner reads and must not be disturbed. */
+const UPLOAD_UNIT = 2;
 
 const PRESENT_FRAGMENT = `#version 300 es
 precision highp float;
@@ -124,6 +126,8 @@ export class Renderer {
   /** Draws the batches of one graphics task into the colour images they name. */
   drawTask(result: DisplayListResult): void {
     const s = this.stats;
+    // The cache is emptied between tasks: emptying it while a draw holds two textures would delete the first one.
+    if (this.textureCache.size >= MAX_TEXTURES) this.clearTextures();
     s.tasks++;
     s.commands = result.commands;
     s.batches = result.batches.length;
@@ -285,7 +289,7 @@ export class Renderer {
     const program = this.program(spec);
     gl.useProgram(program.gl);
     this.applyRaster(state, triangles, spec);
-    this.applyUniforms(program, state);
+    this.applyUniforms(program, state, triangles);
     gl.bindVertexArray(this.vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
     gl.bufferData(gl.ARRAY_BUFFER, this.vertices.subarray(0, count * FLOATS_PER_VERTEX), gl.DYNAMIC_DRAW);
@@ -304,9 +308,11 @@ export class Renderer {
 
     const vp = state.viewport;
     if (triangles && vp.scale[0] !== 0 && vp.scale[1] !== 0) {
+      // The viewport is twice as wide and high as the screen it maps to, around the same centre: triangles are clipped to
+      // twice the screen's size (dl.ts), and the vertex shader halves x and y, so that this guard band is the clip volume.
       const hw = Math.abs(vp.scale[0]) / 4, hh = Math.abs(vp.scale[1]) / 4;
       const cx = vp.trans[0] / 4, cy = vp.trans[1] / 4;
-      gl.viewport(Math.round((cx - hw) * k), Math.round((SCREEN_H - (cy + hh)) * k), Math.round(hw * 2 * k), Math.round(hh * 2 * k));
+      gl.viewport(Math.round((cx - 2 * hw) * k), Math.round((SCREEN_H - (cy + 2 * hh)) * k), Math.round(hw * 4 * k), Math.round(hh * 4 * k));
     } else gl.viewport(0, 0, this.canvas.width, this.canvas.height);
 
     if (spec.framebufferBlend) {
@@ -340,7 +346,7 @@ export class Renderer {
     } else gl.disable(gl.CULL_FACE);
   }
 
-  private applyUniforms(program: Program, state: DrawState): void {
+  private applyUniforms(program: Program, state: DrawState, triangles: boolean): void {
     const gl = this.gl;
     const u = (name: string) => this.uniform(program, name);
     const p = state.primColor, e = state.envColor, f = state.fogColor, bl = state.blendColor;
@@ -349,7 +355,7 @@ export class Renderer {
     gl.uniform4f(u('uFog'), f.r / 255, f.g / 255, f.b / 255, f.a / 255);
     gl.uniform4f(u('uBlend'), bl.r / 255, bl.g / 255, bl.b / 255, bl.a / 255);
     gl.uniform1f(u('uPrimLod'), p.lodFrac / 255);
-    gl.uniform2f(u('uFogLine'), state.fog.multiplier, state.fog.offset);
+    gl.uniform1f(u('uXyScale'), state.viewport.scale[0] !== 0 && state.viewport.scale[1] !== 0 && triangles ? 0.5 : 1);
 
     const a = new Float32Array(8), m = new Float32Array(8), c = new Float32Array(8);
     for (let i = 0; i < 2; i++) {
@@ -409,12 +415,19 @@ export class Renderer {
   private upload(width: number, height: number, rgba: Uint8Array): GpuTexture {
     const gl = this.gl;
     const texture = gl.createTexture()!;
+    gl.activeTexture(gl.TEXTURE0 + UPLOAD_UNIT);
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     return { texture, width, height };
+  }
+
+  private clearTextures(): void {
+    for (const t of this.textureCache.values()) this.gl.deleteTexture(t.texture);
+    this.textureCache.clear();
+    this.textureByImage = new WeakMap();
   }
 
   /** Decoded textures are rebuilt for every task, so they are shared by content. */
@@ -426,11 +439,6 @@ export class Renderer {
     const key = `${image.width}x${image.height}:${h >>> 0}`;
     let tex = this.textureCache.get(key);
     if (!tex) {
-      if (this.textureCache.size >= MAX_TEXTURES) {
-        for (const t of this.textureCache.values()) this.gl.deleteTexture(t.texture);
-        this.textureCache.clear();
-        this.textureByImage = new WeakMap();
-      }
       tex = this.upload(image.width, image.height, image.rgba);
       this.textureCache.set(key, tex);
     }
