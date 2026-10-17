@@ -2,7 +2,8 @@
 
 export interface SaveStore {
   load(): Promise<Uint8Array | null>;
-  store(bytes: Uint8Array): Promise<void>;
+  /** `backup` keeps what is stored now beside it before replacing it, where the store can (the server's folder does). */
+  store(bytes: Uint8Array, options?: { backup?: boolean }): Promise<void>;
 }
 
 const DB_NAME = 'zelda-oot-js';
@@ -67,8 +68,8 @@ export function serverStore(fetcher: typeof fetch = fetch): SaveStore {
       if (!r.ok) throw new Error(`could not read the save: ${r.status}`);
       return new Uint8Array(await r.arrayBuffer());
     },
-    async store(bytes) {
-      const r = await fetcher('/api/saves/sram', { method: 'PUT', body: bytes.slice() });
+    async store(bytes, options) {
+      const r = await fetcher('/api/saves/sram', { method: 'PUT', body: bytes.slice(), headers: options?.backup ? { 'X-Backup': '1' } : {} });
       if (!r.ok) throw new Error(`could not store the save: ${r.status}`);
     },
   };
@@ -76,6 +77,8 @@ export function serverStore(fetcher: typeof fetch = fetch): SaveStore {
 
 /** The save memory of a running game, as the host sees it. */
 export interface SaveMemory {
+  /** A copy of the save memory. */
+  read(): Uint8Array;
   /** Replaces the start of the save memory. */
   write(bytes: Uint8Array): void;
   /** A copy of the save memory when the game wrote it since the last call, else null. */
@@ -93,6 +96,17 @@ export class SaveSync {
     const bytes = await this.saves.load();
     if (bytes) this.memory.write(bytes);
     return bytes !== null;
+  }
+
+  /**
+   * Stores `bytes` (backing up the stored save first) and then puts them in the game's save memory. The game is left as it was when
+   * the store fails.
+   */
+  async replace(bytes: Uint8Array): Promise<void> {
+    await this.pending;
+    await this.saves.store(bytes, { backup: true });
+    this.memory.write(bytes);
+    this.memory.takeIfDirty();
   }
 
   /** Call once per frame; queues a write when the game has written the memory. Resolves when the queued writes are done. */

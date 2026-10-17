@@ -72,6 +72,12 @@ EMSCRIPTEN_KEEPALIVE void oot_boot(const uint8_t *rom, size_t size) {
   rt_start(BOOT_MAIN, BOOT_STACK);
 }
 
+// Starts the game over on the cartridge image it was booted with, as the console's reset does: RDRAM, threads and
+// devices start from scratch, the save memory stays as it is. Does nothing before the first oot_boot.
+EMSCRIPTEN_KEEPALIVE void oot_reset(void) {
+  if (boot_rom) oot_boot(boot_rom, boot_rom_size);
+}
+
 // Runs until the next video retrace interval ends. oot_idle then tells whether nothing can ever run again.
 // (The result is not the return value: an export that suspends on a fiber switch does not hand one back reliably.)
 EMSCRIPTEN_KEEPALIVE void oot_frame(void) {
