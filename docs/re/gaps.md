@@ -28,6 +28,27 @@ The old 3 frames per second were not the recompiled game. Measured here (video f
 - **Asyncify:** left as is. Guest threads are fibers (`runtime/sched.c`), which need it, and the guest alone is far above the target. **The thread mechanism is unchanged** (m4-savestate: nothing to adapt).
 - **Target:** at least 20 game frames per second headless is met by a factor of 10 or more even with every display list interpreted. `tools/sweep/sweep.test.ts` asserts more than 20 video fps over 2,500 frames of the scripted new game, on the coverage build.
 
+## Frame time breakdown
+
+Where one game frame (one graphics task) spends its time, headless at `-O2`, scripted new game with Kokiri Forest loaded at frame 19,000 (entrance 238, scene 85; Link under control, the opening cutscene skipped with A taps), mean of the last 300 game frames at frame 21,400, three runs:
+
+```
+npm run headless -- --input tools/headless/newgame.input --frames 21400 --entrance 238 --profile --profile-window 300
+```
+
+| Phase | ms per game frame | Share |
+|---|---|---|
+| Game code (the frame call minus the hooks) | 0.69–0.73 | 12% |
+| Display lists (`DisplayListInterpreter.run`) | 5.04–5.17 | 88% |
+| WebGL submit (`drawTask` + `present`) | n/a headless | – |
+| GPU (`EXT_disjoint_timer_query_webgl2`) | n/a headless | – |
+| Draw calls per frame | 113.5 | – |
+
+- Display-list processing is about 7 times the game code. Interpreting is the dominant CPU cost before any WebGL call, so porting it (and batching the draw calls) is where the gain is.
+- The audio mixer does not run in this measurement (no `--wav`); in the browser it runs inside the frame call as a hook and is left out of the game-code time, like the graphics hook.
+- Submit and GPU time need a browser: the debug overlay shows them (GPU as "n/a" when the browser lacks the timer query extension) and they were not measured here. Draw calls headless are counted as the renderer issues them: one per non-empty triangle batch and per rectangle that is not a fill.
+- Timing is a handful of `performance.now()` reads per task; browsers round them (about 0.1 ms, 1 ms in some), so single frames are coarse and only the means are meaningful.
+
 ## Coverage mode
 
 `npm run port -- --coverage` builds with `-DOOT_COVERAGE` (`runtime/cov.c`, `runtime/cpu.h`). It records which recompiled functions ran (a bitmap over `0x80000000`–`0x80FFFFFF`, so overlays count at their link addresses), the calls of each replaced OS routine, and the accesses beyond RDRAM (every guest memory access goes through `mem_ptr`, which otherwise wraps silently into RDRAM). RSP tasks by type and microcode are counted in every build (`oot_rsp_task_kind`). A **loop watchdog** counts the loop heads of the generated code: a video frame with more than 200 million iterations traps instead of hanging. The sweep adds the opcodes of every display list and audio command list. Calls of OS routines made through the dispatch table (indirect calls) are not counted.

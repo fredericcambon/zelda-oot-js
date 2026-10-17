@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -621,5 +622,27 @@ describe.skipIf(!rom || !existsSync(rom))('Kokiri Forest and its interiors', () 
     // Decals blend with what is under them and some are hidden by nearer things: 57% of the area changes at this frame.
     expect(alone.pixelsWritten).toBeGreaterThan(1000);
     expect(changed).toBeGreaterThan(alone.pixelsWritten * 0.4);
+  }, 3_600_000);
+});
+
+describe.skipIf(!rom || !existsSync(rom))('headless --profile', () => {
+  it('prints the frame time breakdown of the scripted new game, with display-list time', async () => {
+    await buildGame();
+    const run = spawnSync(
+      process.execPath,
+      ['--import', 'tsx', 'tools/headless/cli.ts', '--dist', join('out', 'headless-test-boot', 'dist'), '--input', 'tools/headless/newgame.input', '--frames', '3600', '--profile'],
+      { encoding: 'utf8', maxBuffer: 1 << 26, timeout: 3_600_000 },
+    );
+    expect(run.status, run.stderr).toBe(0);
+    const field = (name: string) => {
+      const m = new RegExp(String.raw`^\s+${name}\s+([0-9.]+) ms$`, 'm').exec(run.stdout);
+      expect(m, `${name} in the output: ${run.stdout}`).not.toBeNull();
+      return Number(m![1]);
+    };
+    expect(field('game code')).toBeGreaterThan(0);
+    expect(field('display lists')).toBeGreaterThan(0);
+    expect(run.stdout).toMatch(/draw calls +[1-9]/);
+    expect(run.stdout).toMatch(/submit +n\/a/);
+    expect(run.stdout).toMatch(/GPU +n\/a/);
   }, 3_600_000);
 });

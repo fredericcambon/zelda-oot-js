@@ -7,6 +7,7 @@ import { indexedDbStore, SaveSync, serverHasSaves, serverStore } from './saves.t
 import { indexedDbStates, SaveStates, serverStates } from './savestate.ts';
 import { migrateToServer } from './migrate.ts';
 import { FastForward } from './fastforward.ts';
+import { formatBreakdown } from '../tools/gfx/profile.ts';
 
 const FAST_BUDGET_MS = 12;
 const FRAME_MS = 20; // the video interface retraces at 50 Hz
@@ -112,6 +113,7 @@ function updateOverlay(): void {
     `${fps.toFixed(0)} fps (game 50 Hz)`,
     g ? `frame ${g.frames}  retraces ${g.retraces}  gfx tasks ${g.gfxTasks}${g.idle ? '  IDLE' : ''}` : 'no game',
     `last task: ${s.commands} commands, ${s.batches} batches, ${s.triangles} triangles, ${s.rects} rects`,
+    ...(game ? formatBreakdown(game.profiler.breakdown()) : []),
     `unknown commands ${s.unknown}  problems ${s.problems.length}`,
     `programs ${s.programs}  textures ${s.textures}  colour images ${s.targets}`,
     game ? `video framebuffer 0x${game.framebuffer().toString(16)}` : '',
@@ -161,7 +163,11 @@ async function loop(): Promise<void> {
       counted++;
       stepped = true;
     }
-    if (game && stepped) renderer.present(game.framebuffer());
+    if (game && stepped) {
+      const t0 = performance.now();
+      renderer.present(game.framebuffer());
+      game.profiler.addSubmit(performance.now() - t0);
+    }
     if (now - countStart >= 1000) {
       fps = (counted * 1000) / (now - countStart);
       counted = 0;

@@ -1,6 +1,7 @@
 // Boots the recompiled game in the page and feeds each graphics task it submits to the renderer.
 import { Synth } from '../tools/audio/synth.ts';
 import { DisplayListInterpreter } from '../tools/gfx/dl.ts';
+import { FrameProfiler } from '../tools/gfx/profile.ts';
 import { shownFramebuffer } from '../tools/gfx/vi.ts';
 import { RDRAM_SIZE, startModule } from '../tools/runtime/instance.ts';
 import type { AudioSink } from './audio.ts';
@@ -23,6 +24,8 @@ export interface Game {
   frame(): Promise<void>;
   /** Address of the colour image the video interface shows. */
   framebuffer(): number;
+  /** Times the phases of each game frame; see FrameProfiler. */
+  profiler: FrameProfiler;
   info(): { frames: number; retraces: number; gfxTasks: number; audioTasks: number; idle: boolean; renderError: string; audioError: string };
 }
 
@@ -30,32 +33,41 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
   let renderError = '';
   let audioError = '';
   const synth = new Synth();
+  const profiler = new FrameProfiler();
+  renderer.onGpuTime = (ms) => profiler.addGpu(ms);
   const guestRam = () => mod.HEAPU8.subarray(mod._oot_rdram(), mod._oot_rdram() + RDRAM_SIZE);
   const mod = await startModule<SnapshotCore>(moduleUrl, rom, {
-    onGfxTask: (data: number) => {
+    onGfxTask: (data: number) => profiler.hook(() => {
       try {
-        renderer.drawTask(new DisplayListInterpreter().run(guestRam(), data >>> 0));
+        const t0 = performance.now();
+        const result = new DisplayListInterpreter().run(guestRam(), data >>> 0);
+        const t1 = performance.now();
+        renderer.drawTask(result);
+        profiler.addDisplayList(t1 - t0);
+        profiler.addSubmit(performance.now() - t1, renderer.stats.drawCalls);
       } catch (err) {
         renderError = err instanceof Error ? err.message : String(err);
         console.error(err);
       }
-    },
-    onAudioTask: (data: number, size: number, _microcode: number, microcodeData: number) => {
+      profiler.taskDone();
+    }),
+    onAudioTask: (data: number, size: number, _microcode: number, microcodeData: number) => profiler.hook(() => {
       try {
         synth.run(guestRam(), { list: data & 0x1fffffff, size, dataSegment: microcodeData & 0x1fffffff });
       } catch (err) {
         audioError = err instanceof Error ? err.message : String(err);
         console.error(err);
       }
-    },
-    onAiBuffer: (addr: number, length: number, hz: number) => {
+    }),
+    onAiBuffer: (addr: number, length: number, hz: number) => profiler.hook(() => {
       const at = addr & 0x7fffff;
       audio.push(guestRam().slice(at, at + length), hz);
-    },
+    }),
   });
   const view = () => new DataView(mod.HEAPU8.buffer, mod._oot_rdram(), RDRAM_SIZE);
   const sram = () => mod.HEAPU8.subarray(mod._oot_sram(), mod._oot_sram() + mod._oot_sram_size());
   return {
+    profiler,
     setPad: (pad) => mod._oot_pad_set(0, pad.buttons, pad.x, pad.y),
     saveMemory: {
       write: (bytes) => sram().set(bytes.subarray(0, mod._oot_sram_size())),
@@ -71,7 +83,7 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
     },
     async frame() {
       try {
-        await mod._oot_frame();
+        await profiler.frame(() => mod._oot_frame());
       } catch (err) {
         const message = mod.UTF8ToString(mod._oot_fatal_message());
         throw new Error(message || (err instanceof Error ? err.message : String(err)), { cause: err });

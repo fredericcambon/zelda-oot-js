@@ -1,6 +1,7 @@
 // WebGL2 back end for the draw batches of tools/gfx/dl.ts. Every colour image the game draws into is a 320x240 texture
 // keyed by its address, so double buffering behaves as on the console; the depth image is one shared buffer.
 import type { Batch, DecodedTexture, DisplayListResult, DrawState, RectBatch, TriangleBatch } from '../tools/gfx/dl.ts';
+import { GpuTimer } from './gpu-timer.ts';
 import { Geo } from '../tools/gfx/opcodes.ts';
 import { CycleType, cycleTypeOf, fragmentSource, OtherL, shiftScale, specKey, specOf, VERTEX_SHADER, type ShaderSpec } from './shader.ts';
 
@@ -16,6 +17,8 @@ export interface RenderStats {
   batches: number;
   triangles: number;
   rects: number;
+  /** WebGL draw calls of the last task. */
+  drawCalls: number;
   unknown: number;
   problems: string[];
   programs: number;
@@ -64,9 +67,14 @@ const physical = (addr: number): number => addr & 0x1fffffff;
 
 export class Renderer {
   cullMode: CullMode = 'normal';
-  readonly stats: RenderStats = { tasks: 0, commands: 0, batches: 0, triangles: 0, rects: 0, unknown: 0, problems: [], programs: 0, textures: 0, targets: 0 };
+  readonly stats: RenderStats = { tasks: 0, commands: 0, batches: 0, triangles: 0, rects: 0, drawCalls: 0, unknown: 0, problems: [], programs: 0, textures: 0, targets: 0 };
 
   private readonly gl: WebGL2RenderingContext;
+  /** Called with the GPU milliseconds of each finished game frame (its task plus the presents that followed). */
+  onGpuTime: ((ms: number) => void) | null = null;
+
+  private readonly gpuTimer: GpuTimer;
+  private presentGpuMs = 0;
   private readonly programs = new Map<string, Program>();
   private readonly presentProgram: Program;
   private readonly buffer: WebGLBuffer;
@@ -84,6 +92,7 @@ export class Renderer {
     const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, preserveDrawingBuffer: true });
     if (!gl) throw new Error('WebGL2 is not available in this browser');
     this.gl = gl;
+    this.gpuTimer = new GpuTimer(gl);
     this.presentProgram = this.link(PRESENT_VERTEX, PRESENT_FRAGMENT);
     this.buffer = gl.createBuffer()!;
     this.vao = gl.createVertexArray()!;
@@ -128,14 +137,21 @@ export class Renderer {
     const s = this.stats;
     // The cache is emptied between tasks: emptying it while a draw holds two textures would delete the first one.
     if (this.textureCache.size >= MAX_TEXTURES) this.clearTextures();
+    this.collectGpu();
+    this.gpuTimer.begin('task');
     s.tasks++;
+    s.drawCalls = 0;
     s.commands = result.commands;
     s.batches = result.batches.length;
     s.triangles = 0;
     s.rects = 0;
     s.unknown = result.unknown.length;
     s.problems = result.problems.slice(0, 8);
-    for (const batch of result.batches) this.drawBatch(batch);
+    try {
+      for (const batch of result.batches) this.drawBatch(batch);
+    } finally {
+      this.gpuTimer.end();
+    }
     s.programs = this.programs.size;
     s.textures = this.textureCache.size;
     s.targets = this.targets.size;
@@ -143,6 +159,25 @@ export class Renderer {
 
   /** Shows the colour image at `address` (the one the video interface scans out), or the last one drawn when unknown. */
   present(address: number): void {
+    this.gpuTimer.begin('present');
+    try {
+      this.presentImage(address);
+    } finally {
+      this.gpuTimer.end();
+    }
+  }
+
+  private collectGpu(): void {
+    for (const { tag, ms } of this.gpuTimer.poll()) {
+      if (tag === 'present') this.presentGpuMs += ms;
+      else {
+        this.onGpuTime?.(ms + this.presentGpuMs);
+        this.presentGpuMs = 0;
+      }
+    }
+  }
+
+  private presentImage(address: number): void {
     const gl = this.gl;
     const target = this.targets.get(physical(address)) ?? this.lastTarget;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -294,6 +329,7 @@ export class Renderer {
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
     gl.bufferData(gl.ARRAY_BUFFER, this.vertices.subarray(0, count * FLOATS_PER_VERTEX), gl.DYNAMIC_DRAW);
     gl.drawArrays(gl.TRIANGLES, 0, count);
+    this.stats.drawCalls++;
   }
 
   // ---- State -------------------------------------------------------------------------------------------------------
