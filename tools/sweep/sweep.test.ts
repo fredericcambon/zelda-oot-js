@@ -11,6 +11,7 @@ import { bootGame } from '../headless/boot.ts';
 import { padAt, parseInput } from '../headless/input.ts';
 import { compileAll, link, runtimeSources } from '../port/build.ts';
 import { generate } from '../recomp/generate.ts';
+import { testCache } from '../recomp/test-base.ts';
 import { ensureToolchain } from '../recomp/toolchain.ts';
 import { renderScenes, renderStatic, replaceBlock } from './render.ts';
 import { mergeReports, sweepScenes, type SceneSweepReport } from './scenes.ts';
@@ -30,7 +31,7 @@ function buildGame() {
     const ctx = loadContext(rom!);
     expect(generate(ctx, inventory, cDir).problems).toEqual([]);
     const dist = join(work, 'dist');
-    const opts = { cDir, objDir: join(work, 'obj'), distDir: dist, toolchain: ensureToolchain(), coverage: true, log: () => {} };
+    const opts = { cDir, objDir: join(work, 'obj'), distDir: dist, toolchain: ensureToolchain(), coverage: true, cache: testCache(), log: () => {} };
     const out = await link(opts, await compileAll(opts, runtimeSources()));
     writeAssets(ctx.rom, buildManifest(ctx.sha1, ctx.rom.length, classify(ctx, inventory)), join(dist, 'assets'));
     return { moduleUrl: pathToFileURL(out).href, dist, inventory };

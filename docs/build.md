@@ -54,3 +54,14 @@ Next to the shared cache, each worktree's `generated/obj/` keeps a `<name>.o.key
 The cache lives in `~/.zelda-oot-js/cache` (next to the shared saves folder); `OOT_CACHE_DIR` overrides it. It holds data derived from the ROM, so it stays on the machine: it is never committed, uploaded or served (see the ROM handling rule in `AGENTS.md`).
 
 To clear it, delete the folder (`rm -rf ~/.zelda-oot-js/cache`; keep the sibling `saves/` folder). To clear one kind, delete `<cache>/<kind>/`.
+
+## Test suite timings
+
+`npm test` with the ROM (24 logical cores). `tools/recomp/global-setup.ts` builds one `-O2` game into `out/test-base/` through the shared cache before any test file runs; `headless`, `frames`, `boot` and the first `port` test read it (`tools/recomp/test-base.ts`). The `-O1` build of the cross-build state test relinks the same objects, and the coverage build of the sweep suite uses the cache too. The second `port` test runs two ports against the shared cache and asserts that the second hits it at every step.
+
+| Run | Before | After |
+| --- | --- | --- |
+| Warm (cache filled) | 450 s | 353 s (two runs: 598 s while the machine was busy, then 353 s) |
+| Cold (empty cache) | 996 s | 965 s |
+
+The 200 s warm and 400 s cold targets are not met. Warm, the longest file is `headless.test.ts` (about 230 s of serial boots, 109 s for the first test alone) and `frames` and `boot` take about 170 s each in parallel with it. Cold, the sweep suite's coverage compile (490 files) still runs next to the other suites' boots, and the cold port repeats analysis, assets and recompile once. Not done, and the likely way to the targets: sharing game boots between tests inside `headless.test.ts` (about 100 s, makes the tests order-dependent), and building the coverage game in the global setup. Total parallel compiles are not capped: only the global setup and the sweep suite compile.

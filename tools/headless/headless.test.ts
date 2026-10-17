@@ -1,19 +1,15 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { loadContext } from '../analyze/context.ts';
-import { analyze } from '../analyze/run.ts';
-import { compileAll, link, runtimeSources } from '../port/build.ts';
-import { generate } from '../recomp/generate.ts';
-import { ensureToolchain } from '../recomp/toolchain.ts';
-import { classify } from '../assets/classify.ts';
+import { link } from '../port/build.ts';
+import { loadBase } from '../recomp/test-base.ts';
 import { AudioCapture } from '../audio/capture.ts';
 import { RspReference } from '../audio/rsp-ref.ts';
 import { Synth } from '../audio/synth.ts';
 import { encodeWav } from '../audio/wav.ts';
-import { buildManifest, readCartridge, writeAssets } from '../assets/write.ts';
 import { DisplayListInterpreter, type Batch, type DisplayListResult } from '../gfx/dl.ts';
 import { encodePng } from '../gfx/png.ts';
 import { HEIGHT, SoftRenderer, WIDTH } from '../gfx/raster.ts';
@@ -58,37 +54,25 @@ const COMPARE_FRAMES = [...Array.from({ length: 16 }, (_, i) => 260 + i * 140), 
 
 let built: Promise<{ moduleUrl: string; cartridge: Uint8Array }> | undefined;
 
-/** Analyses, recompiles and links the game once for every test of this file. */
+/** The shared -O2 game and its cartridge. */
 function buildGame(): Promise<{ moduleUrl: string; cartridge: Uint8Array }> {
   built ??= (async () => {
-    const work = resolve('out', 'headless-test-boot');
-    const inventory = await analyze({ romPath: rom!, outDir: work, workDir: join(work, 'work'), useGhidra: false });
-    const cDir = join(work, 'c');
-    const gen = generate(loadContext(rom!), inventory, cDir);
-    expect(gen.problems).toEqual([]);
-    const opts = { cDir, objDir: join(work, 'obj'), distDir: join(work, 'dist'), toolchain: ensureToolchain(), log: () => {} };
-    const out = await link(opts, await compileAll(opts, runtimeSources()));
-
-    const ctx = loadContext(rom!);
-    writeAssets(ctx.rom, buildManifest(ctx.sha1, ctx.rom.length, classify(ctx, inventory)), join(work, 'dist', 'assets'));
-    return { moduleUrl: pathToFileURL(out).href, cartridge: readCartridge(join(work, 'dist', 'assets')) };
+    const base = loadBase();
+    expect(base.problems).toEqual([]);
+    return { moduleUrl: base.moduleUrl, cartridge: base.cartridge() };
   })();
   return built;
 }
 
 /**
- * The same sources linked at another optimisation level, which gives a different wasm file. The objects and the link are kept
- * under out/ and rebuilt only when a runtime source or the generated C is newer.
+ * The shared game's objects linked at another optimisation level, which gives a different wasm file; the link comes from the
+ * shared cache once it has been made.
  */
 async function buildVariant(optimize: string): Promise<{ moduleUrl: string; cartridge: Uint8Array }> {
   const base = await buildGame();
-  const work = resolve('out', 'headless-test-boot');
-  const variant = resolve('out', `headless-test${optimize}`);
-  const opts = { cDir: join(work, 'c'), objDir: join(variant, 'obj'), distDir: join(variant, 'dist'), optimize, toolchain: ensureToolchain(), log: () => {} };
-  const objects = await compileAll(opts, runtimeSources());
-  const out = join(opts.distDir, 'oot.js');
-  const newest = Math.max(...objects.map((o) => statSync(o.path).mtimeMs));
-  if (!existsSync(out) || !existsSync(join(opts.distDir, 'oot.wasm')) || statSync(join(opts.distDir, 'oot.wasm')).mtimeMs < newest) await link(opts, objects);
+  const shared = loadBase();
+  const opts = { ...shared.opts, distDir: resolve('out', `headless-test${optimize}`, 'dist'), optimize };
+  const out = await link(opts, await shared.objects());
   return { moduleUrl: pathToFileURL(out).href, cartridge: base.cartridge };
 }
 
