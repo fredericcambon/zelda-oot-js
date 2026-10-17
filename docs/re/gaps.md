@@ -73,6 +73,60 @@ The same scripted new game with the display lists run by the interpreter in the 
 
 The target was at least 700 game frames per second. Reading the result through `tools/gfx/c-dl.ts` costs 0.25 ms per game frame (it builds one object per state and per batch); a consumer that reads the arrays directly pays less.
 
+## Interpolated rendering ("Smooth")
+
+The game produces one picture per game frame: one graphics task every third retrace (a 20 ms video frame at 50 Hz, so 16.7 game frames per second; the 117 tasks of the walking run below were spaced 3 video frames apart every time). With the "Smooth" toggle on, the page draws a picture on every display refresh between the last two game frames. It interpolates the matrices the display lists load, never pixels, and draws with the interpreter's own pipeline (lighting, culling, clipping, textures), so everything that is not a matrix is exactly the current game frame's.
+
+How it works (`runtime/gfx/dl.c` "Matrix identity", `tools/gfx/motion.ts`, `tools/gfx/smooth.ts`, `web/game.ts`):
+
+- The game module keeps a copy of RDRAM from the last task (`gfx_keep`, 8 MB static buffer in `runtime/gfx/task.c`, 1.0 ms) and runs the task's display list over that copy with the commands' matrices replaced by interpolated ones (`gfx_run_kept`). Pictures are drawn when the display refreshes, not when the task arrives, so any refresh rate works. The copy is display data: `Game.states` empties it before a state is captured and after one is applied, so a saved state never carries it.
+- With the toggle off none of this runs and graphics tasks are drawn as they come, as before. The check: in the headless test, the kept frame run with nothing replaced draws the same pixels as the live run on every frame.
+
+### What names a matrix across frames
+
+A matrix command is named by the path of display-list calls that led to it plus its place in its list:
+
+- a call or branch to a segmented address (segments 1 to 15: the object and scene files) adds that address to the path; one to any other address adds nothing;
+- inside a list entered through a segmented address, the command's offset from the list's start;
+- inside any other list (the lists the game builds anew each frame), what the list does next: the first call or vertex load after the command, and the matrix commands passed on the way.
+
+Commands of one name (one limb list drawn for several actors) are told apart by their ordinal, the count of earlier commands of that name in the run. Pairing two frames is `matchFrames`: equal numbers of a name pair in order; unequal numbers pair the closest first, so that the ones that stayed keep their partners and the rest are left unmatched.
+
+Evidence for this choice, from the scripted new game in Kokiri Forest (entrance 238, Link and the camera moving):
+
+- **The matrix's address in RDRAM is not stable** and is not used. The game builds the frame's matrices in a pool that alternates between two buffers: the camera's matrix of consecutive tasks was read from 0x174538, 0x186948, 0x174538 and so on (the other matrices likewise), and only 5.0% of the matched matrices were at the same address as their counterpart.
+- **A path of raw call targets is not stable either.** The first version numbered the calls to lists the game builds (the n-th call from the same parent). The list that holds the overlays moved to another place in that order on almost every task (its camera matrices got a new name each frame) because the number of such calls before it changes with the actors on screen. Lists at addresses that are not segmented are therefore left out of the path, and the order survives only as the ordinal.
+- Result of the final scheme over 300 consecutive game frames (frames 2,000 to 2,900 after the entrance load): 72,912 matrices of 3D work, **72,642 matched (99.63%)**. In the ROM-gated test (`tools/gfx/smooth.test.ts`, 116 game frames while Link walks forward, right, back and left): 27,164 of 27,340 (**99.36%**). The unmatched ones are objects that appear or disappear (the matched/3D counts per frame go 249/249, 251/253, 253/255 ... as objects enter, and back as they leave).
+
+### What is interpolated, and what never is
+
+- 3D work only: a matrix is 3D when the projection in force while it is loaded is a perspective one (`GFX_MTX_PERSPECTIVE`: the third row's last entry is not zero). Matrices loaded under an orthographic projection (the HUD, text, rectangle transforms) are counted apart (about 6 of the roughly 250 matrices of a forest frame) and never replaced. Rectangles, 2D backgrounds (BG commands) and anything else that is not a matrix command are drawn exactly as in the current frame.
+- A matrix is taken apart into scale, rotation and translation; rotation is interpolated as a quaternion by spherical interpolation along the shortest arc, scale and translation linearly. The view matrix multiplied into the projection (the camera) is interpolated as eye position plus rotation, because interpolating its own translation swings the eye on an arc when the camera turns on the spot. A matrix that is not rotation, scale and translation (the perspective matrix, a sheared one) is blended entry by entry.
+- **Nothing smears.** A matrix with no counterpart in the previous frame is drawn as in the current one. So is a matched one that moved more than a limit (`MOTION_LIMITS`): translation 300 units (Link is 56 tall and runs about 6 per game frame; the fastest things in the forest move under 50), rotation 120 degrees (the shortest way round is ambiguous beyond half a turn), a scale factor changing by more than 4 times either way, or, for a matrix that is not rotation, scale and translation, an entry changing by more than half of its largest value. In the forest run 172 of the 72,642 matched matrices (0.24%) exceeded a limit: objects turning more than 120 degrees per game frame (spinning things, aliased at this rate anyway) and a few that grow from nothing.
+- **Camera cuts.** The camera is held to tighter limits (150 units of eye movement, 45 degrees); if any camera matrix of the frame has no counterpart or exceeds them, the whole frame is drawn as it is, so that the picture is the current frame pixel for pixel (checked in the test on every frame by moving the previous camera 1,000 units). A scene change brings new objects without counterparts and, when the camera matrices still pair, a jump of the camera. The forest run had no cut frames in its 300 game frames.
+- **Vertices the game writes itself** (limbs it skins on the CPU, water, effects) are not moved by a matrix and keep the current frame's values. Measured as the share of the vertices loaded whose bytes are in no vertex load of the previous frame: **0.3% (300-frame run) to 0.75% (test run) of a forest frame's vertices**. In the title and opening scenes the share is higher (13.8 to 15.5% while Epona and Link are on screen, from the browser's overlay).
+
+### Cost and latency
+
+Measured headless at `-O2` over the 117 tasks of the walking test, on a machine shared with other builds, so read the ratios:
+
+| Step | ms per game frame |
+|---|---|
+| Copy of RDRAM (`gfx_keep`) | 1.0 |
+| The recording run (the copy plus one interpreter run) | 3.2 |
+| One picture between frames (replaced matrices, run, read) | 1.9 |
+| The plain run of the same list, for comparison | 1.6 |
+
+A picture is drawn per display refresh (a 60 Hz display shows 3 per game frame, a 144 Hz display 8), each costing one interpreter run and one WebGL submit. A picture that cannot change (a cut, or no matrix moves) is drawn once per game frame.
+
+**Latency added: one game frame at most.** The picture at the moment a game frame arrives has its moving matrices at the previous frame's values, and reaches the current frame's values one game-frame interval later (`smoothFraction`: 0 at the frame's arrival, 1 one interval later, held at 1 if the next frame is late; `interpolate(plan, 0)` equals the previous frame's matrices, both unit-tested). What is on screen is therefore the game state one game-frame interval old: 60 ms at the 3-retrace spacing measured above. With smoothing off the finished frame appears at the next retrace (up to 20 ms), so the added delay is that interval minus the retrace: at most 60 ms, and nothing while the toggle is off.
+
+Fast-forward: smoothing is off while Tab is held, tasks are drawn as they come, and the kept frames are dropped (the first frame after is drawn as it is).
+
+### Browser check
+
+Checked in headless Chrome with software GL (SwiftShader; no real display or GPU): with the toggle on, the title scene (3D camera, Epona and Link, the logo drawn in 2D over it) is drawn correctly, the overlay reports every 3D matrix matched for it, the choice is stored in localStorage (`oot.smooth`) and the button takes no keyboard focus. The displayed fps there is limited by the software GL (35 to 53 ms of GPU time per game frame): 37 fps with smoothing off, 18 with it on. So "a new picture on every refresh of a 60 Hz or faster display" is not measured on a real display; the page draws one per `requestAnimationFrame`.
+
 ## Coverage mode
 
 `npm run port -- --coverage` builds with `-DOOT_COVERAGE` (`runtime/cov.c`, `runtime/cpu.h`). It records which recompiled functions ran (a bitmap over `0x80000000`–`0x80FFFFFF`, so overlays count at their link addresses), the calls of each replaced OS routine, and the accesses beyond RDRAM (every guest memory access goes through `mem_ptr`, which otherwise wraps silently into RDRAM). RSP tasks by type and microcode are counted in every build (`oot_rsp_task_kind`). A **loop watchdog** counts the loop heads of the generated code: a video frame with more than 200 million iterations traps instead of hanging. The sweep adds the opcodes of every display list and audio command list. Calls of OS routines made through the dispatch table (indirect calls) are not counted.

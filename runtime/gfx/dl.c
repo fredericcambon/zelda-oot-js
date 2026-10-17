@@ -505,13 +505,161 @@ static void read_matrix(size_t addr, double *m) {
   for (int i = 0; i < 16; i++) m[i] = rd_s16(addr + i * 2) + rd_u16(addr + 32 + i * 2) / 65536.0;
 }
 
-static void load_matrix(uint32_t w0, uint32_t w1) {
+// ---- Matrix identity ------------------------------------------------------------------------------------------------
+//
+// A matrix is named by where the display list loads it, so that the same matrix of two consecutive frames gets the same
+// name although the game places the frame's matrices and dynamic lists at different addresses. The name combines the path
+// of calls that led to the command with the command's place in the list it is in:
+//   - a call or branch to a segmented address adds that address to the path (the object and scene files sit behind
+//     segments, and their offsets repeat from frame to frame); one to any other address adds nothing, because the lists the
+//     game builds anew each frame are laid out at addresses and in numbers that change from frame to frame;
+//   - a command in a list entered through a segmented address is named by its offset from the list's start;
+//   - a command in any other list is named by what the list does next: the first call or vertex load after it, and the
+//     matrix commands passed on the way.
+// Commands of one name (the same limb list drawn for two actors) are told apart by their ordinal, the count of commands of
+// that name before them in the run; whoever pairs matrices of two frames decides how to pair names that occur a different
+// number of times.
+
+typedef struct {
+  uint64_t hash;
+  // Physical start of a list entered through a segmented address, -1 for a list built anew each frame.
+  int64_t entry;
+} ListContext;
+
+static ListContext context;
+static size_t command_at;
+
+enum { COUNTER_SLOTS = 8192 };
+static struct { uint64_t key; uint32_t count, stamp; } counters[COUNTER_SLOTS];
+
+static uint64_t mix(uint64_t h, uint64_t v) {
+  h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+  h *= 0xff51afd7ed558ccdull;
+  return h ^ (h >> 32);
+}
+
+// How many times `key` was used before in this run (the table is emptied by the run stamp).
+static uint32_t use_count(uint64_t key) {
+  size_t i = (size_t)(key & (COUNTER_SLOTS - 1));
+  for (size_t probes = 0; probes < COUNTER_SLOTS; probes++, i = (i + 1) & (COUNTER_SLOTS - 1)) {
+    if (counters[i].stamp != run_stamp) {
+      counters[i].key = key;
+      counters[i].stamp = run_stamp;
+      counters[i].count = 1;
+      return 0;
+    }
+    if (counters[i].key == key) return counters[i].count++;
+  }
+  return 0xffffffffu;
+}
+
+static int segmented(uint32_t a) { return ((a >> 24) & 15) != 0; }
+
+// The context of the list that a call or branch to `target_word` (resolved to `target`) enters from the current one.
+static ListContext enter_list(uint32_t target_word, int64_t target) {
+  ListContext c = context;
+  if (segmented(target_word)) {
+    c.hash = mix(context.hash, target_word);
+    c.entry = target;
+  } else c.entry = -1;
+  return c;
+}
+
+// What the list does after the command at `from`: the first call or vertex load, with the matrix commands passed on the way.
+static uint64_t what_follows(size_t from) {
+  uint64_t h = 0;
+  for (int i = 0; i < 32 && from + 8 <= ram_len; i++, from += 8) {
+    const uint32_t op = rd_u8(from);
+    if (op == OP_DL || op == OP_VTX) {
+      const uint32_t w1 = rd_u32(from + 4);
+      return mix(mix(h, op), segmented(w1) ? w1 : 0);
+    }
+    if (op == OP_ENDDL) break;
+    if (op == OP_MTX || op == OP_POPMTX) h = mix(h, op);
+  }
+  return mix(h, OP_ENDDL);
+}
+
+// 53 bits, so that JS holds a name exactly in a number.
+#define NAME_MASK ((1ull << 53) - 1)
+
+static uint64_t matrix_name(size_t at, uint32_t params, uint32_t *ordinal) {
+  const uint64_t place = context.entry >= 0 ? (uint64_t)(at - (size_t)context.entry) : what_follows(at + 8);
+  const uint64_t name = mix(mix(mix(context.hash, context.entry >= 0), place), params) & NAME_MASK;
+  *ordinal = use_count(name);
+  return name;
+}
+
+// ---- Matrix record and overrides -------------------------------------------------------------------------------------
+
+static int motion_record;
+static VEC(GfxMatrix) matrix_record;
+static VEC(GfxVertexLoad) vertex_load_record;
+static VEC(GfxMatrix) override_input;
+static GfxMatrix *override_table;
+static size_t override_slots;
+
+void gfx_motion_record(uint32_t on) { motion_record = on != 0; }
+uint32_t gfx_motion_count(void) { return (uint32_t)matrix_record.n; }
+const GfxMatrix *gfx_motion_matrices(void) { return matrix_record.v; }
+uint32_t gfx_motion_vertex_load_count(void) { return (uint32_t)vertex_load_record.n; }
+const GfxVertexLoad *gfx_motion_vertex_loads(void) { return vertex_load_record.v; }
+
+static uint64_t name_of(const GfxMatrix *m) { return ((uint64_t)m->name_hi << 32) | m->name_lo; }
+static size_t slot_of_name(uint64_t name, uint32_t ordinal) { return (size_t)(mix(name, ordinal) & (override_slots - 1)); }
+
+// Space for `n` override matrices, which the caller fills in and then passes to gfx_motion_commit.
+GfxMatrix *gfx_motion_input(uint32_t n) {
+  override_input.v = grow(override_input.v, &override_input.cap, n ? n : 1, sizeof(GfxMatrix));
+  return override_input.v;
+}
+
+// From the next run on, a matrix command with the name and ordinal of one of the first `n` matrices of the input loads that
+// matrix instead of the one in memory. With n = 0 nothing is replaced.
+void gfx_motion_commit(uint32_t n) {
+  free(override_table);
+  override_table = NULL;
+  override_slots = 0;
+  if (n == 0) return;
+  override_slots = 16;
+  while (override_slots < (size_t)n * 2) override_slots *= 2;
+  override_table = calloc(override_slots, sizeof(GfxMatrix));
+  if (!override_table) abort();
+  for (uint32_t i = 0; i < n; i++) {
+    size_t at = slot_of_name(name_of(&override_input.v[i]), override_input.v[i].ordinal);
+    while (override_table[at].flags & GFX_MTX_PRESENT) at = (at + 1) & (override_slots - 1);
+    override_table[at] = override_input.v[i];
+    override_table[at].flags |= GFX_MTX_PRESENT;
+  }
+}
+
+static const GfxMatrix *override_for(uint64_t name, uint32_t ordinal) {
+  if (!override_table) return NULL;
+  size_t at = slot_of_name(name, ordinal);
+  for (size_t probes = 0; probes < override_slots; probes++, at = (at + 1) & (override_slots - 1)) {
+    const GfxMatrix *slot = &override_table[at];
+    if (!(slot->flags & GFX_MTX_PRESENT)) return NULL;
+    if (slot->ordinal == ordinal && name_of(slot) == name) return slot;
+  }
+  return NULL;
+}
+
+// A perspective projection divides by depth, which puts a non-zero in the third row's last column; an orthographic one does not.
+static int perspective(const double *p) { return p[11] != 0; }
+
+static void load_matrix(uint32_t w0, uint32_t w1, size_t at) {
   // The push bit is stored inverted.
   const uint32_t params = (w0 & 0xff) ^ MTX_PUSH;
   const int64_t addr = address(w1);
   if (addr < 0 || (size_t)addr + 64 > ram_len) return;
   Mat m;
   read_matrix((size_t)addr, m);
+  uint32_t ordinal;
+  const uint64_t name = matrix_name(at, params, &ordinal);
+  if (!motion_record) {
+    const GfxMatrix *o = override_for(name, ordinal);
+    if (o) memcpy(m, o->m, sizeof m);
+  }
   if (params & MTX_PROJECTION) {
     if (params & MTX_LOAD) memcpy(proj, m, sizeof m);
     else mul(m, proj, proj);
@@ -525,6 +673,18 @@ static void load_matrix(uint32_t w0, uint32_t w1) {
     else mul(m, mv, mv);
   }
   mvp_valid = 0;
+  if (motion_record) {
+    GfxMatrix r;
+    r.name_lo = (uint32_t)name;
+    r.name_hi = (uint32_t)(name >> 32);
+    r.ordinal = ordinal;
+    r.flags = ((params & MTX_PROJECTION) ? GFX_MTX_PROJECTION : 0) | ((params & MTX_LOAD) ? GFX_MTX_LOAD : 0) | ((params & MTX_PUSH) ? GFX_MTX_PUSH : 0) |
+      (perspective(proj) ? GFX_MTX_PERSPECTIVE : 0);
+    r.source = (uint32_t)addr;
+    r.reserved = 0;
+    memcpy(r.m, m, sizeof m);
+    VEC_PUSH(matrix_record, r);
+  }
 }
 
 static void pop_matrix(uint32_t w1) {
@@ -557,6 +717,12 @@ static void load_vertices(uint32_t w0, uint32_t w1) {
     mvp_valid = 1;
   }
   const double *m = mvp;
+  if (motion_record) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < (size_t)n * 16; i++) h = (h ^ ram[(size_t)addr + i]) * 16777619u;
+    GfxVertexLoad load = { h, (uint32_t)n };
+    VEC_PUSH(vertex_load_record, load);
+  }
   const int lighting = (st.geometry_mode & GEO_LIGHTING) != 0;
   const int texgen = (st.geometry_mode & GEO_TEXTURE_GEN) != 0;
   const int linear = (st.geometry_mode & GEO_TEXTURE_GEN_LINEAR) != 0;
@@ -1012,7 +1178,7 @@ static int execute(uint32_t op, uint32_t w0, uint32_t w1) {
       st.geometry_mode = (st.geometry_mode & w0 & 0xffffff) | w1;
       invalidate();
       break;
-    case OP_MTX: load_matrix(w0, w1); break;
+    case OP_MTX: load_matrix(w0, w1, command_at); break;
     case OP_MOVEWORD: move_word(w0, w1); break;
     case OP_MOVEMEM: move_mem(w0, w1); break;
     case OP_RDPHALF_1: rdp_half1 = w1; break;
@@ -1117,6 +1283,9 @@ static void reset(void) {
   commands = 0;
   free_retired();
   run_stamp++;
+  context.hash = 0;
+  context.entry = -1;
+  matrix_record.n = vertex_load_record.n = 0;
 }
 
 static void count_opcode(uint32_t op) {
@@ -1128,6 +1297,7 @@ uint32_t gfx_run_ram(const uint8_t *image, uint32_t size, uint32_t start, uint32
   ram_len = size;
   reset();
   uint32_t stack[MAX_DL_DEPTH];
+  ListContext context_stack[MAX_DL_DEPTH];
   int depth = 0;
   int64_t pc = address(start);
   int running = pc >= 0;
@@ -1140,6 +1310,7 @@ uint32_t gfx_run_ram(const uint8_t *image, uint32_t size, uint32_t start, uint32
     const uint32_t w1 = rd_u32((size_t)pc + 4);
     const uint32_t op = w0 >> 24;
     const uint32_t at = (uint32_t)pc;
+    command_at = at;
     pc += 8;
     commands++;
     count_opcode(op);
@@ -1147,22 +1318,32 @@ uint32_t gfx_run_ram(const uint8_t *image, uint32_t size, uint32_t start, uint32
       case OP_DL: {
         const int64_t target = address(w1);
         if (target < 0) break;
-        if ((w0 >> 16) & 1) pc = target;
-        else if (depth >= MAX_DL_DEPTH) problem("display list nesting too deep");
+        if ((w0 >> 16) & 1) {
+          context = enter_list(w1, target);
+          pc = target;
+        } else if (depth >= MAX_DL_DEPTH) problem("display list nesting too deep");
         else {
-          stack[depth++] = (uint32_t)pc;
+          stack[depth] = (uint32_t)pc;
+          context_stack[depth++] = context;
+          context = enter_list(w1, target);
           pc = target;
         }
         break;
       }
       case OP_ENDDL:
         if (depth == 0) running = 0;
-        else pc = stack[--depth];
+        else {
+          context = context_stack[--depth];
+          pc = stack[depth];
+        }
         break;
       case OP_CULLDL:
         if (cull_list(w0, w1)) {
           if (depth == 0) running = 0;
-          else pc = stack[--depth];
+          else {
+            context = context_stack[--depth];
+            pc = stack[depth];
+          }
         }
         break;
       case OP_BRANCH_Z: {
@@ -1172,7 +1353,10 @@ uint32_t gfx_run_ram(const uint8_t *image, uint32_t size, uint32_t start, uint32
         const uint32_t slot = w0 & 0xfff;
         const int loaded = slot_of(slot, &v);
         const int64_t target = address(rdp_half1);
-        if (loaded && target >= 0 && floor(v->clip[3]) < (double)(int32_t)w1) pc = target;
+        if (loaded && target >= 0 && floor(v->clip[3]) < (double)(int32_t)w1) {
+          context = enter_list(rdp_half1, target);
+          pc = target;
+        }
         break;
       }
       case OP_TEXRECT: {
@@ -1249,12 +1433,19 @@ void gfx_reset(void) {
   VEC_FREE(out_unknown);
   VEC_FREE(out_opcodes);
   VEC_FREE(mv_stack);
+  VEC_FREE(matrix_record);
+  VEC_FREE(vertex_load_record);
+  VEC_FREE(override_input);
+  free(override_table);
+  override_table = NULL;
+  override_slots = 0;
+  motion_record = 0;
   ram = NULL;
   ram_len = 0;
 }
 
-// Sizes of the records of the result in 32-bit words (0 result, 1 batch, 2 state, 3 texture reference, 4 unknown command)
-// and the bytes of a problem string (5); readers check their layout against these.
+// Sizes of the records of the result in 32-bit words (0 result, 1 batch, 2 state, 3 texture reference, 4 unknown command,
+// 6 matrix record, 7 vertex load record) and the bytes of a problem string (5); readers check their layout against these.
 uint32_t gfx_layout(uint32_t what) {
   switch (what) {
     case 0: return sizeof(GfxResult) / 4;
@@ -1263,6 +1454,8 @@ uint32_t gfx_layout(uint32_t what) {
     case 3: return sizeof(GfxTextureRef) / 4;
     case 4: return sizeof(GfxUnknown) / 4;
     case 5: return GFX_PROBLEM_BYTES;
+    case 6: return sizeof(GfxMatrix) / 4;
+    case 7: return sizeof(GfxVertexLoad) / 4;
     default: return 0;
   }
 }

@@ -26,6 +26,32 @@ debugToggle.addEventListener('click', () => {
   debugToggle.blur();
 });
 
+const SMOOTH_KEY = 'oot.smooth';
+const readSmooth = (): boolean => {
+  try {
+    return localStorage.getItem(SMOOTH_KEY) === '1';
+  } catch {
+    return false;
+  }
+};
+const writeSmooth = (on: boolean): void => {
+  try {
+    localStorage.setItem(SMOOTH_KEY, on ? '1' : '0');
+  } catch {
+    // Storage may be blocked; the choice then lasts until the page is closed.
+  }
+};
+let smoothOn = readSmooth();
+const smoothToggle = document.getElementById('smooth-toggle') as HTMLButtonElement;
+smoothToggle.setAttribute('aria-pressed', String(smoothOn));
+smoothToggle.addEventListener('mousedown', (e) => e.preventDefault());
+smoothToggle.addEventListener('click', () => {
+  smoothOn = !smoothOn;
+  smoothToggle.setAttribute('aria-pressed', String(smoothOn));
+  writeSmooth(smoothOn);
+  smoothToggle.blur();
+});
+
 const setStatus = (text: string, error = false) => {
   status.textContent = text;
   status.classList.toggle('error', error);
@@ -57,6 +83,7 @@ addEventListener('keydown', (e) => fastForward.keydown(e));
 addEventListener('keyup', (e) => fastForward.keyup(e));
 addEventListener('blur', () => fastForward.reset());
 let fps = 0;
+let shownFps = 0;
 
 // Browsers start sound only from a user gesture; any key or click does it.
 const enableSound = () => {
@@ -105,12 +132,22 @@ addEventListener('keydown', (e) => {
   }
 });
 
+function smoothLines(): string[] {
+  if (!smoothOn) return [];
+  if (fastForward.active) return ['smooth: off while fast-forwarding'];
+  const info = game?.smoothInfo();
+  if (!info) return ['smooth: on, waiting for two game frames'];
+  const share = info.threeD === 0 ? 100 : (info.matched / info.threeD) * 100;
+  return [`smooth: on, ${info.matched} of ${info.threeD} 3D matrices matched (${share.toFixed(1)}%)${info.cut ? ', cut: drawn as is' : ''}, vertices written by the game ${(info.rewritten * 100).toFixed(1)}%`];
+}
+
 function updateOverlay(): void {
   if (overlay.hidden) return;
   const s = renderer.stats;
   const g = game?.info();
   overlay.textContent = [
-    `${fps.toFixed(0)} fps (game 50 Hz)`,
+    `${fps.toFixed(0)} fps (game 50 Hz)  displayed ${shownFps.toFixed(0)} fps`,
+    ...smoothLines(),
     g ? `frame ${g.frames}  retraces ${g.retraces}  gfx tasks ${g.gfxTasks}${g.idle ? '  IDLE' : ''}` : 'no game',
     `last task: ${s.commands} commands, ${s.batches} batches, ${s.triangles} triangles, ${s.rects} rects`,
     ...(game ? formatBreakdown(game.profiler.breakdown()) : []),
@@ -129,6 +166,7 @@ async function loop(): Promise<void> {
   let last = performance.now();
   let acc = 0;
   let counted = 0;
+  let presented = 0;
   let countStart = last;
   while (game) {
     await new Promise<void>((r) => requestAnimationFrame(() => r()));
@@ -142,6 +180,8 @@ async function loop(): Promise<void> {
       }
       last = performance.now();
     }
+    // Fast-forward runs frames back to back and has no time for in-between pictures.
+    game?.setSmooth(smoothOn && !fastForward.active);
     const now = performance.now();
     // At most three frames of catch-up, so a stalled tab does not trigger a burst.
     acc = Math.min(acc + now - last, FRAME_MS * 3);
@@ -163,14 +203,20 @@ async function loop(): Promise<void> {
       counted++;
       stepped = true;
     }
-    if (game && stepped) {
-      const t0 = performance.now();
-      renderer.present(game.framebuffer());
-      game.profiler.addSubmit(performance.now() - t0);
+    if (game) {
+      const smooth = game.drawSmooth(acc / FRAME_MS);
+      if (smooth !== null || stepped) {
+        const t0 = performance.now();
+        renderer.present(smooth ?? game.framebuffer());
+        game.profiler.addSubmit(performance.now() - t0);
+        presented++;
+      }
     }
     if (now - countStart >= 1000) {
       fps = (counted * 1000) / (now - countStart);
+      shownFps = (presented * 1000) / (now - countStart);
       counted = 0;
+      presented = 0;
       countStart = now;
     }
     updateOverlay();

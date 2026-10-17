@@ -117,6 +117,44 @@ void gfx_trace_vertices(uint32_t on);
 const double *gfx_vertex_trace(void);
 uint32_t gfx_vertex_trace_length(void);
 
+// ---- Motion: matrix names, records and overrides (dl.c) -----------------------------------------------------------
+
+enum {
+  GFX_MTX_PROJECTION = 1, GFX_MTX_LOAD = 2, GFX_MTX_PUSH = 4,
+  // The projection in force when the matrix was loaded (or the matrix itself, for a projection) is a perspective one.
+  GFX_MTX_PERSPECTIVE = 8,
+  // Marks a filled slot of the override table; never set in a record.
+  GFX_MTX_PRESENT = 0x80000000u,
+};
+
+// A matrix as a command loads it. The name is 53 bits wide (name_hi holds the upper 21), so that JS holds it exactly in a number.
+// The name says where in the display lists the command is, the same from frame to frame; the ordinal counts the commands of
+// that name in the run, so that name and ordinal together are unique within a run. See "Matrix identity" in dl.c.
+typedef struct {
+  uint32_t name_lo, name_hi;
+  uint32_t flags;
+  uint32_t ordinal;
+  // Physical address the matrix was read from.
+  uint32_t source;
+  uint32_t reserved;
+  // Sixteen values in the order the command stores them (row-major, for row vectors), the fixed-point parts joined.
+  double m[16];
+} GfxMatrix;
+
+// A vertex load: a hash of the vertex bytes and the number of vertices.
+typedef struct {
+  uint32_t hash, count;
+} GfxVertexLoad;
+
+// While on, the runs that follow record every matrix command and vertex load (the record of the previous run is dropped).
+void gfx_motion_record(uint32_t on);
+uint32_t gfx_motion_count(void);
+const GfxMatrix *gfx_motion_matrices(void);
+uint32_t gfx_motion_vertex_load_count(void);
+const GfxVertexLoad *gfx_motion_vertex_loads(void);
+GfxMatrix *gfx_motion_input(uint32_t n);
+void gfx_motion_commit(uint32_t n);
+
 // ---- Texture decoding (decode.c) ------------------------------------------------------------------------------
 
 enum { GFX_FMT_RGBA = 0, GFX_FMT_YUV = 1, GFX_FMT_CI = 2, GFX_FMT_IA = 3, GFX_FMT_I = 4 };

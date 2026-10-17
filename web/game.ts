@@ -1,7 +1,8 @@
 // Boots the recompiled game in the page and feeds each graphics task it submits to the renderer.
 import { Synth } from '../tools/audio/synth.ts';
-import { runDisplayList, type GfxGameCore } from '../tools/gfx/c-dl.ts';
+import { runDisplayList } from '../tools/gfx/c-dl.ts';
 import { FrameProfiler } from '../tools/gfx/profile.ts';
+import { finalColorImage, SmoothFrames, smoothFraction, type SmoothCore } from '../tools/gfx/smooth.ts';
 import { shownFramebuffer } from '../tools/gfx/vi.ts';
 import { RDRAM_SIZE, startModule } from '../tools/runtime/instance.ts';
 import type { AudioSink } from './audio.ts';
@@ -26,7 +27,29 @@ export interface Game {
   framebuffer(): number;
   /** Times the phases of each game frame; see FrameProfiler. */
   profiler: FrameProfiler;
+  /**
+   * Turns smoothing on or off. While on, graphics tasks are kept instead of drawn and `drawSmooth` draws the pictures between
+   * them; turning it off drops what was kept, and tasks are drawn as they come.
+   */
+  setSmooth(on: boolean): void;
+  /**
+   * Draws the picture `sinceFrame` of a video frame (0 to 1) after the last video frame that ran, between the last two game
+   * frames, and returns the colour image to show; null when no game frame is kept. Does the work once for pictures that do not change.
+   */
+  drawSmooth(sinceFrame: number): number | null;
+  /** What smoothing matched between the last two game frames; null until there are two. */
+  smoothInfo(): SmoothInfo | null;
   info(): { frames: number; retraces: number; gfxTasks: number; audioTasks: number; idle: boolean; renderError: string; audioError: string };
+}
+
+export interface SmoothInfo {
+  /** Matrices of 3D work in the last game frame, and how many of them were found in the one before. */
+  threeD: number;
+  matched: number;
+  /** The picture is the game frame as it is: the camera cut, or the frames could not be paired. */
+  cut: boolean;
+  /** Share of the frame's vertices the game wrote itself. */
+  rewritten: number;
 }
 
 export async function startGame(rom: Uint8Array, renderer: Renderer, audio: AudioSink, moduleUrl = '/oot.js'): Promise<Game> {
@@ -35,10 +58,28 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
   const synth = new Synth();
   const profiler = new FrameProfiler();
   renderer.onGpuTime = (ms) => profiler.addGpu(ms);
+  let smoothing = false;
+  let frames: SmoothFrames | null = null;
+  // Video frames run so far, the ones that ran the last two kept game frames, and which picture was drawn last.
+  let videoFrames = 0;
+  let keptAt = 0, keptBefore = 0;
+  let serial = 0;
+  let drawn = '';
+  let lastShown: number | null = null;
   const guestRam = () => mod.HEAPU8.subarray(mod._oot_rdram(), mod._oot_rdram() + RDRAM_SIZE);
-  const mod = await startModule<SnapshotCore & GfxGameCore>(moduleUrl, rom, {
+  const mod = await startModule<SnapshotCore & SmoothCore>(moduleUrl, rom, {
     onGfxTask: (data: number) => profiler.hook(() => {
       try {
+        if (smoothing) {
+          const t0 = performance.now();
+          frames!.push(data);
+          keptBefore = keptAt;
+          keptAt = videoFrames;
+          serial++;
+          profiler.addDisplayList(performance.now() - t0);
+          profiler.taskDone();
+          return;
+        }
         const t0 = performance.now();
         const result = runDisplayList(mod, data);
         const t1 = performance.now();
@@ -64,6 +105,7 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
       audio.push(guestRam().slice(at, at + length), hz);
     }),
   });
+  frames = new SmoothFrames(mod);
   const view = () => new DataView(mod.HEAPU8.buffer, mod._oot_rdram(), RDRAM_SIZE);
   const sram = () => mod.HEAPU8.subarray(mod._oot_sram(), mod._oot_sram() + mod._oot_sram_size());
   return {
@@ -73,15 +115,57 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
       write: (bytes) => sram().set(bytes.subarray(0, mod._oot_sram_size())),
       takeIfDirty: () => (mod._oot_sram_take_dirty() ? sram().slice() : null),
     },
+    // The kept frames are display data: a state neither carries them nor survives them.
     states: {
-      capture: () => compress(encodeMemory(captureMemory(mod))),
-      apply: async (data) => restoreMemory(mod, decodeMemory(await decompress(data))),
+      capture: () => {
+        frames!.forget();
+        return compress(encodeMemory(captureMemory(mod)));
+      },
+      apply: async (data) => {
+        restoreMemory(mod, decodeMemory(await decompress(data)));
+        frames!.forget();
+      },
+    },
+    setSmooth(on) {
+      if (on === smoothing) return;
+      smoothing = on;
+      drawn = '';
+      if (!on) frames!.forget();
+    },
+    drawSmooth(sinceFrame) {
+      if (!smoothing || !frames!.ready) return null;
+      const t = smoothFraction(videoFrames + sinceFrame, keptAt, keptBefore);
+      const plan = frames!.plan;
+      // With nothing to move the picture is the same all game frame long.
+      const still = !plan || plan.stats.cut || plan.entries.length === 0 || t >= 1;
+      const token = `${serial} ${still ? 'still' : t}`;
+      if (token === drawn) return lastShown;
+      const t0 = performance.now();
+      try {
+        const result = frames!.at(t);
+        const t1 = performance.now();
+        renderer.drawTask(result);
+        profiler.addDisplayList(t1 - t0);
+        profiler.addSubmit(performance.now() - t1, renderer.stats.drawCalls);
+        lastShown = finalColorImage(result);
+      } catch (err) {
+        renderError = err instanceof Error ? err.message : String(err);
+        console.error(err);
+        lastShown = null;
+      }
+      drawn = token;
+      return lastShown;
+    },
+    smoothInfo() {
+      const stats = frames!.stats;
+      return stats ? { threeD: stats.threeD, matched: stats.matched, cut: stats.cut, rewritten: frames!.rewritten } : null;
     },
     buildId: async () => {
       const wasmUrl = moduleUrl.replace(/\.js$/, '.wasm');
       return buildIdOf(await (await fetch(wasmUrl)).arrayBuffer());
     },
     async frame() {
+      videoFrames++;
       try {
         await profiler.frame(() => mod._oot_frame());
       } catch (err) {
