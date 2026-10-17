@@ -1,7 +1,8 @@
 // Keys 5, 6 and 7 in the real page: headless Chrome against the dev server, with and without the disk saves endpoint, at
 // both video rates. Needs the built game and its assets in dist/ (`npm run port`) and Chrome (CHROME_PATH or a usual place).
 import { type ChildProcess, spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -118,10 +119,14 @@ describe.skipIf(!CHROME || !built)('save states in the page', () => {
           expect(files).toEqual(endpoint ? ['state-1.bin', 'state-1.bin.format', 'state-2.bin', 'state-2.bin.format'] : []);
         } finally {
           page?.close();
+          const exited = new Promise<void>((r) => (chrome.exitCode !== null ? r() : chrome.once('exit', () => r())));
           chrome.kill();
+          await Promise.race([exited, new Promise((r) => setTimeout(r, 10_000))]);
           await vite.close();
-          rmSync(saves, { recursive: true, force: true });
-          rmSync(profile, { recursive: true, force: true });
+          // Chrome may still hold its profile files for a moment; a leftover temp dir must not fail the test.
+          for (const dir of [saves, profile]) {
+            await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }).catch((e) => console.warn(`could not remove ${dir}: ${e}`));
+          }
         }
       }, 900_000);
     }
