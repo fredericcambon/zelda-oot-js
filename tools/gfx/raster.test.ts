@@ -52,7 +52,7 @@ function pixel(img: Uint8Array, x: number, y: number): [number, number, number] 
 
 /** A width x 1 texture, each texel an [r, g, b, a] byte quadruple. */
 function strip(texels: number[][]): DecodedTexture {
-  return { width: texels.length, height: 1, rgba: Uint8Array.from(texels.flat()), tile: 0 };
+  return { id: 0, width: texels.length, height: 1, rgba: Uint8Array.from(texels.flat()), tile: 0 };
 }
 
 const TEXEL_TIMES_SHADE = combine([1, 15, 4, 7], [1, 7, 4, 7]);

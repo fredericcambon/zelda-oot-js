@@ -68,6 +68,8 @@ export interface Viewport {
 }
 
 export interface DecodedTexture extends RgbaImage {
+  /** Names the image: the interpreter gives each decoded image a number that is never used again, so equal ids mean equal pixels. */
+  id: number;
   /** Index of the tile descriptor the image was decoded for. */
   tile: number;
 }

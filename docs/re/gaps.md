@@ -1057,3 +1057,30 @@ Fixed in m4-3d: the black ladder and the path that comes and goes (one browser b
 
 1. **The background that blinks dark blue.** Not reproduced. Checked: (a) display lists only: 14,000 frames of the idle title and attract demo (a throwaway scan, not kept, of what the last task drawn into the picture shown at each retrace contained: triangles, rectangles and fills): the only shown frames without a scene are 257-262, a black gap between the logo and the title (fill colour `0x00010001`, the screen is cleared, no dark blue); every fill in the demo is that black or the depth clear `0xFFFCFFFC`, so "dark blue" cannot be a clear colour. (b) The real page code (`web/game.ts`, `web/renderer.ts`, headless Chrome with SwiftShader, one game frame per present and also the bursts of the main loop, at scale 1 and 3), 26,000 frames, a thumbnail of every presented frame: no frame differs from both neighbours while they agree with each other (the dark-blue stretches are the night shots, frames 341-553, 5534-5539 (a flash fade) and 6388-6600). (c) 60 frames spread over the demo drawn by WebGL and by the software renderer: 100 pixels or fewer differ. (d) The renderer's texture cache is emptied every 512 textures (once per 11,000 frames of the demo): before this task that could delete a texture a draw held; made safe, with no visible effect found. Hypotheses left: a GPU-dependent shader result on real hardware (`wrapCoord`, `texelFetch`), or the user's saved game changing what the demo does. Next step: the frame number of the blink from the `#debug` overlay on the user's machine, then capture the display lists of that range and draw them in the page and in the software renderer as was done here.
 2. **The bridge of the Sheik/Link shot.** Not located. In the castle sequence of the intro (frames 5200-6300 of the headless run) the dl interpreter's triangles cover the same pixels as the microcode's (0.5% at most, 133 tasks compared); so the missing part, if it is in that sequence, is a draw that covers pixels and writes none (texture, alpha, depth or blend), or geometry the game never submits. The scan of batches that write nothing when drawn alone found five kinds of batch in 1,200 frames (opaque `127E03/FFFFFDF8` texture 64x16 and similar), none yet shown to be a bridge. Next step: the frame number of the shot, then draw its batches one by one and compare with footage; if the geometry is absent from the lists, look for an actor or object that fails to load.
+
+## Draw calls and final per-phase times
+
+`web/renderer.ts` now turns a task into runs (`web/batching.ts`): consecutive batches with the same program, uniforms, textures, scissor, viewport and colour image are one `drawArrays`, a fill rectangle or any state change ends a run, and the order of the batches is kept. A task's vertices go to the GPU in one `bufferData` instead of one per batch, and GPU textures are keyed by the interpreter's image id, so they live across tasks and no pixel is hashed (the id is never reused, so equal ids mean equal pixels).
+
+Measured on 20 game frames of Kokiri Forest (entrance 238, video frames 21,340-21,400 of the scripted new game), the recorded display lists drawn in Chrome 155 (headless, SwiftShader, WebGL2) by the old renderer and the new one on the same input:
+
+| | Old | New |
+|---|---|---|
+| Batches per task | 112 | 112 |
+| Draw calls per task | 110.0 | 99.8 |
+| Pixels differing between the two renderers | – | 0 in all 20 frames (the images are identical) |
+| Pixels differing from the software rasteriser (more than 6 per channel) | 614 at most per frame (0.8%) | the same 614 at most, frame by frame |
+
+- The gain is small, about 9%: between two consecutive batches the texture changes in nearly every pair (so does the tile placement), and the primitive colour or render mode in many. Only batches that differ in nothing the draw can see merge (12 of 112 pairs). Merging more needs textures in an atlas or a per-vertex texture index: a different design, not done here.
+- **Time:** not measurable here. The only GL available is SwiftShader (software), where the draw call itself rasterises: 25-40 ms per task in both versions, runs differing by more than the two versions do from each other, and no `EXT_disjoint_timer_query_webgl2`. On a real GPU the submit cost of 100 draw calls is well under 1 ms, so the changes were kept because they are correct and cheaper in calls, buffer uploads and hashing, not because a gain was shown. The debug overlay shows the real submit and GPU times on the user's machine.
+- The harness was throwaway (not kept): the C interpreter's results for the frames were saved as JSON, then drawn by both renderers and the software rasteriser in one page and compared pixel by pixel.
+
+Final per-phase times next to the first measurement (milliseconds per game frame, Kokiri Forest):
+
+| Phase | First measurement (TypeScript interpreter) | Now (C interpreter, merged draws) |
+|---|---|---|
+| Game code | 0.69-0.73 (headless) | 0.67-0.98 (headless) |
+| Display lists | 5.04-5.17 (headless) | 0.78-0.91 (headless, result read as the page reads it) |
+| WebGL submit | not measured (needs a browser) | not measurable here (SwiftShader only); see above |
+| GPU | not measured (needs a browser) | not measurable here (no timer query) |
+| Draw calls per frame | 113.5 | 99.8 (from 110.0 unmerged on the 20 frames above) |

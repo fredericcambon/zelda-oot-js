@@ -68,7 +68,7 @@ export function readResult(core: GfxCore): DisplayListResult {
   const images: DecodedTexture[] = Array.from({ length: textureCount }, (_, i) => {
     const width = textureWords[i * TEXTURE_WORDS + 1]!, height = textureWords[i * TEXTURE_WORDS + 2]!;
     const rgba = textureWords[i * TEXTURE_WORDS + 3]!;
-    return { width, height, rgba: heap.subarray(rgba, rgba + width * height * 4), tile: 0 };
+    return { id: textureWords[i * TEXTURE_WORDS]!, width, height, rgba: heap.subarray(rgba, rgba + width * height * 4), tile: 0 };
   });
 
   const stateWords = new Int32Array(buffer, statesAt || 0, stateCount * STATE_WORDS);
