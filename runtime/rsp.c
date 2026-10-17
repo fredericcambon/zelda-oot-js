@@ -83,7 +83,7 @@ static void decode_task(uint32_t t, RspTask *out) {
   };
 }
 
-static void event_fn(uint32_t event, uint32_t unused) {
+void te_rsp_event(uint32_t event, uint32_t unused) {
   (void)unused;
   event_send((int)event);
 }
@@ -99,17 +99,17 @@ void rt_osSpTaskStartGo(Cpu *c) {
   if (task.type == TASK_GFX) {
     if (gfx_hook) gfx_hook(&task);
     done += GFX_TASK_CYCLES;
-    rt_schedule(done, event_fn, EVENT_SP, 0);
-    rt_schedule(done + DP_DELAY_CYCLES, event_fn, EVENT_DP, 0);
+    rt_schedule(done, TE_RSP_EVENT, EVENT_SP, 0);
+    rt_schedule(done + DP_DELAY_CYCLES, TE_RSP_EVENT, EVENT_DP, 0);
   } else if (task.type == TASK_AUDIO) {
     if (audio_hook) audio_hook(&task);
     done += AUDIO_TASK_CYCLES;
-    rt_schedule(done, event_fn, EVENT_SP, 0);
+    rt_schedule(done, TE_RSP_EVENT, EVENT_SP, 0);
   } else if (task.type == TASK_HALT && task.ucode == JPEG_UCODE) {
     rt_jpeg_task(&task);
-    rt_schedule(done + JPEG_TASK_CYCLES, event_fn, EVENT_SP, 0);
+    rt_schedule(done + JPEG_TASK_CYCLES, TE_RSP_EVENT, EVENT_SP, 0);
   } else if (task.type == TASK_HALT && (task.ucode == HALT_UCODE || task.ucode_boot == HALT_UCODE)) {
-    rt_schedule(done + HALT_TASK_CYCLES, event_fn, EVENT_SP, 0);
+    rt_schedule(done + HALT_TASK_CYCLES, TE_RSP_EVENT, EVENT_SP, 0);
   } else {
     rt_fatal("RSP task of unknown type %u (flags 0x%x, ucode 0x%08x, data 0x%08x+0x%x, called from 0x%08x)", task.type, task.flags, task.ucode, task.data_ptr, task.data_size, (uint32_t)c->r[31]);
   }
@@ -133,7 +133,7 @@ void rt_osDpSetStatus(Cpu *c) { (void)c; }
 
 static uint64_t buffer_cycles(uint32_t length) { return (uint64_t)(length / 4) * RT_CPU_COUNTER / ai_hz; }
 
-static void ai_finished(uint32_t a, uint32_t b) {
+void te_ai_finished(uint32_t a, uint32_t b) {
   (void)a; (void)b;
   if (ai_count == 0) return;
   ai_end[0] = ai_end[1];
@@ -183,7 +183,7 @@ void rt_osAiSetNextBuffer(Cpu *c) {
   uint32_t length = ARG(1);
   ai_end[ai_count] = start + buffer_cycles(length);
   ai_len[ai_count] = length;
-  rt_schedule(ai_end[ai_count], ai_finished, 0, 0);
+  rt_schedule(ai_end[ai_count], TE_AI_FINISHED, 0, 0);
   ai_count++;
   if (ai_hook) ai_hook(ARG(0), length);
   RET(0);
@@ -191,9 +191,39 @@ void rt_osAiSetNextBuffer(Cpu *c) {
 
 // Bytes of the playing buffer that are left.
 void rt_osAiGetLength(Cpu *c) {
-  rt_poll(16);
+  rt_poll(c, BS_AIGETLENGTH, 16);
   if (ai_count == 0) { RET(0); return; }
   uint64_t now = rt_clock();
   if (now >= ai_end[0]) { RET(0); return; }
   RET((uint32_t)((ai_end[0] - now) * ai_hz / RT_CPU_COUNTER * 4));
+}
+
+// ---- Saved state -------------------------------------------------------------------------------------------
+
+int rsp_save(Writer *w) {
+  put32(w, ai_hz);
+  put32(w, (uint32_t)ai_count);
+  for (int k = 0; k < 2; k++) {
+    put64(w, ai_end[k]);
+    put32(w, ai_len[k]);
+  }
+  return 1;
+}
+
+int rsp_load(Reader *r, int apply) {
+  uint32_t hz = get32(r), count = get32(r);
+  uint64_t end[2];
+  uint32_t len[2];
+  for (int k = 0; k < 2; k++) {
+    end[k] = get64(r);
+    len[k] = get32(r);
+  }
+  if (r->bad || hz == 0 || count > 2) return rt_state_refuse("the audio interface state is damaged");
+  if (apply) {
+    ai_hz = hz;
+    ai_count = (int)count;
+    memcpy(ai_end, end, sizeof end);
+    memcpy(ai_len, len, sizeof len);
+  }
+  return 1;
 }

@@ -11,7 +11,7 @@ import type { SaveMemory } from './saves.ts';
 import { compress, decompress, type StateSource } from './savestate.ts';
 import { mark } from './timing.ts';
 import { MODULE_URL, type WasmBuild } from './wasm.ts';
-import { captureMemory, decodeMemory, encodeMemory, restoreMemory, type SnapshotCore } from '../tools/runtime/snapshot.ts';
+import { loadState, saveState, type StateCore } from '../tools/runtime/snapshot.ts';
 
 export interface Game {
   /** Sets controller 1 for the frames that follow. */
@@ -20,8 +20,6 @@ export interface Game {
   saveMemory: SaveMemory;
   /** Save states of the game; capture and apply only between two frames. */
   states: StateSource;
-  /** Identifies the game module build (the hash of its wasm file). */
-  buildId(): Promise<string>;
   /** Runs the game for one video frame. Rejects with the game's own message when it stops. */
   frame(): Promise<void>;
   /** Address of the colour image the video interface shows. */
@@ -37,7 +35,7 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
   // The module's start-up promise never settles when the hook below fails, so the failure is raced against it.
   let failInstantiation!: (err: unknown) => void;
   const instantiationFailed = new Promise<never>((_, reject) => (failInstantiation = reject));
-  const started = startModule<SnapshotCore>(moduleUrl, rom, {
+  const started = startModule<StateCore>(moduleUrl, rom, {
     instantiateWasm: (imports: WebAssembly.Imports, done: (instance: WebAssembly.Instance) => void) => {
       wasm.module
         .then((module) => WebAssembly.instantiate(module, imports))
@@ -79,10 +77,9 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
       takeIfDirty: () => (mod._oot_sram_take_dirty() ? sram().slice() : null),
     },
     states: {
-      capture: () => compress(encodeMemory(captureMemory(mod))),
-      apply: async (data) => restoreMemory(mod, decodeMemory(await decompress(data))),
+      capture: () => compress(saveState(mod)),
+      apply: async (data) => loadState(mod, await decompress(data)),
     },
-    buildId: () => wasm.buildId,
     async frame() {
       try {
         await mod._oot_frame();

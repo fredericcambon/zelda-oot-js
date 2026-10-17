@@ -121,3 +121,50 @@ EMSCRIPTEN_KEEPALIVE uint32_t oot_trace_count(void) { return trace_total; }
 EMSCRIPTEN_KEEPALIVE uint32_t oot_trace_at(uint32_t back) {
   return back < TRACE_RING && back < trace_total ? trace_ring[(trace_total - 1 - back) % TRACE_RING] : 0;
 }
+
+// ---- Saved state ----------------------------------------------------------------------------------------------
+
+int headless_save(Writer *w) {
+  put32(w, frames_done);
+  put32(w, gfx_tasks);
+  put32(w, audio_tasks);
+  put64(w, frame_end);
+  put32(w, (uint32_t)idle);
+  return 1;
+}
+
+int headless_load(Reader *r, int apply) {
+  uint32_t frames = get32(r), gfx = get32(r), audio = get32(r);
+  uint64_t end = get64(r);
+  uint32_t idle_now = get32(r);
+  if (r->bad || idle_now > 1) return rt_state_refuse("the frame counters of the state are damaged");
+  if (apply) {
+    frames_done = frames;
+    gfx_tasks = gfx;
+    audio_tasks = audio;
+    frame_end = end;
+    idle = (int)idle_now;
+  }
+  return 1;
+}
+
+static int state_loaded;
+
+// Writes the portable state (rt_state_save) into `buf`. Returns its size, or 0 with oot_state_error() set.
+EMSCRIPTEN_KEEPALIVE uint32_t oot_state_save(uint8_t *buf, uint32_t cap) { return rt_state_save(buf, cap); }
+// Loads a portable state; oot_state_loaded() tells whether it was accepted. Rebuilding the threads switches fibers,
+// so the result is not the return value (see oot_frame).
+EMSCRIPTEN_KEEPALIVE void oot_state_load(const uint8_t *buf, uint32_t len) { state_loaded = rt_state_load(buf, len); }
+EMSCRIPTEN_KEEPALIVE int oot_state_loaded(void) { return state_loaded; }
+
+// ---- Threads of a saved state ---------------------------------------------------------------------------------
+
+static int threads_rebuilt;
+
+// Describes the guest threads into `buf` (rt_threads_describe). Returns the size, or 0 with oot_state_error() set.
+EMSCRIPTEN_KEEPALIVE uint32_t oot_threads_describe(uint8_t *buf, uint32_t cap) { return rt_threads_describe(buf, cap); }
+// Rebuilds the threads from a description; oot_threads_rebuilt() tells whether it was accepted. Rebuilding switches
+// fibers, so the result is not the return value (see oot_frame).
+EMSCRIPTEN_KEEPALIVE void oot_threads_rebuild(const uint8_t *buf, uint32_t len) { threads_rebuilt = rt_threads_rebuild(buf, len); }
+EMSCRIPTEN_KEEPALIVE int oot_threads_rebuilt(void) { return threads_rebuilt; }
+EMSCRIPTEN_KEEPALIVE const char *oot_state_error(void) { return rt_state_error(); }

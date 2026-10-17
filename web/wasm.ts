@@ -1,6 +1,5 @@
-// The game's wasm module, fetched once: compiled while it downloads, and hashed from a second reader of the same response.
+// The game's wasm module, fetched once: compiled while it downloads.
 import { mark } from './timing.ts';
-import { buildIdOf } from './savestate.ts';
 
 export const MODULE_URL = `${import.meta.env.BASE_URL}oot.js`;
 
@@ -11,8 +10,6 @@ export function preloadModule(url: string = MODULE_URL): void {
 
 export interface WasmBuild {
   module: Promise<WebAssembly.Module>;
-  /** Identifies this build of the game (the hash of its wasm file). */
-  buildId: Promise<string>;
 }
 
 export function fetchWasm(url = `${import.meta.env.BASE_URL}oot.wasm`): WasmBuild {
@@ -21,8 +18,5 @@ export function fetchWasm(url = `${import.meta.env.BASE_URL}oot.wasm`): WasmBuil
     return r;
   });
   const module = response.then((r) => WebAssembly.compileStreaming(r.clone())).then((m) => (mark('compiled'), m));
-  const buildId = response.then((r) => r.clone().arrayBuffer()).then(buildIdOf);
-  // A failed download is reported through `module`; this one is read later and must not also surface unhandled.
-  buildId.catch(() => {});
-  return { module, buildId };
+  return { module };
 }

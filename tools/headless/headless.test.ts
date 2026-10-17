@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { loadContext } from '../analyze/context.ts';
 import { analyze } from '../analyze/run.ts';
@@ -17,9 +17,12 @@ import { buildManifest, readCartridge, writeAssets } from '../assets/write.ts';
 import { DisplayListInterpreter, type Batch, type DisplayListResult } from '../gfx/dl.ts';
 import { encodePng } from '../gfx/png.ts';
 import { HEIGHT, SoftRenderer, WIDTH } from '../gfx/raster.ts';
-import { bootGame } from './boot.ts';
+import { bootGame, type Game } from './boot.ts';
 import { averageSpectrum, envelope, playbackSpeed, similarity } from './spectrum.ts';
 import { padAt, parseInput } from './input.ts';
+import { compressState, STATE_VERSION } from '../runtime/snapshot.ts';
+import { RDRAM_SIZE } from '../runtime/instance.ts';
+import { encodeThreads, parseThreads } from '../runtime/threads.ts';
 import { FILE_SELECT_INIT_LINKED, FILE_SELECT_RECORD, RECORD, fileSelectLoaded, linkPosition, playState, requestEntrance } from './state.ts';
 import { compareWithMicrocode } from '../gfx/ucode-compare.ts';
 
@@ -71,6 +74,22 @@ function buildGame(): Promise<{ moduleUrl: string; cartridge: Uint8Array }> {
     return { moduleUrl: pathToFileURL(out).href, cartridge: readCartridge(join(work, 'dist', 'assets')) };
   })();
   return built;
+}
+
+/**
+ * The same sources linked at another optimisation level, which gives a different wasm file. The objects and the link are kept
+ * under out/ and rebuilt only when a runtime source or the generated C is newer.
+ */
+async function buildVariant(optimize: string): Promise<{ moduleUrl: string; cartridge: Uint8Array }> {
+  const base = await buildGame();
+  const work = resolve('out', 'headless-test-boot');
+  const variant = resolve('out', `headless-test${optimize}`);
+  const opts = { cDir: join(work, 'c'), objDir: join(variant, 'obj'), distDir: join(variant, 'dist'), optimize, toolchain: ensureToolchain(), log: () => {} };
+  const objects = await compileAll(opts, runtimeSources());
+  const out = join(opts.distDir, 'oot.js');
+  const newest = Math.max(...objects.map((o) => statSync(o.path).mtimeMs));
+  if (!existsSync(out) || !existsSync(join(opts.distDir, 'oot.wasm')) || statSync(join(opts.distDir, 'oot.wasm')).mtimeMs < newest) await link(opts, objects);
+  return { moduleUrl: pathToFileURL(out).href, cartridge: base.cartridge };
 }
 
 /** A game whose display lists are drawn into frame images only shortly before each frame in `capture`. */
@@ -129,6 +148,86 @@ function dump(name: string, img: Uint8Array): void {
   const dir = resolve('out', 'input-frames');
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, `${name}.png`), encodePng(WIDTH, HEIGHT, img));
+}
+
+const sha = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
+
+/** The frame at which states are taken, the frames replayed after it, and the size a gzipped state must stay within. */
+const SAVE_FRAME = CONTROL_FRAME - 10;
+const REPLAY_FRAMES = 180;
+const STATE_SIZE_LIMIT = 4 * 1024 * 1024;
+
+/** Plays the scripted new game up to the frame at which states are taken. */
+async function reachSaveFrame(game: Game): Promise<void> {
+  for (let frame = 1; frame <= SAVE_FRAME; frame++) {
+    const pad = padAt(SCRIPT, frame);
+    game.setPad(pad.buttons, pad.x, pad.y);
+    expect((await game.frame()).fatal, `frame ${frame}`).toBeUndefined();
+  }
+}
+
+/** The payload of each section of a portable state, by tag (runtime/state.c). */
+function sections(state: Uint8Array): Map<string, Uint8Array> {
+  const view = new DataView(state.buffer, state.byteOffset, state.byteLength);
+  const out = new Map<string, Uint8Array>();
+  let at = 12;
+  for (let n = view.getUint32(8, true); n > 0; n--) {
+    const length = view.getUint32(at + 4, true);
+    out.set(new TextDecoder().decode(state.subarray(at, at + 4)), state.subarray(at + 8, at + 8 + length));
+    at += 8 + length;
+  }
+  return out;
+}
+
+/** The state with the payload of one section replaced. */
+function withSection(state: Uint8Array, tag: string, payload: Uint8Array): Uint8Array {
+  const parts: Uint8Array[] = [state.slice(0, 12)];
+  for (const [name, data] of sections(state)) {
+    const body = name === tag ? payload : data;
+    const head = new Uint8Array(8);
+    head.set(new TextEncoder().encode(name));
+    new DataView(head.buffer).setUint32(4, body.length, true);
+    parts.push(head, body);
+  }
+  return Buffer.concat(parts);
+}
+
+/** A fresh game that draws the frames it plays into pictures and hashes: for each frame, the shown picture, the sound queued and Link's position. */
+async function startReplayable(moduleUrl: string, cartridge: Uint8Array) {
+  let soft = new SoftRenderer();
+  let interpreter = new DisplayListInterpreter();
+  let sound = createHash('sha256');
+  let drawing = false;
+  const game = await bootGame(moduleUrl, cartridge, {
+    onGfxTask: (task) => {
+      if (drawing) soft.drawTask(interpreter.run(task.ram, task.data));
+    },
+    onAiBuffer: (b) => {
+      if (drawing) sound.update(b.ram.subarray(b.addr & 0x7fffff, (b.addr & 0x7fffff) + b.length));
+    },
+  });
+  /** Plays the frames after `from`, hashing the shown picture, the sound queued and Link's position of each. */
+  const play = async (from: number, to: number): Promise<string[]> => {
+    soft = new SoftRenderer();
+    interpreter = new DisplayListInterpreter();
+    drawing = true;
+    const frames: string[] = [];
+    for (let frame = from + 1; frame <= to; frame++) {
+      const pad = padAt(SCRIPT, frame);
+      game.setPad(pad.buttons, pad.x, pad.y);
+      sound = createHash('sha256');
+      const r = await game.frame();
+      expect(r.fatal, `frame ${frame}`).toBeUndefined();
+      const img = soft.image(game.framebuffer());
+      const rd = (addr: number) => game.rd32(addr);
+      const state = playState(rd);
+      const pos = state ? linkPosition(rd, state) : undefined;
+      frames.push(`${frame} ${img ? sha(img) : 'no image'} ${sound.digest('hex')} ${pos ? `${pos.x},${pos.y},${pos.z}` : 'no link'}`);
+    }
+    drawing = false;
+    return frames;
+  };
+  return { game, play };
 }
 
 describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
@@ -358,82 +457,110 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
     expect(pace.speed).toBeLessThan(1.02);
   }, 3_600_000);
 
-  it('restores a saved state into a fresh game and replays the same frames, pictures, sound, position and memory', async () => {
+  it('saves a portable state and loads it into a fresh game, which replays the same frames, pictures, sound, position and memory', async () => {
     const { moduleUrl, cartridge } = await buildGame();
-    const SAVE_FRAME = CONTROL_FRAME - 10;
-    const REPLAY_FRAMES = 180;
-    const sha = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
-
-    const start = async () => {
-      let soft = new SoftRenderer();
-      let interpreter = new DisplayListInterpreter();
-      let sound = createHash('sha256');
-      let drawing = false;
-      const game = await bootGame(moduleUrl, cartridge, {
-        onGfxTask: (task) => {
-          if (drawing) soft.drawTask(interpreter.run(task.ram, task.data));
-        },
-        onAiBuffer: (b) => {
-          if (drawing) sound.update(b.ram.subarray(b.addr & 0x7fffff, (b.addr & 0x7fffff) + b.length));
-        },
-      });
-      /** Plays the frames after `from`, hashing the shown picture, the sound queued and Link's position of each. */
-      const play = async (from: number, to: number): Promise<string[]> => {
-        soft = new SoftRenderer();
-        interpreter = new DisplayListInterpreter();
-        drawing = true;
-        const frames: string[] = [];
-        for (let frame = from + 1; frame <= to; frame++) {
-          const pad = padAt(SCRIPT, frame);
-          game.setPad(pad.buttons, pad.x, pad.y);
-          sound = createHash('sha256');
-          const r = await game.frame();
-          expect(r.fatal, `frame ${frame}`).toBeUndefined();
-          const img = soft.image(game.framebuffer());
-          const rd = (addr: number) => game.rd32(addr);
-          const state = playState(rd);
-          const pos = state ? linkPosition(rd, state) : undefined;
-          frames.push(`${frame} ${img ? sha(img) : 'no image'} ${sound.digest('hex')} ${pos ? `${pos.x},${pos.y},${pos.z}` : 'no link'}`);
-        }
-        drawing = false;
-        return frames;
-      };
-      return { game, play };
-    };
+    const start = () => startReplayable(moduleUrl, cartridge);
 
     const first = await start();
-    for (let frame = 1; frame <= SAVE_FRAME; frame++) {
-      const pad = padAt(SCRIPT, frame);
-      first.game.setPad(pad.buttons, pad.x, pad.y);
-      expect((await first.game.frame()).fatal, `frame ${frame}`).toBeUndefined();
-    }
+    await reachSaveFrame(first.game);
     expect(playState((a) => first.game.rd32(a))?.scene).toBe(HOUSE_SCENE);
-    const state = first.game.snapshot();
+    const state = first.game.saveState();
     const savedGames = first.game.readSave();
     const expected = await first.play(SAVE_FRAME, SAVE_FRAME + REPLAY_FRAMES);
-    const finalMemory = first.game.snapshot();
     // The walk moves Link and the pictures change, so the comparison below is not between constant frames.
     expect(new Set(expected.map((l) => l.split(' ')[1])).size).toBeGreaterThan(20);
     expect(new Set(expected.map((l) => l.split(' ')[3])).size).toBeGreaterThan(10);
 
+    // The state holds RDRAM and a short list of variables, not the module's memory.
+    expect(state.length).toBeLessThan(RDRAM_SIZE + 1_000_000);
+    expect((await compressState(state)).length).toBeLessThanOrEqual(STATE_SIZE_LIMIT);
+
     // A game that has just booted (as a reloaded page has) takes the state.
     const second = await start();
     const blank = second.game.readSave();
-    second.game.restore(state);
+    await second.game.loadState(state);
     // The save memory holds the player's saved games, which a state does not overwrite.
     expect(second.game.readSave()).toEqual(blank);
     second.game.writeSave(savedGames);
-    const replayed = await second.play(SAVE_FRAME, SAVE_FRAME + REPLAY_FRAMES);
-    expect(replayed).toEqual(expected);
-    const replayedMemory = second.game.snapshot();
-    // Every byte of the module's memory but the cartridge image is the same, so nothing the game depends on was left out.
-    const common = Math.min(replayedMemory.tail.length, finalMemory.tail.length);
-    expect(sha(replayedMemory.head)).toBe(sha(finalMemory.head));
-    expect(sha(replayedMemory.tail.subarray(0, common))).toBe(sha(finalMemory.tail.subarray(0, common)));
+    expect(await second.play(SAVE_FRAME, SAVE_FRAME + REPLAY_FRAMES)).toEqual(expected);
+    expect(sha(second.game.ram())).toBe(sha(first.game.ram()));
+    // Everything the state holds is the same after the replay, so nothing the game depends on was left out of it.
+    expect(sha(second.game.saveState())).toBe(sha(first.game.saveState()));
 
     // The same game goes back too.
-    first.game.restore(state);
+    await first.game.loadState(state);
+    const description = first.game.describeThreads();
     expect(await first.play(SAVE_FRAME, SAVE_FRAME + REPLAY_FRAMES)).toEqual(expected);
+
+    // The threads of the state, described in terms of the ROM's functions and call sites, are what the state holds.
+    const parsed = parseThreads(description);
+    expect(encodeThreads(parsed)).toEqual(description);
+    const started = parsed.threads.filter((t) => t.started);
+    expect(started.length).toBeGreaterThan(5);
+    expect(started.every((t) => t.blockingSite !== 0 && t.frames.length > 0 && t.frames.at(-1)!.kind === 'site')).toBe(true);
+    expect(parsed.running).toBe(0);
+    expect(sections(state).get('THRD')).toEqual(description);
+  }, 3_600_000);
+
+  it('refuses a state it cannot read with a message, and the game keeps running', async () => {
+    const { moduleUrl, cartridge } = await buildGame();
+    const start = () => startReplayable(moduleUrl, cartridge);
+    const first = await start();
+    await reachSaveFrame(first.game);
+    const state = first.game.saveState();
+    const expected = await first.play(SAVE_FRAME, SAVE_FRAME + REPLAY_FRAMES);
+
+    const third = await start();
+    third.game.writeSave(first.game.readSave());
+    const other = state.slice();
+    new DataView(other.buffer).setUint32(4, STATE_VERSION + 1, true);
+    await expect(third.game.loadState(other)).rejects.toThrow(`this state uses format ${STATE_VERSION + 1}, this build reads ${STATE_VERSION}`);
+
+    // A call site this build does not have.
+    const description = parseThreads(sections(state).get('THRD')!);
+    const frame = description.threads.find((t) => t.started)!.frames[0]!;
+    if (frame.kind !== 'site') throw new Error('the outermost frame is a call site');
+    frame.site += 2;
+    await expect(third.game.loadState(withSection(state, 'THRD', encodeThreads(description)))).rejects.toThrow(/no call site/);
+
+    const old = state.slice();
+    old.set([0x4f, 0x4f, 0x54, 0x53]);
+    await expect(third.game.loadState(old)).rejects.toThrow(/old format/);
+    await expect(third.game.loadState(state.subarray(0, state.length - 1))).rejects.toThrow(/cut short/);
+    await expect(third.game.loadState(new Uint8Array(100))).rejects.toThrow(/not a saved game state/);
+
+    // The refusals left the game as it was: it takes the good state and replays the frames.
+    await third.game.loadState(state);
+    expect(await third.play(SAVE_FRAME, SAVE_FRAME + REPLAY_FRAMES)).toEqual(expected);
+  }, 3_600_000);
+
+  it('loads a state taken by one build into another build and replays the same frames, pictures, sound and memory', async () => {
+    const a = await buildGame();
+    const b = await buildVariant('-O1');
+    const wasm = (url: string) => sha(readFileSync(fileURLToPath(url.replace(/\.js$/, '.wasm'))));
+    expect(wasm(b.moduleUrl)).not.toBe(wasm(a.moduleUrl));
+
+    const first = await startReplayable(a.moduleUrl, a.cartridge);
+    await reachSaveFrame(first.game);
+    const state = first.game.saveState();
+    const savedGames = first.game.readSave();
+    const expected = await first.play(SAVE_FRAME, SAVE_FRAME + REPLAY_FRAMES);
+
+    const second = await startReplayable(b.moduleUrl, b.cartridge);
+    await second.game.loadState(state);
+    second.game.writeSave(savedGames);
+    expect(await second.play(SAVE_FRAME, SAVE_FRAME + REPLAY_FRAMES)).toEqual(expected);
+    expect(sha(second.game.ram())).toBe(sha(first.game.ram()));
+    expect(sha(second.game.saveState())).toBe(sha(first.game.saveState()));
+  }, 3_600_000);
+
+  it('refuses to save a state while the game boots', async () => {
+    const { moduleUrl, cartridge } = await buildGame();
+    const game = await bootGame(moduleUrl, cartridge, {});
+    expect(() => game.describeThreads()).toThrow(/booting/);
+    expect(() => game.saveState()).toThrow(/booting/);
+    // The refusals leave the game running.
+    expect((await game.frame()).fatal).toBeUndefined();
   }, 3_600_000);
 
   it('renders the title music to a WAV that is audible and not clipped', async () => {

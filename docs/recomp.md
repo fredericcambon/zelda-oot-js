@@ -37,7 +37,7 @@ Registers are stored as raw bits in `Cpu.f[]`; `Cpu.fr` selects the register mod
 
 ## Jump tables
 
-A `jr` that the inventory lists as a table dispatch becomes `switch (target)` over the table's distinct targets (`goto` for targets in the function, a tail call otherwise). Values outside the table go through `rt_call`. The switch is on the target address, so no index expression has to be recovered.
+A `jr` that the inventory lists as a table dispatch becomes `switch (target)` over the table's distinct targets that lie in the function, each a `goto`. Values outside the table, including targets in other functions, go through `rt_call`, so that the jump has one call site (see "Calls and the shadow stack"). The switch is on the target address, so no index expression has to be recovered.
 
 ## Overlays
 
@@ -47,6 +47,16 @@ An overlay is translated against its link address. The game's own loader relocat
 - Jump-table dispatches subtract `delta` from the register before the `switch`, because the tables in the loaded rodata hold relocated addresses.
 - `jal` and tail calls inside the overlay call the recompiled functions directly. Indirect calls use the dispatch tables, which are keyed by link address: `oot_lookup(addr)` finds the image whose `[link_start + delta, link_end + delta)` contains `addr` (loaded images only) and looks up `addr - delta`.
 
+## Calls and the shadow stack
+
+Every call to a function that can suspend the thread (one that calls through the dispatch tables, or reaches a blocking OS routine:
+`SUSPENDING_ROUTINES` in `tools/recomp/generate.ts`) is emitted as `OOT_PUSH(key); callee(c); D_key:; OOT_POP();`, with the key of its
+`CallSite` (`emit.ts`). This covers `jal`, linking branches, `jalr`, a `jr` that leaves the function, tail calls and the fall into the next
+function. A function with call sites begins with `if (OOT_RESUMING()) goto resume_entry` and ends with a `switch` over its keys to the
+code that re-issues each call (`Q_key`), which jumps back to `D_key`. `recompileFunction` throws if a C local is declared outside a call and
+read after it (`liveLocalsAfterCalls`). Calls to functions that cannot suspend (`EmitOptions.frameless`) are plain calls. The rules and the runtime
+side are in `docs/runtime.md`, "Portable save states".
+
 ## Generated files
 
 `npm run recomp` (`tools/recomp/generate.ts`) writes `generated/c/`:
@@ -55,6 +65,7 @@ An overlay is translated against its link address. The game's own loader relocat
 - `images.c`, the registry `oot_images[]` (`runtime/dispatch.h`);
 - `oot_gen.h`, declarations and the overlay delta macros;
 - `os_bindings.c`: a weak `rt_<routine>` for every OS routine the inventory identified (`docs/re/os-routines.md`) that calls the recompiled original. Every call and dispatch entry for such a routine goes to `rt_<routine>`, so a runtime that defines the symbol replaces the routine;
+- `sites.c`: `oot_sites`, the call sites that keep a frame on the shadow stack, by key (function, entry address, call address);
 - `missing.c`: `rt_missing` stubs for direct transfers whose target lies in no image (`jal 0x801c5c6c` and similar in the PAL code, an address beyond the code file's BSS). A direct transfer into the middle of another routine gets a function of its own that runs from the target to the end of that routine.
 
 Generation fails when an instruction cannot be translated (`rt_unimpl` would be emitted) or a function cannot be recompiled.

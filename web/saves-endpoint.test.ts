@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { savesDir, savesMiddleware } from './saves-endpoint.ts';
 import { SaveSync, serverHasSaves, serverStore, type SaveMemory } from './saves.ts';
-import { SaveStates, serverStates, type StateSource } from './savestate.ts';
+import { OLD_FORMAT, SaveStates, serverStates, type StateSource } from './savestate.ts';
 
 let dir: string;
 let server: Server;
@@ -27,8 +27,6 @@ afterAll(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-const BUILD = 'a'.repeat(64);
-
 describe('saves endpoint', () => {
   it('answers the probe', async () => {
     expect(await serverHasSaves(page)).toBe(true);
@@ -47,20 +45,21 @@ describe('saves endpoint', () => {
     expect([...new Uint8Array(await got.arrayBuffer())]).toEqual([1, 2, 3]);
   });
 
-  it('keeps a state with the build and time that took it', async () => {
-    const put = await page('/api/saves/state/2', { method: 'PUT', headers: { 'X-Build': BUILD, 'X-Saved-At': '1234' }, body: new Uint8Array([9]) });
+  it('keeps a state with its format version and the time it was saved', async () => {
+    const put = await page('/api/saves/state/2', { method: 'PUT', headers: { 'X-State-Format': '1', 'X-Saved-At': '1234' }, body: new Uint8Array([9]) });
     expect(put.status).toBe(204);
     const got = await page('/api/saves/state/2');
-    expect(got.headers.get('X-Build')).toBe(BUILD);
+    expect(got.headers.get('X-State-Format')).toBe('1');
     expect(got.headers.get('X-Saved-At')).toBe('1234');
     expect([...new Uint8Array(await got.arrayBuffer())]).toEqual([9]);
     expect((await page('/api/saves/state/3', { method: 'PUT', body: new Uint8Array([1]) })).status).toBe(400);
+    expect((await page('/api/saves/state/3', { method: 'PUT', headers: { 'X-State-Format': 'x' }, body: new Uint8Array([1]) })).status).toBe(400);
   });
 
   it('keeps the video rate of a state, 50 Hz when none is given', async () => {
-    await page('/api/saves/state/2', { method: 'PUT', headers: { 'X-Build': BUILD, 'X-Hz': '60' }, body: new Uint8Array([1]) });
+    await page('/api/saves/state/2', { method: 'PUT', headers: { 'X-State-Format': '1', 'X-Hz': '60' }, body: new Uint8Array([1]) });
     expect((await page('/api/saves/state/2')).headers.get('X-Hz')).toBe('60');
-    await page('/api/saves/state/2', { method: 'PUT', headers: { 'X-Build': BUILD }, body: new Uint8Array([1]) });
+    await page('/api/saves/state/2', { method: 'PUT', headers: { 'X-State-Format': '1' }, body: new Uint8Array([1]) });
     expect((await page('/api/saves/state/2')).headers.get('X-Hz')).toBe('50');
   });
 
@@ -71,7 +70,7 @@ describe('saves endpoint', () => {
         expect([400, 404], `${method} ${path}`).toContain(r.status);
       }
     }
-    expect(readdirSync(dir).sort()).toEqual(['sram.bin', 'state-2.bin', 'state-2.bin.build']);
+    expect(readdirSync(dir).sort()).toEqual(['sram.bin', 'state-2.bin', 'state-2.bin.format']);
   });
 
   it('refuses a client that is not on this machine', async () => {
@@ -109,31 +108,54 @@ describe('saves through the endpoint', () => {
     expect([...reader.ram]).toEqual([7, 7, 7, 7]);
   });
 
-  it('keeps the build check on states', async () => {
+  it('keeps the version check on states', async () => {
     const source = (): StateSource & { value: number } => {
       const s = { value: 0, capture: async () => new Uint8Array([s.value]), apply: async (d: Uint8Array) => void (s.value = d[0]!) };
       return s;
     };
     const old = source();
     old.value = 4;
-    await new SaveStates(old, serverStates(page), 'b'.repeat(64)).save();
+    await new SaveStates(old, serverStates(page), 1).save();
 
-    const sameBuild = source();
-    expect(await new SaveStates(sameBuild, serverStates(page), 'b'.repeat(64)).load()).toBe('Loaded slot 1');
-    expect(sameBuild.value).toBe(4);
+    const sameVersion = source();
+    expect(await new SaveStates(sameVersion, serverStates(page), 1).load()).toBe('Loaded slot 1');
+    expect(sameVersion.value).toBe(4);
 
-    const other = source();
-    expect(await new SaveStates(other, serverStates(page), 'c'.repeat(64)).load()).toContain('another build');
-    expect(other.value).toBe(0);
+    const newer = source();
+    expect(await new SaveStates(newer, serverStates(page), 2).load()).toContain('uses state format 1, this build reads 2');
+    expect(newer.value).toBe(0);
+  });
+
+  it('serves a state kept before the portable format as the old format, and leaves its files', async () => {
+    writeFileSync(join(dir, 'state-4.bin'), new Uint8Array([6]));
+    writeFileSync(join(dir, 'state-4.bin.build'), `${'f'.repeat(64)}
+777`);
+    const states = serverStates(page);
+    const record = await states.get(4);
+    expect(record).toMatchObject({ format: OLD_FORMAT, savedAt: 777 });
+    expect([...record!.data]).toEqual([6]);
+
+    const game = { value: 0, capture: async () => new Uint8Array(), apply: async () => { throw new Error('must not load'); } };
+    const sets = new SaveStates(game, states, 1);
+    await sets.select(3);
+    expect(sets.slot).toBe(4);
+    expect(await sets.load()).toBe('Slot 4 was saved in the old format and cannot be loaded');
+    expect(readdirSync(dir)).toEqual(expect.arrayContaining(['state-4.bin', 'state-4.bin.build']));
+
+    await states.put(4, { format: 1, savedAt: 9, data: new Uint8Array([7]) });
+    expect(await states.get(4)).toMatchObject({ format: 1, savedAt: 9 });
+    rmSync(join(dir, 'state-4.bin'));
+    rmSync(join(dir, 'state-4.bin.build'));
+    rmSync(join(dir, 'state-4.bin.format'));
   });
 
   it('refuses a state saved at the other video rate', async () => {
     const game = { value: 3, capture: async () => new Uint8Array([3]), apply: async () => { throw new Error('must not load'); } };
-    await new SaveStates(game, serverStates(page), 'd'.repeat(64), 60).save();
-    expect(await new SaveStates(game, serverStates(page), 'd'.repeat(64), 50).load()).toContain('saved in 60 Hz mode');
+    await new SaveStates(game, serverStates(page), 1, 60).save();
+    expect(await new SaveStates(game, serverStates(page), 1, 50).load()).toContain('saved in 60 Hz mode');
     const loaded: number[] = [];
     const target = { capture: async () => new Uint8Array(), apply: async (d: Uint8Array) => void loaded.push(d[0]!) };
-    expect(await new SaveStates(target, serverStates(page), 'd'.repeat(64), 60).load()).toBe('Loaded slot 1');
+    expect(await new SaveStates(target, serverStates(page), 1, 60).load()).toBe('Loaded slot 1');
     expect(loaded).toEqual([3]);
   });
 });

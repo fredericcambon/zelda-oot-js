@@ -28,6 +28,22 @@ The old 3 frames per second were not the recompiled game. Measured here (video f
 - **Asyncify:** left as is. Guest threads are fibers (`runtime/sched.c`), which need it, and the guest alone is far above the target. **The thread mechanism is unchanged** (m4-savestate: nothing to adapt).
 - **Target:** at least 20 game frames per second headless is met by a factor of 10 or more even with every display list interpreted. `tools/sweep/sweep.test.ts` asserts more than 20 video fps over 2,500 frames of the scripted new game, on the coverage build.
 
+## Cost of the shadow stack
+
+The generated code keeps a shadow stack of its active calls, so that the threads of a saved state can be rebuilt in another build (`docs/runtime.md`, "Portable save states"). Measured on `-O2` builds of the same sources with and without it, guest alone (no hooks), the scripted new game: 3,000 frames of warm-up, then 16,000 timed video frames, the two wasm files run alternately six times each.
+
+| Build | Wall time of 16,000 video frames | Video fps | Game frames/s (a third of the video fps) | wasm | Call sites with a frame |
+|---|---|---|---|---|---|
+| Without (commit before this change) | 1.52–1.64 s, median 1.54 s | 10,390 | 3,460 | 23.3 MB | – |
+| With, calls to functions that cannot suspend left out (the default) | 1.54–1.58 s, median 1.565 s | 10,220 | 3,410 | 25.3 MB | 11,268 of 53,023 |
+| With a frame for every call | 1.80 s (best of five) | 8,900 | 2,960 | 32.0 MB | 53,023 |
+
+- **Result: −1.6 % on game code** (limit 10 %). The CPU-time rates of the same runs are 3,100 and 3,050 game frames/s.
+- **Why the default leaves calls out:** a frame for every call cost 15 %. Of that, 11 % was the push and pop (`OOT_PUSH`/`OOT_POP`: two loads and three stores of `Cpu` memory per call, the overflow check among them, about 2 %; a build with the pushes and the resume entries removed ran as fast as the original) and 4 % the resume entry of each function. A thread can only be parked inside the OS routines of `blocking_routine`, so only calls that can reach one need a frame; 79 % of the call sites, and with them the hot calls to small leaf routines, have none. Functions that call through the dispatch tables or reach one of the 15 routines of `SUSPENDING_ROUTINES` are the others.
+- **Depth:** a build whose shadow stack held 40 words ran the 19,000 frames of the scripted new game without overflowing; the stack holds 1,024.
+- **Size and build time:** `code.c` grows from 21.0 MB to 21.3 MB and compiles in about 30 s either way (29–36 s measured, with other builds running); the whole compile of 489 files takes 55–75 s. Generation takes about twice as long, 13 s instead of about 7 s, because the call graph is computed first.
+- **Thread descriptions in the scripted new game:** 5,404 bytes, nine threads (172,734 thread samples over 19,200 boundaries). At 19,200 frame boundaries every thread waited at `osRecvMesg` (site 1), the idle loop of `osSetThreadPri` (site 10) or `osContInit` (site 16, 21 times); inside the overlay loader at frames 259–261 and 5,125–5,127. No boundary was refused.
+
 ## Coverage mode
 
 `npm run port -- --coverage` builds with `-DOOT_COVERAGE` (`runtime/cov.c`, `runtime/cpu.h`). It records which recompiled functions ran (a bitmap over `0x80000000`–`0x80FFFFFF`, so overlays count at their link addresses), the calls of each replaced OS routine, and the accesses beyond RDRAM (every guest memory access goes through `mem_ptr`, which otherwise wraps silently into RDRAM). RSP tasks by type and microcode are counted in every build (`oot_rsp_task_kind`). A **loop watchdog** counts the loop heads of the generated code: a video frame with more than 200 million iterations traps instead of hanging. The sweep adds the opcodes of every display list and audio command list. Calls of OS routines made through the dispatch table (indirect calls) are not counted.

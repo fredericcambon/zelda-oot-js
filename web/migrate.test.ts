@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { migrateToServer, type Stores } from './migrate.ts';
-import type { StateRecord } from './savestate.ts';
+import { OLD_FORMAT, type StateRecord } from './savestate.ts';
 
 function stores(sram: Uint8Array | null = null, states: Record<number, StateRecord> = {}) {
   let value = sram;
@@ -14,7 +14,7 @@ function stores(sram: Uint8Array | null = null, states: Record<number, StateReco
   return s;
 }
 
-const rec = (n: number): StateRecord => ({ build: 'b', savedAt: n, data: new Uint8Array([n]) });
+const rec = (n: number): StateRecord => ({ format: 1, savedAt: n, data: new Uint8Array([n]) });
 
 describe('migrateToServer', () => {
   it('uploads what the server lacks and leaves the local copy', async () => {
@@ -25,6 +25,13 @@ describe('migrateToServer', () => {
     expect(server.records.get(3)).toEqual(rec(3));
     expect(local.sramValue()).toEqual(new Uint8Array([1]));
     expect(local.records.size).toBe(2);
+  });
+
+  it('carries a state of the old format over as it is', async () => {
+    const old: StateRecord = { format: OLD_FORMAT, savedAt: 5, data: new Uint8Array([5]) };
+    const server = stores();
+    expect(await migrateToServer(stores(null, { 1: old }), server)).toEqual(['slot 1']);
+    expect(server.records.get(1)).toEqual(old);
   });
 
   it('never overwrites what the server has', async () => {

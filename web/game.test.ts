@@ -17,7 +17,7 @@ describe('startGame', () => {
       // Like Emscripten's glue: its promise settles only when the instantiateWasm hook reports an instance.
       const glue = join(dir, 'glue.mjs');
       writeFileSync(glue, 'export default (opts) => new Promise(() => { opts.instantiateWasm({}, () => {}); });');
-      const wasm = { module: Promise.resolve(new WebAssembly.Module(NEEDS_IMPORT)), buildId: Promise.resolve('') };
+      const wasm = { module: Promise.resolve(new WebAssembly.Module(NEEDS_IMPORT)) };
       await expect(startGame(new Uint8Array(4), {} as Renderer, {} as AudioSink, wasm, pathToFileURL(glue).href)).rejects.toThrow(/import|LinkError/i);
     } finally {
       rmSync(dir, { recursive: true, force: true });

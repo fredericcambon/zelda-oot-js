@@ -1,11 +1,14 @@
-// Save states: the complete state of the running game kept in IndexedDB, one per slot, next to the build that took it.
+// Save states: the portable state of the running game, one per slot, kept with the version of its format. A state loads
+// into any build that reads that version.
 import type { Hz } from './mode.ts';
 
 export const SLOT_COUNT = 4;
+/** The `format` of a state saved as a dump of one build's memory, which no build can load any more. */
+export const OLD_FORMAT = 0;
 
 export interface StateRecord {
-  /** Identifies the build of the game module (the hash of its wasm file); a state only loads into the same build. */
-  build: string;
+  /** Version of the portable state format; OLD_FORMAT for the build-locked memory dumps kept before it existed. */
+  format: number;
   savedAt: number;
   /** The video rate the game was booted at; a state without it comes from before the 60 Hz mode and is a 50 Hz one. */
   hz?: Hz;
@@ -46,7 +49,7 @@ export function indexedDbStates(factory: IDBFactory = indexedDB): StateStore {
       const db = await open();
       try {
         const v: unknown = await request(db.transaction(OBJECT_STORE).objectStore(OBJECT_STORE).get(slot));
-        return isRecord(v) ? v : null;
+        return asRecord(v);
       } finally {
         db.close();
       }
@@ -75,12 +78,12 @@ export function serverStates(fetcher: typeof fetch = fetch): StateStore {
       const r = await fetcher(`/api/saves/state/${slot}`);
       if (r.status === 404) return null;
       if (!r.ok) throw new Error(`could not read slot ${slot}: ${r.status}`);
-      return { build: r.headers.get('X-Build') ?? '', savedAt: Number(r.headers.get('X-Saved-At')) || 0, hz: r.headers.get('X-Hz') === '60' ? 60 : 50, data: new Uint8Array(await r.arrayBuffer()) };
+      return { format: Number(r.headers.get('X-State-Format')) || OLD_FORMAT, savedAt: Number(r.headers.get('X-Saved-At')) || 0, hz: r.headers.get('X-Hz') === '60' ? 60 : 50, data: new Uint8Array(await r.arrayBuffer()) };
     },
     async put(slot, record) {
       const r = await fetcher(`/api/saves/state/${slot}`, {
         method: 'PUT',
-        headers: { 'X-Build': record.build, 'X-Saved-At': String(record.savedAt), 'X-Hz': String(record.hz ?? 50) },
+        headers: { 'X-State-Format': String(record.format), 'X-Saved-At': String(record.savedAt), 'X-Hz': String(record.hz ?? 50) },
         body: record.data.slice(),
       });
       if (!r.ok) throw new Error(`could not store slot ${slot}: ${r.status}`);
@@ -88,9 +91,13 @@ export function serverStates(fetcher: typeof fetch = fetch): StateStore {
   };
 }
 
-function isRecord(v: unknown): v is StateRecord {
-  const r = v as Partial<StateRecord> | null;
-  return !!r && typeof r.build === 'string' && typeof r.savedAt === 'number' && (r.hz === undefined || r.hz === 50 || r.hz === 60) && r.data instanceof Uint8Array;
+/** Records written before the portable format carry a build id instead of a format version. */
+function asRecord(v: unknown): StateRecord | null {
+  const r = v as (Partial<StateRecord> & { build?: unknown }) | null;
+  if (!r || typeof r.savedAt !== 'number' || !(r.data instanceof Uint8Array)) return null;
+  if (r.hz !== undefined && r.hz !== 50 && r.hz !== 60) return null;
+  if (typeof r.format === 'number') return { format: r.format, savedAt: r.savedAt, hz: r.hz, data: r.data };
+  return typeof r.build === 'string' ? { format: OLD_FORMAT, savedAt: r.savedAt, hz: r.hz, data: r.data } : null;
 }
 
 /** Gzip, so that the untouched parts of the memory cost almost nothing to store. */
@@ -104,15 +111,11 @@ export async function decompress(bytes: Uint8Array): Promise<Uint8Array> {
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-/** Hex SHA-256 of a build's wasm file. */
-export async function buildIdOf(wasm: ArrayBuffer): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', wasm));
-  return Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('');
-}
-
 /** The message that explains why a stored state cannot load into this build, or null when it can. */
-export function buildMismatch(record: StateRecord, build: string, slot: number): string | null {
-  return record.build === build ? null : `Slot ${slot} was saved by another build of the game and cannot be loaded`;
+export function formatMismatch(record: StateRecord, readable: number, slot: number): string | null {
+  if (record.format === OLD_FORMAT) return `Slot ${slot} was saved in the old format and cannot be loaded`;
+  if (record.format !== readable) return `Slot ${slot} uses state format ${record.format}, this build reads ${readable}`;
+  return null;
 }
 
 /** The message that explains why a stored state cannot load at the rate the game was booted at, or null when it can. */
@@ -124,7 +127,7 @@ export function modeMismatch(record: StateRecord, hz: Hz, slot: number): string 
 export class SaveStates {
   private current = 1;
 
-  constructor(private readonly source: StateSource, private readonly store: StateStore, private readonly build: string, private readonly hz: Hz = 50) {}
+  constructor(private readonly source: StateSource, private readonly store: StateStore, private readonly format: number, private readonly hz: Hz = 50) {}
 
   get slot(): number {
     return this.current;
@@ -139,7 +142,7 @@ export class SaveStates {
 
   async save(): Promise<string> {
     const slot = this.current;
-    await this.store.put(slot, { build: this.build, savedAt: Date.now(), hz: this.hz, data: await this.source.capture() });
+    await this.store.put(slot, { format: this.format, savedAt: Date.now(), hz: this.hz, data: await this.source.capture() });
     return `Saved slot ${slot}`;
   }
 
@@ -147,11 +150,15 @@ export class SaveStates {
     const slot = this.current;
     const record = await this.store.get(slot);
     if (!record) return `Slot ${slot} empty`;
-    const mismatch = buildMismatch(record, this.build, slot);
+    const mismatch = formatMismatch(record, this.format, slot);
     if (mismatch) return mismatch;
     const wrongMode = modeMismatch(record, this.hz, slot);
     if (wrongMode) return wrongMode;
-    await this.source.apply(record.data);
+    try {
+      await this.source.apply(record.data);
+    } catch (err) {
+      return `Slot ${slot} cannot be loaded: ${err instanceof Error ? err.message : String(err)}`;
+    }
     return `Loaded slot ${slot}`;
   }
 }

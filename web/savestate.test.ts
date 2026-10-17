@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildIdOf, buildMismatch, compress, decompress, modeMismatch, SaveStates, SLOT_COUNT, type StateRecord, type StateSource, type StateStore } from './savestate.ts';
+import { compress, decompress, formatMismatch, modeMismatch, OLD_FORMAT, SaveStates, SLOT_COUNT, type StateRecord, type StateSource, type StateStore } from './savestate.ts';
 
 function memoryStore(): StateStore & { records: Map<number, StateRecord> } {
   const records = new Map<number, StateRecord>();
@@ -17,13 +17,13 @@ function fakeGame(): StateSource & { value: number } {
 
 describe('SaveStates', () => {
   it('reports an empty slot', async () => {
-    const states = new SaveStates(fakeGame(), memoryStore(), 'a');
+    const states = new SaveStates(fakeGame(), memoryStore(), 1);
     expect(await states.load()).toBe('Slot 1 empty');
   });
 
   it('restores what a slot holds and keeps the slots apart', async () => {
     const game = fakeGame();
-    const states = new SaveStates(game, memoryStore(), 'a');
+    const states = new SaveStates(game, memoryStore(), 1);
     game.value = 7;
     expect(await states.save()).toBe('Saved slot 1');
     expect(await states.select(1)).toBe('Slot 2 (empty)');
@@ -38,31 +38,48 @@ describe('SaveStates', () => {
   });
 
   it('wraps around the four slots', async () => {
-    const states = new SaveStates(fakeGame(), memoryStore(), 'a');
+    const states = new SaveStates(fakeGame(), memoryStore(), 1);
     await states.select(-1);
     expect(states.slot).toBe(SLOT_COUNT);
     await states.select(1);
     expect(states.slot).toBe(1);
   });
 
-  it('refuses a state from another build and leaves the game alone', async () => {
+  it('refuses a state of another format version and leaves the game alone', async () => {
     const game = fakeGame();
     const store = memoryStore();
     game.value = 5;
-    await new SaveStates(game, store, 'old').save();
+    await new SaveStates(game, store, 2).save();
     game.value = 6;
-    const message = await new SaveStates(game, store, 'new').load();
-    expect(message).toBe('Slot 1 was saved by another build of the game and cannot be loaded');
+    expect(await new SaveStates(game, store, 1).load()).toBe('Slot 1 uses state format 2, this build reads 1');
     expect(game.value).toBe(6);
+  });
+
+  it('reports a state of the old format and keeps it', async () => {
+    const game = fakeGame();
+    const store = memoryStore();
+    store.records.set(1, { format: OLD_FORMAT, savedAt: 0, data: new Uint8Array([8]) });
+    game.value = 6;
+    expect(await new SaveStates(game, store, 1).load()).toBe('Slot 1 was saved in the old format and cannot be loaded');
+    expect(game.value).toBe(6);
+    expect(store.records.get(1)?.data).toEqual(new Uint8Array([8]));
+  });
+
+  it('reports the reason when the game refuses a state', async () => {
+    const game = fakeGame();
+    game.apply = async () => { throw new Error('function 0x80001234 is not in this build'); };
+    const store = memoryStore();
+    await new SaveStates(game, store, 1).save();
+    expect(await new SaveStates(game, store, 1).load()).toBe('Slot 1 cannot be loaded: function 0x80001234 is not in this build');
   });
 });
 
 describe('video rate of a state', () => {
   it('is recorded with the state', async () => {
     const store = memoryStore();
-    await new SaveStates(fakeGame(), store, 'a', 60).save();
+    await new SaveStates(fakeGame(), store, 1, 60).save();
     expect(store.records.get(1)?.hz).toBe(60);
-    await new SaveStates(fakeGame(), store, 'a').save();
+    await new SaveStates(fakeGame(), store, 1).save();
     expect(store.records.get(1)?.hz).toBe(50);
   });
 
@@ -70,30 +87,31 @@ describe('video rate of a state', () => {
     const game = fakeGame();
     const store = memoryStore();
     game.value = 5;
-    await new SaveStates(game, store, 'a', 60).save();
+    await new SaveStates(game, store, 1, 60).save();
     game.value = 6;
-    expect(await new SaveStates(game, store, 'a', 50).load()).toBe('Slot 1 was saved in 60 Hz mode; switch the mode and reload the page to load it');
+    expect(await new SaveStates(game, store, 1, 50).load()).toBe('Slot 1 was saved in 60 Hz mode; switch the mode and reload the page to load it');
     expect(game.value).toBe(6);
-    expect(await new SaveStates(game, store, 'a', 60).load()).toBe('Loaded slot 1');
+    expect(await new SaveStates(game, store, 1, 60).load()).toBe('Loaded slot 1');
     expect(game.value).toBe(5);
   });
 
   it('treats a state without a rate as a 50 Hz one', () => {
-    const old: StateRecord = { build: 'x', savedAt: 0, data: new Uint8Array() };
+    const old: StateRecord = { format: 1, savedAt: 0, data: new Uint8Array() };
     expect(modeMismatch(old, 50, 1)).toBeNull();
     expect(modeMismatch(old, 60, 1)).toContain('50 Hz');
   });
 });
 
-describe('buildMismatch', () => {
-  it('accepts the same build only', () => {
-    const record: StateRecord = { build: 'x', savedAt: 0, data: new Uint8Array() };
-    expect(buildMismatch(record, 'x', 3)).toBeNull();
-    expect(buildMismatch(record, 'y', 3)).toContain('Slot 3');
+describe('formatMismatch', () => {
+  it('accepts the readable version only', () => {
+    const record: StateRecord = { format: 1, savedAt: 0, data: new Uint8Array() };
+    expect(formatMismatch(record, 1, 3)).toBeNull();
+    expect(formatMismatch(record, 2, 3)).toContain('Slot 3');
+    expect(formatMismatch({ ...record, format: OLD_FORMAT }, 1, 3)).toContain('old format');
   });
 });
 
-describe('compression and build ids', () => {
+describe('compression', () => {
   it('round-trips bytes', async () => {
     const bytes = new Uint8Array(100_000).map((_, i) => (i % 251 === 0 ? i & 255 : 0));
     const packed = await compress(bytes);
@@ -101,8 +119,4 @@ describe('compression and build ids', () => {
     expect(await decompress(packed)).toEqual(bytes);
   });
 
-  it('hashes a file to a hex SHA-256', async () => {
-    const id = await buildIdOf(new TextEncoder().encode('abc').buffer as ArrayBuffer);
-    expect(id).toBe('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
-  });
 });

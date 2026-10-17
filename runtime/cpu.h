@@ -6,6 +6,9 @@
 #include <stdint.h>
 #include <string.h>
 
+// Entries of a thread's shadow stack: one per recompiled call site that is active, plus the frames of runtime routines.
+#define OOT_SH_MAX 1024
+
 typedef struct Cpu {
   uint64_t r[32];
   uint64_t hi, lo;
@@ -16,6 +19,12 @@ typedef struct Cpu {
   uint32_t fcsr;
   uint32_t fir;
   uint32_t fr;
+  // Host call chain of the thread that owns this context (see "Portable save states" in docs/runtime.md). Not guest state.
+  uint32_t shn;    // depth of the shadow stack
+  uint32_t rpos;   // next entry that a function entered in resume mode takes
+  uint32_t resume; // set while a rebuilt call chain is re-entered; the blocking routine at its end clears it
+  uint32_t blk_id; // the blocking site the thread waits at, or 0
+  uint32_t sh[OOT_SH_MAX];
 } Cpu;
 
 enum TrapKind {
@@ -57,6 +66,20 @@ void rt_cov_outside(uint32_t addr);
 
 // Indirect call through the runtime's table of recompiled functions.
 void rt_call(Cpu *c, uint32_t addr);
+
+// Shadow stack of host frames. A call that can suspend the thread pushes the index of its call site (an entry of
+// oot_sites) and pops it when the callee returns. After a push the function holds no C local across the call, so
+// a function re-entered at the site (resume mode) continues from the registers in the context.
+__attribute__((noreturn)) void rt_sh_overflow(Cpu *c);
+#define OOT_PUSH(key) do { uint32_t n_ = c->shn; if (__builtin_expect(n_ >= OOT_SH_MAX, 0)) rt_sh_overflow(c); c->sh[n_] = (key); c->shn = n_ + 1; } while (0)
+#define OOT_POP() (c->shn--)
+// A function entered while c->resume is set takes its call site from the shadow stack.
+#define OOT_RESUMING() __builtin_expect(c->resume, 0)
+#define OOT_RESUME_SITE() (c->sh[c->rpos++])
+__attribute__((noreturn)) void rt_resume_bad(Cpu *c);
+// Calls `fn` for a resumed call site; kept out of line so the generated functions stay small.
+typedef void (*GuestFn)(Cpu *c);
+void rt_resume_call(Cpu *c, GuestFn fn);
 
 // COP0 register access (mfc0, dmfc0, mtc0, dmtc0). Reads return the register's full value.
 uint64_t rt_mfc0(Cpu *c, uint32_t reg);

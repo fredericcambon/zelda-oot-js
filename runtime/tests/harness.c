@@ -53,9 +53,9 @@ typedef struct Table {
 static Table main_table, overlay_table[2];
 
 ImageInfo oot_images[3] = {
-  { "main", 0x80100000u, 0x80200000u, 0, 0, 1, main_table.e, 0 },
-  { "ovl1", 0x80900000u, 0x80908000u, 1, 0, 0, overlay_table[0].e, 0 },
-  { "ovl2", 0x80908000u, 0x80910000u, 1, 0, 0, overlay_table[1].e, 0 },
+  { "main", 0x80100000u, 0x80200000u, 0, 0, 1, main_table.e, 0, 0, 0 },
+  { "ovl1", 0x80900000u, 0x80908000u, 1, 0, 0, overlay_table[0].e, 0, 0, 0 },
+  { "ovl2", 0x80908000u, 0x80910000u, 1, 0, 0, overlay_table[1].e, 0, 0, 0 },
 };
 const uint32_t oot_image_count = 3;
 
@@ -93,6 +93,7 @@ void fresh(void) {
   rt_rom_set(NULL, 0);
   log_buf[0] = 0;
   main_table.n = overlay_table[0].n = overlay_table[1].n = 0;
+  oot_images[0].site_count = oot_site_count;
   for (int k = 0; k < 3; k++) {
     oot_images[k].count = 0;
     oot_images[k].delta = 0;

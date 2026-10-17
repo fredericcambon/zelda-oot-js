@@ -7,8 +7,10 @@ static void fo1(Cpu *c) { (void)c; tlog("o1"); }
 static void fo2(Cpu *c) { (void)c; tlog("o2"); }
 
 // The recompiled overlay loader the runtime wraps: it returns the loaded size.
+void (*loader_hook)(Cpu *c);
 void fn_800cd428(Cpu *c) {
-  tlog("loader ");
+  if (!OOT_RESUMING()) tlog("loader ");
+  if (loader_hook) loader_hook(c);
   c->r[2] = 0x4000;
 }
 
