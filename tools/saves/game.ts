@@ -20,11 +20,12 @@ export const CONFIRM_FRAME = 3470;
 export const SAVED_BY_FRAME = 3560;
 
 type Built = { moduleUrl: string; cartridge: Uint8Array };
-let built: Promise<Built> | undefined;
+const builds = new Map<string, Promise<Built>>();
 
-/** Analyses, recompiles and links the game from the ROM once per process; objects and analysis are cached across runs. */
-export function buildGame(romPath: string): Promise<Built> {
-  built ??= build(romPath, resolve('out', 'saves-boot'));
+/** Analyses, recompiles and links the game from the ROM once per process and output folder; objects and analysis are cached across runs. Test files that run in parallel use folders of their own. */
+export function buildGame(romPath: string, outDir = resolve('out', 'saves-boot')): Promise<Built> {
+  let built = builds.get(outDir);
+  if (!built) builds.set(outDir, (built = build(romPath, outDir)));
   return built;
 }
 

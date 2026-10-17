@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { bootGame, type Game } from './boot.ts';
 import { padAt, parseInput } from './input.ts';
@@ -21,7 +22,7 @@ const LOAD_SCRIPT = parseInput(`2450 START
 
 /** A game booted on a save memory with one file, played with the load script until a scene is running and settled. */
 async function inPlay(sram: Uint8Array): Promise<{ game: Game; frame: number }> {
-  const { moduleUrl, cartridge } = await buildGame(rom!);
+  const { moduleUrl, cartridge } = await buildGame(rom!, resolve('out', 'load-save-boot'));
   const game = await bootGame(moduleUrl, cartridge, {});
   game.writeSave(sram);
   const run = new Runner(game);
@@ -55,7 +56,7 @@ const house = (name: string) => {
 
 describe.skipIf(!rom || !existsSync(rom))('loading a save into the running game', () => {
   it('refuses while the game starts up and at the title, and accepts a settled scene', async () => {
-    const { moduleUrl, cartridge } = await buildGame(rom!);
+    const { moduleUrl, cartridge } = await buildGame(rom!, resolve('out', 'load-save-boot'));
     const game = await bootGame(moduleUrl, cartridge, {});
     const run = new Runner(game);
     expect(unsafeReason(guestRam(game.ram()))).toMatch(/not in a scene/);
