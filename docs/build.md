@@ -54,3 +54,19 @@ Next to the shared cache, each worktree's `generated/obj/` keeps a `<name>.o.key
 The cache lives in `~/.zelda-oot-js/cache` (next to the shared saves folder); `OOT_CACHE_DIR` overrides it. It holds data derived from the ROM, so it stays on the machine: it is never committed, uploaded or served (see the ROM handling rule in `AGENTS.md`).
 
 To clear it, delete the folder (`rm -rf ~/.zelda-oot-js/cache`; keep the sibling `saves/` folder). To clear one kind, delete `<cache>/<kind>/`.
+
+## Test suite timings
+
+`npm test` with the ROM (24 logical cores). `tools/recomp/global-setup.ts` analyses and recompiles the game once into `out/test-base/`, then compiles and links through the shared cache, side by side: the `-O2` game, the `-DOOT_COVERAGE` game of the sweep suite, and the same `-O2` objects linked at `-O1` for the cross-build state test (`tools/recomp/test-base.ts`). The suites read these builds back and build nothing: no suite compiles, so no cap on parallel compiles is needed. The second `port` test runs two ports against the shared cache and asserts that the second hits it at every step.
+
+| Run | Before | After |
+| --- | --- | --- |
+| Warm (cache filled) | 450 s | 99 s and 100 s |
+| Cold (empty cache) | 996 s | 277 s |
+
+Two changes beyond the shared build account for most of the gain:
+
+- The software renderer (`tools/gfx/raster.ts`) spent its time allocating closures and arrays per pixel; `frames` and `boot` rendered 600 frames in about 170 s each and now take under 50 s with identical pictures. Booting itself costs 0.4 s for 600 frames, so sharing boots between tests would have saved almost nothing.
+- `headless.test.ts` is split into four files (`headless`, `headless-60hz`, `headless-state`, `headless-forest`, with the helpers in `headless-support.ts`) so that vitest runs them in parallel; each test is unchanged and boots its own game.
+
+The longest file warm is now `web/browser-saves.test.ts` (four tests in series, about 100 s together with the Chrome start-up) next to the 60 Hz headless test.

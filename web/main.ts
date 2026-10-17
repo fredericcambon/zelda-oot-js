@@ -2,7 +2,8 @@ import { AudioOutput } from './audio.ts';
 import { startGame, type Game } from './game.ts';
 import { Renderer, type CullMode } from './renderer.ts';
 import { loadCartridge } from './cartridge.ts';
-import { Input } from './input.ts';
+import { Input, mergePads } from './input.ts';
+import { TouchControls } from './touch.ts';
 import { indexedDbStore, SaveSync, serverHasSaves, serverStore } from './saves.ts';
 import { indexedDbStates, SaveStates, serverStates } from './savestate.ts';
 import { STATE_VERSION } from '../tools/runtime/snapshot.ts';
@@ -74,6 +75,7 @@ let states: SaveStates | null = null;
 let pendingState: (() => Promise<string>) | null = null;
 let noticeTimer = 0;
 const input = new Input();
+const touch = new TouchControls(document.getElementById('touch-layer') as HTMLElement, document.getElementById('touch-toggle') as HTMLButtonElement);
 const audio = new AudioOutput();
 const fastForward = new FastForward();
 // Sound is dropped while fast-forwarding: the buffers would pile up faster than they play.
@@ -84,12 +86,16 @@ addEventListener('blur', () => fastForward.reset());
 let fps = 0;
 let gameFps = 0;
 
-// Browsers start sound only from a user gesture; any key or click does it.
+// Browsers start sound only from a user gesture; a key press or click does it, and for touch only the release counts.
 const enableSound = () => {
   audio.resume().catch((err) => console.error('sound is not available:', err));
 };
 addEventListener('keydown', enableSound);
 addEventListener('pointerdown', enableSound);
+addEventListener('pointerup', enableSound);
+addEventListener('touchend', enableSound);
+addEventListener('pointerup', enableSound);
+addEventListener('touchend', enableSound);
 
 const showNotice = (text: string) => {
   notice.textContent = text;
@@ -145,6 +151,7 @@ function updateOverlay(): void {
     game ? `video framebuffer 0x${game.framebuffer().toString(16)}` : '',
     `culling ${renderer.cullMode}  resolution ${renderer.resolutionScale}x`,
     g ? `audio tasks ${g.audioTasks}  sound ${audio.state === 'running' ? `on, level ${audio.level().toFixed(3)}` : 'off: press a key'}` : '',
+    ...audio.status(),
     g?.renderError ? `render error: ${g.renderError}` : '',
     g?.audioError ? `audio error: ${g.audioError}` : '',
     ...s.problems,
@@ -179,7 +186,7 @@ async function loop(): Promise<void> {
       if (fastForward.active) pacer.reset();
       else due--;
       try {
-        game.setPad(input.poll());
+        game.setPad(mergePads(input.poll(), touch.poll()));
         await game.frame();
         saves?.flush().catch((err) => setStatus(`Could not store the save: ${err instanceof Error ? err.message : String(err)}`, true));
       } catch (err) {

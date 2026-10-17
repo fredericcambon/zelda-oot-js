@@ -59,9 +59,9 @@ export function emscriptenVersion(tc: Toolchain): string {
   return r.status === 0 ? r.stdout : 'unknown';
 }
 
-const INCLUDE = /^\s*#\s*include\s*"([^"]+)"/gm;
+const INCLUDE = /^\s*#\s*include\s*[<"]([^>"]+)[>"]/gm;
 
-/** Resolves the quoted includes of a C file the way the compile does: its own folder, then the -I folders in order. */
+/** Resolves the includes of a C file the way the compile does: its own folder, then the -I folders in order. Headers found nowhere (the toolchain's) are not inputs. */
 function makeIncludeResolver(searchDirs: string[]) {
   const direct = new Map<string, string[]>();
   const includesOf = (file: string): string[] => {
@@ -130,10 +130,15 @@ const LINK_FLAGS = (optimize: string) => [
   `-sEXPORTED_FUNCTIONS=${EXPORTS.join(',')}`, '-sEXPORTED_RUNTIME_METHODS=HEAPU8,UTF8ToString,Asyncify',
 ];
 
-/** The key of the link output: the compiler release, the link flags and every object, in link order. */
+/** The key of the link output: the compiler release, the link flags and every object (its key and its bytes), in link order. */
 export function linkKey(version: string, optimize: string, objects: CompiledObject[]): string {
-  return hashKey('link', version, ...LINK_FLAGS(optimize), '--', ...objects.map((o) => o.key));
+  return hashKey('link', version, ...LINK_FLAGS(optimize), '--', ...objects.map((o) => `${basename(o.path)}=${o.key}=${existsSync(o.path) ? hashFile(o.path) : 'absent'}`));
 }
+
+const LINK_OUTPUTS = ['oot.js', 'oot.wasm'];
+
+/** A cached link output is only as good as its wasm: an empty or foreign file is rejected. */
+const isLinkOutput = (path: string, data: Buffer) => path !== 'oot.wasm' || (data.length > 8 && data.readUInt32BE(0) === 0x0061736d);
 
 /**
  * Brings the object of every C file up to date, `cpus` compiles at a time: an object whose key is unchanged stays, one found in
@@ -144,14 +149,16 @@ export async function compileAll(opts: BuildOptions, extraSources: string[]): Pr
   const flags = compileFlags(opts);
   const jobs = planObjects(opts, extraSources, emscriptenVersion(opts.toolchain));
   const keyFile = (j: { path: string }) => `${j.path}.key`;
-  const current = (j: { path: string; key: string }) => existsSync(j.path) && existsSync(keyFile(j)) && readFileSync(keyFile(j), 'utf8') === j.key;
+  // The stamp holds the object's own hash too, so an object truncated or replaced after its compile is rebuilt.
+  const stamp = (j: { path: string; key: string }) => `${j.key}:${hashFile(j.path)}`;
+  const current = (j: { path: string; key: string }) => existsSync(j.path) && existsSync(keyFile(j)) && readFileSync(keyFile(j), 'utf8') === stamp(j);
   const todo = jobs.filter((j) => !current(j));
   let hits = 0;
   if (opts.cache) {
     for (let i = todo.length - 1; i >= 0; i--) {
       const j = todo[i]!;
       if (opts.cache.restore('obj', j.key, opts.objDir)) {
-        writeFileSync(keyFile(j), j.key);
+        writeFileSync(keyFile(j), stamp(j));
         todo.splice(i, 1);
         hits++;
       }
@@ -168,7 +175,7 @@ ${r.output}`);
     else {
       if (/warning:/.test(r.output)) opts.log(`${job.src}:
 ${r.output.slice(0, 2000)}`);
-      writeFileSync(keyFile(job), job.key);
+      writeFileSync(keyFile(job), stamp(job));
       opts.cache?.store('obj', job.key, opts.objDir, [job.name]);
     }
     if (++done % 25 === 0) opts.log(`  ${done}/${compiled}`);
@@ -189,7 +196,7 @@ export async function link(opts: BuildOptions, objects: CompiledObject[]): Promi
   const out = join(opts.distDir, 'oot.js');
   const optimize = opts.optimize ?? DEFAULT_OPTIMIZE;
   const key = linkKey(emscriptenVersion(opts.toolchain), optimize, objects);
-  if (opts.cache?.restore('link', key, opts.distDir)) {
+  if (opts.cache?.restore('link', key, opts.distDir, isLinkOutput)) {
     opts.log(`link: cache hit, restored ${out}`);
     return out;
   }
@@ -199,6 +206,8 @@ export async function link(opts: BuildOptions, objects: CompiledObject[]): Promi
   writeFileSync(list, objects.map((o) => `"${o.path.replaceAll('\\', '/')}"`).join('\n'));
   const r = await emcc(opts.toolchain, [...LINK_FLAGS(optimize), `@${list}`, '-o', out], repoRoot);
   if (r.code !== 0) throw new Error(`link failed:\n${r.output.slice(0, 4000)}`);
-  opts.cache?.store('link', key, opts.distDir, readdirSync(opts.distDir).filter((f) => f.startsWith('oot.')));
+  if (LINK_OUTPUTS.every((f) => existsSync(join(opts.distDir, f))) && isLinkOutput('oot.wasm', readFileSync(join(opts.distDir, 'oot.wasm')))) {
+    opts.cache?.store('link', key, opts.distDir, LINK_OUTPUTS);
+  }
   return out;
 }

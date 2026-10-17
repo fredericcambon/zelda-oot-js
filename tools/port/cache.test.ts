@@ -86,6 +86,22 @@ describe('object and link keys', () => {
     expect(header['b-gen.o']).toBe(source['b-gen.o']);
   });
 
+  it('changes the key of an object when a header included with angle brackets changes', () => {
+    put('c/a.c', '#include <hdr.h>\nint a;\n');
+    put('c/hdr.h', '#define X 1\n');
+    const before = keys(opts())['a-gen.o'];
+    edit('c/hdr.h', '#define X 2\n');
+    expect(keys(opts())['a-gen.o']).not.toBe(before);
+  });
+
+  it('gives two links that differ only in the bytes of an object different keys', () => {
+    const obj = put('obj/a.o', 'one');
+    const objects = [{ path: obj, key: 'same' }];
+    const before = linkKey('1.0', '-O2', objects);
+    edit('obj/a.o', 'two');
+    expect(linkKey('1.0', '-O2', objects)).not.toBe(before);
+  });
+
   it('gives the link a key that follows every object, the flags and the emsdk version', () => {
     const objects = [{ path: 'a.o', key: 'k1' }, { path: 'b.o', key: 'k2' }];
     const base = linkKey('1.0', '-O2', objects);
@@ -131,6 +147,25 @@ describe('Cache', () => {
     expect(c.store('kind', 'k', join(root, 'src'), ['x.bin', 'missing.bin'])).toBe(false);
     expect(existsSync(join(root, 'cache', 'kind', 'k'))).toBe(false);
     expect(c.restore('kind', 'k', join(root, 'dest'))).toBeUndefined();
+  });
+
+  it('treats a file the caller rejects as a miss, writes nothing and removes the entry', () => {
+    put('src/oot.js', 'js');
+    put('src/oot.wasm', 'not wasm');
+    const c = cache();
+    c.store('link', 'k', join(root, 'src'), ['oot.js', 'oot.wasm']);
+    expect(c.restore('link', 'k', join(root, 'dest'), (p) => p !== 'oot.wasm')).toBeUndefined();
+    expect(existsSync(join(root, 'dest', 'oot.js'))).toBe(false);
+    expect(existsSync(join(root, 'cache', 'link', 'k'))).toBe(false);
+  });
+
+  it('keeps a sound entry when the destination cannot be written', () => {
+    put('src/x.bin', 'data');
+    put('dest', 'a file where a folder is needed');
+    const c = cache();
+    c.store('kind', 'k', join(root, 'src'), ['x.bin']);
+    expect(c.restore('kind', 'k', join(root, 'dest'))).toBeUndefined();
+    expect(existsSync(join(root, 'cache', 'kind', 'k'))).toBe(true);
   });
 
   it.each([

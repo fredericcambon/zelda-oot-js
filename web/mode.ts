@@ -19,12 +19,12 @@ function defaultStore(): PreferenceStore | null {
   }
 }
 
-/** The remembered rate; 50 when nothing is stored or the browser does not let the page read it. */
+/** The remembered rate; 60 when nothing is stored or the browser does not let the page read it. */
 export function loadHz(store: PreferenceStore | null = defaultStore()): Hz {
   try {
-    return store?.getItem(KEY) === '1' ? 60 : 50;
+    return store?.getItem(KEY) === '0' ? 50 : 60;
   } catch {
-    return 50;
+    return 60;
   }
 }
 
