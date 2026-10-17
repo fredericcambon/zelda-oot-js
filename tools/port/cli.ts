@@ -3,7 +3,8 @@ import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { analyze } from '../analyze/run.ts';
 import { classify } from '../assets/classify.ts';
-import { buildManifest, writeAssets } from '../assets/write.ts';
+import { PACK_FILE } from '../assets/pack.ts';
+import { buildManifest, writeAssets, writePack } from '../assets/write.ts';
 import { loadContext, romPathFromEnv } from '../analyze/context.ts';
 import { generate } from '../recomp/generate.ts';
 import { ensureToolchain } from '../recomp/toolchain.ts';
@@ -37,12 +38,16 @@ async function main(): Promise<number> {
       romPath, outDir: values.out!, workDir: values.work!, useGhidra: !values['no-ghidra'], log,
     });
 
-    stage(3, 'classify and write the assets');
+    stage(3, 'classify, write the assets and the pack');
     const manifest = buildManifest(ctx.sha1, ctx.rom.length, classify(ctx, inventory));
     const assetsDir = resolve(values.dist!, 'assets');
     writeAssets(ctx.rom, manifest, assetsDir);
     const unknown = manifest.entries.filter((e) => e.type === 'unknown').length;
     log(`wrote ${manifest.entries.length} assets to ${assetsDir} (${unknown} without a type, each with its reason in the manifest)`);
+    // The entries tile the ROM (checked by buildManifest), so the cartridge image is the ROM itself.
+    const packFile = resolve(values.dist!, PACK_FILE);
+    await writePack(ctx.rom, packFile);
+    log(`wrote ${packFile}`);
 
     stage(4, 'recompile');
     const cDir = resolve(values.generated!, 'c');
