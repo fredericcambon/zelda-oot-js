@@ -102,7 +102,7 @@ export class TouchPad {
 /** True when the device has a touch screen as primary pointer. */
 export const hasCoarsePointer = (): boolean => matchMedia('(pointer: coarse)').matches;
 
-/** Fullscreen and the landscape lock both need a user gesture; browsers without them (iOS Safari on a page) ignore the request. */
+/** Fullscreen and the landscape lock both need a user gesture, and for touch only the release counts as one; browsers without them (iOS Safari on a page) ignore the request. */
 function enterLandscapeFullscreen(): void {
   const root = document.documentElement;
   if (document.fullscreenElement || !root.requestFullscreen) return;
@@ -132,7 +132,7 @@ export class TouchControls {
       this.drawStick();
     });
     addEventListener('blur', () => this.pad.reset());
-    layer.addEventListener('pointerdown', enterLandscapeFullscreen, { once: true });
+    layer.addEventListener('pointerup', enterLandscapeFullscreen, { once: true });
   }
 
   poll(): PadState {

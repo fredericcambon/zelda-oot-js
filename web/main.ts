@@ -85,12 +85,16 @@ addEventListener('blur', () => fastForward.reset());
 let fps = 0;
 let gameFps = 0;
 
-// Browsers start sound only from a user gesture; any key or click does it.
+// Browsers start sound only from a user gesture; a key press or click does it, and for touch only the release counts.
 const enableSound = () => {
   audio.resume().catch((err) => console.error('sound is not available:', err));
 };
 addEventListener('keydown', enableSound);
 addEventListener('pointerdown', enableSound);
+addEventListener('pointerup', enableSound);
+addEventListener('touchend', enableSound);
+addEventListener('pointerup', enableSound);
+addEventListener('touchend', enableSound);
 
 const showNotice = (text: string) => {
   notice.textContent = text;
