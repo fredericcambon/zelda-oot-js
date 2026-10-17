@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { DisplayListInterpreter, decodeCombine, type TriangleBatch } from './dl.ts';
+import { resolve } from 'node:path';
+import { ensureToolchain } from '../recomp/toolchain.ts';
+import { CDisplayListInterpreter, loadGfxModule } from './c-dl.ts';
+import { DisplayListInterpreter, decodeCombine, type DisplayListResult, type TriangleBatch } from './dl.ts';
 import { Op } from './opcodes.ts';
 import { SoftRenderer } from './raster.ts';
 
@@ -39,12 +42,18 @@ class Ram {
 const END: [number, number] = [0xdf000000, 0];
 const vtx = (n: number, v0: number, addr: number): [number, number] => [0x01000000 | (n << 12) | ((v0 + n) << 1), addr];
 const tri = (a: number, b: number, c: number): [number, number] => [0x05000000 | ((a * 2) << 16) | ((b * 2) << 8) | (c * 2), 0];
-const run = (ram: Ram, at: number) => new DisplayListInterpreter().run(ram.bytes, at);
+type Run = (ram: Ram, at: number) => DisplayListResult;
+// Every case runs against the TypeScript interpreter and the one in the wasm module.
+const cInterpreter = new CDisplayListInterpreter(await loadGfxModule(ensureToolchain(), resolve('out', 'gfx-test')));
+const IMPLEMENTATIONS: [string, Run][] = [
+  ['TypeScript', (ram, at) => new DisplayListInterpreter().run(ram.bytes, at)],
+  ['C', (ram, at) => cInterpreter.run(ram.bytes, at)],
+];
 const trianglesIn = (batches: { kind: string }[]) =>
   (batches as TriangleBatch[]).reduce((n, b) => n + (b.kind === 'triangles' ? b.positions.length / 12 : 0), 0);
 const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 
-describe('display list interpreter', () => {
+describe.each(IMPLEMENTATIONS)('display list interpreter (%s)', (_name, run) => {
   it('draws a triangle from loaded vertices', () => {
     const ram = new Ram();
     ram.vertex(0x2000, 1, 0, 0, 32, 64, [255, 0, 0, 255]);
@@ -403,7 +412,7 @@ describe('display list interpreter', () => {
   });
 });
 
-describe('background pictures of the 2D microcode', () => {
+describe.each(IMPLEMENTATIONS)('background pictures of the 2D microcode (%s)', (_name, run) => {
   const RECORD = 0x3000, UCODE_DATA = 0x4000, UCODE_TEXT = 0x5000, PICTURE = 0x10000;
   const IMAGE = 0x8000;
 

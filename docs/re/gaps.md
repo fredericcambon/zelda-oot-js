@@ -49,6 +49,19 @@ npm run headless -- --input tools/headless/newgame.input --frames 21400 --entran
 - Submit and GPU time need a browser: the debug overlay shows them (GPU as "n/a" when the browser lacks the timer query extension) and they were not measured here. Draw calls headless are counted as the renderer issues them: one per non-empty triangle batch and per rectangle that is not a fill.
 - Timing is a handful of `performance.now()` reads per task; browsers round them (about 0.1 ms, 1 ms in some), so single frames are coarse and only the means are meaningful.
 
+### Display lists in C
+
+The same scripted new game with the display lists run by the interpreter in the module (`runtime/gfx/`, built with the game at `-O2`), 6,000 video frames (2,365 game frames), two runs each, `npx tsx tools/gfx/bench.ts --mode <mode>`:
+
+| Run | Video frames/s | Game frames/s | Display lists, ms per game frame |
+|---|---|---|---|
+| Game alone (`none`) | 7,872–7,926 | 3,103–3,124 | – |
+| TypeScript interpreter (`ts`) | 813–823 | 320–324 | 2.64–2.68 |
+| C interpreter, result left in the module (`c`) | 3,393–3,472 | 1,337–1,369 | 0.39 |
+| C interpreter and the result read into a `DisplayListResult` (`c-read`) | 2,503–2,604 | 987–1,026 | 0.64–0.66 |
+
+The target was at least 700 game frames per second. Reading the result through `tools/gfx/c-dl.ts` costs 0.25 ms per game frame (it builds one object per state and per batch); a consumer that reads the arrays directly pays less.
+
 ## Coverage mode
 
 `npm run port -- --coverage` builds with `-DOOT_COVERAGE` (`runtime/cov.c`, `runtime/cpu.h`). It records which recompiled functions ran (a bitmap over `0x80000000`–`0x80FFFFFF`, so overlays count at their link addresses), the calls of each replaced OS routine, and the accesses beyond RDRAM (every guest memory access goes through `mem_ptr`, which otherwise wraps silently into RDRAM). RSP tasks by type and microcode are counted in every build (`oot_rsp_task_kind`). A **loop watchdog** counts the loop heads of the generated code: a video frame with more than 200 million iterations traps instead of hanging. The sweep adds the opcodes of every display list and audio command list. Calls of OS routines made through the dispatch table (indirect calls) are not counted.
