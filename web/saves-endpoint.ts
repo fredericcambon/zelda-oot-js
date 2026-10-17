@@ -2,7 +2,7 @@
 // save made in one running copy of the page is found by the next. Only this machine may use it.
 //
 //   GET|PUT /api/saves/sram          the cartridge's save memory
-//   GET|PUT /api/saves/state/<1-4>   a save state; the build that took it travels in the X-Build header
+//   GET|PUT /api/saves/state/<1-4>   a save state; the build that took it travels in the X-Build header, its video rate in X-Hz
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
@@ -67,9 +67,10 @@ export function savesMiddleware(dir: string) {
         }
         res.setHeader('Content-Type', 'application/octet-stream');
         if (name !== 'sram') {
-          const [build = '', savedAt = '0'] = readFileSync(meta, 'utf8').split('\n');
+          const [build = '', savedAt = '0', hz = '50'] = readFileSync(meta, 'utf8').split('\n');
           res.setHeader('X-Build', build);
           res.setHeader('X-Saved-At', savedAt);
+          res.setHeader('X-Hz', hz);
         }
         res.end(data);
       } else if (req.method === 'PUT') {
@@ -84,7 +85,7 @@ export function savesMiddleware(dir: string) {
         if (name !== 'sram') {
           const build = String(req.headers['x-build'] ?? '');
           if (!/^[0-9a-f]{64}$/.test(build)) return reply(res, 400, 'bad build id');
-          write(meta, `${build}\n${Number(req.headers['x-saved-at']) || Date.now()}`);
+          write(meta, `${build}\n${Number(req.headers['x-saved-at']) || Date.now()}\n${req.headers['x-hz'] === '60' ? 60 : 50}`);
         }
         write(file, body);
         reply(res, 204);
