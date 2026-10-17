@@ -94,3 +94,40 @@ describe('ResamplingQueue', () => {
     expect(q.queuedSeconds).toBeCloseTo(0.1, 6);
   });
 });
+
+describe('ResamplingQueue fed at 60 Hz', () => {
+  /** Runs `seconds` of a page that makes one buffer per video frame, with the frames arriving unevenly, against a device at `outHz`. */
+  function run(videoHz: number, seconds: number, outHz: number) {
+    const srcHz = videoHz === 60 ? 32006 : 31995;
+    const q = new ResamplingQueue();
+    const left = new Float32Array(128), right = new Float32Array(128);
+    let produced = 0, due = 0, silent = 0, started = false, peak = 0;
+    const blocks = Math.floor((seconds * outHz) / 128);
+    for (let b = 0; b < blocks; b++) {
+      // The display delivers a frame late every seventh interval and two together the next time.
+      const t = (b * 128) / outHz;
+      due += (128 / outHz) * videoHz;
+      let frames = Math.floor(due);
+      due -= frames;
+      if (Math.floor(t * videoHz) % 7 === 0) frames = 0;
+      else if (Math.floor(t * videoHz) % 7 === 1) frames *= 2;
+      for (let k = 0; k < frames; k++) {
+        const n = Math.round(srcHz / videoHz);
+        q.push(ramp(n, produced), srcHz);
+        produced += n;
+      }
+      q.pull(left, right, outHz);
+      if (started) silent += left.filter((x) => x === 0).length;
+      else if (left.some((x) => x !== 0)) started = true;
+      peak = Math.max(peak, q.queuedSeconds);
+    }
+    return { silent, peak, queued: q.queuedSeconds };
+  }
+
+  it.each([50, 60])('plays without running dry or overfilling at %i Hz', (hz) => {
+    const { silent, peak, queued } = run(hz, 20, 48000);
+    expect(silent).toBeLessThan(5);
+    expect(peak).toBeLessThan(0.3);
+    expect(queued).toBeGreaterThan(0.02);
+  });
+});

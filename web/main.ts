@@ -9,10 +9,10 @@ import { migrateToServer } from './migrate.ts';
 import { FastForward } from './fastforward.ts';
 import { fetchWasm, preloadModule } from './wasm.ts';
 import { mark, timingLines } from './timing.ts';
+import { FramePacer, loadHz, saveHz, type Hz } from './mode.ts';
 
 const FAST_BUDGET_MS = 12;
 const SLOW_LOAD_MS = 500;
-const FRAME_MS = 20; // the video interface retraces at 50 Hz
 
 const status = document.getElementById('status')!;
 const overlay = document.getElementById('overlay') as HTMLPreElement;
@@ -27,6 +27,24 @@ debugToggle.addEventListener('click', () => {
   overlay.hidden = !overlay.hidden;
   debugToggle.blur();
 });
+
+// The video rate is chosen when the game boots, so the button only changes what the next page load boots.
+const bootHz: Hz = loadHz();
+let wantedHz: Hz = bootHz;
+const hzToggle = document.getElementById('hz-toggle') as HTMLButtonElement;
+const hzNote = document.getElementById('hz-note')!;
+const showHz = () => {
+  hzToggle.textContent = `60 Hz: ${wantedHz === 60 ? 'on' : 'off'}`;
+  hzNote.hidden = wantedHz === bootHz;
+};
+hzToggle.addEventListener('mousedown', (e) => e.preventDefault());
+hzToggle.addEventListener('click', () => {
+  wantedHz = wantedHz === 60 ? 50 : 60;
+  if (!saveHz(wantedHz)) showNotice('The browser did not keep the 60 Hz choice');
+  showHz();
+  hzToggle.blur();
+});
+showHz();
 
 const setStatus = (text: string, error = false) => {
   status.textContent = text;
@@ -63,6 +81,7 @@ addEventListener('keydown', (e) => fastForward.keydown(e));
 addEventListener('keyup', (e) => fastForward.keyup(e));
 addEventListener('blur', () => fastForward.reset());
 let fps = 0;
+let gameFps = 0;
 
 // Browsers start sound only from a user gesture; any key or click does it.
 const enableSound = () => {
@@ -116,7 +135,7 @@ function updateOverlay(): void {
   const s = renderer.stats;
   const g = game?.info();
   overlay.textContent = [
-    `${fps.toFixed(0)} fps (game 50 Hz)`,
+    `${fps.toFixed(0)} fps (${bootHz} Hz mode)  game ${gameFps.toFixed(1)} frames/s`,
     ...timingLines(),
     g ? `frame ${g.frames}  retraces ${g.retraces}  gfx tasks ${g.gfxTasks}${g.idle ? '  IDLE' : ''}` : 'no game',
     `last task: ${s.commands} commands, ${s.batches} batches, ${s.triangles} triangles, ${s.rects} rects`,
@@ -133,7 +152,8 @@ function updateOverlay(): void {
 
 async function loop(): Promise<void> {
   let last = performance.now();
-  let acc = 0;
+  const pacer = new FramePacer(bootHz);
+  let countedGfx = game?.info().gfxTasks ?? 0;
   let counted = 0;
   let countStart = last;
   while (game) {
@@ -149,14 +169,14 @@ async function loop(): Promise<void> {
       last = performance.now();
     }
     const now = performance.now();
-    // At most three frames of catch-up, so a stalled tab does not trigger a burst.
-    acc = Math.min(acc + now - last, FRAME_MS * 3);
+    let due = pacer.advance(now - last);
     last = now;
     let stepped = false;
     // Fast-forward: frames back to back for most of the display interval.
     const budgetEnd = now + FAST_BUDGET_MS;
-    while (game && (fastForward.active ? !stepped || performance.now() < budgetEnd : acc >= FRAME_MS)) {
-      acc = fastForward.active ? 0 : acc - FRAME_MS;
+    while (game && (fastForward.active ? !stepped || performance.now() < budgetEnd : due > 0)) {
+      if (fastForward.active) pacer.reset();
+      else due--;
       try {
         game.setPad(input.poll());
         await game.frame();
@@ -175,6 +195,9 @@ async function loop(): Promise<void> {
     }
     if (now - countStart >= 1000) {
       fps = (counted * 1000) / (now - countStart);
+      const gfxTasks = game?.info().gfxTasks ?? countedGfx;
+      gameFps = ((gfxTasks - countedGfx) * 1000) / (now - countStart);
+      countedGfx = gfxTasks;
       counted = 0;
       countStart = now;
     }
@@ -191,7 +214,7 @@ async function boot(): Promise<void> {
       if (total > 0 && performance.now() - loadStart > SLOW_LOAD_MS) setStatus(`Loading: ${(bytes / 1e6).toFixed(0)} / ${(total / 1e6).toFixed(0)} MB`);
     });
     const [onServer, rom] = await Promise.all([serverHasSaves(), cartridge, wasm.module]);
-    const started = await startGame(rom, renderer, sound, wasm);
+    const started = await startGame(rom, renderer, sound, wasm, undefined, bootHz);
     if (onServer) {
       const moved = await migrateToServer(
         { sram: indexedDbStore(), states: indexedDbStates() },
@@ -204,7 +227,7 @@ async function boot(): Promise<void> {
     await sync.restore();
     saves = sync;
     try {
-      states = new SaveStates(started.states, onServer ? serverStates() : indexedDbStates(), await started.buildId());
+      states = new SaveStates(started.states, onServer ? serverStates() : indexedDbStates(), await started.buildId(), bootHz);
     } catch (err) {
       console.error('save states are not available:', err);
     }
