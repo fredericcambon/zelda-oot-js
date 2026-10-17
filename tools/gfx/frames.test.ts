@@ -8,7 +8,6 @@ import { bootGame } from '../headless/boot.ts';
 import { compileAll, link, runtimeSources } from '../port/build.ts';
 import { generate } from '../recomp/generate.ts';
 import { ensureToolchain } from '../recomp/toolchain.ts';
-import { DisplayListInterpreter } from './dl.ts';
 import { flatness, SoftRenderer } from './raster.ts';
 import { DlTotals } from './totals.ts';
 
@@ -29,14 +28,13 @@ describe.skipIf(!rom || !existsSync(rom))('display lists of the booted game', ()
     const opts = { cDir, objDir: join(work, 'obj'), distDir: join(work, 'dist'), toolchain: ensureToolchain(), log: () => {} };
     const out = await link(opts, await compileAll(opts, runtimeSources()));
 
-    const interpreter = new DisplayListInterpreter();
     const soft = new SoftRenderer();
     const flat: string[] = [];
     const totals = new DlTotals();
     let textured = 0;
     const game = await bootGame(pathToFileURL(out).href, new Uint8Array(readFileSync(rom!)), {
       onGfxTask: (task) => {
-        const r = interpreter.run(task.ram, task.data);
+        const r = task.displayList();
         for (const b of r.batches) if (b.state.textures[0]) textured++;
         totals.add(r);
         soft.drawTask(r);

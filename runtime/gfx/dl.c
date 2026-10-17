@@ -537,6 +537,11 @@ static void pop_matrix(uint32_t w1) {
   mvp_valid = 0;
 }
 
+// Vertex trace, for tests: while on, every vertex load appends the doubles (w0, first slot, count) and then, per loaded vertex,
+// clip x y z w, colour r g b a, s, t.
+static VEC(double) vertex_trace;
+static int vertex_trace_on;
+
 static void load_vertices(uint32_t w0, uint32_t w1) {
   const int n = (int)((w0 >> 12) & 0xff);
   const int v0 = (int)((w0 >> 1) & 0x7f) - n;
@@ -595,6 +600,18 @@ static void load_vertices(uint32_t w0, uint32_t w1) {
     v->s = s / 32;
     v->t = t / 32;
     vert_loaded[v0 + i] = 1;
+  }
+  if (vertex_trace_on) {
+    VEC_PUSH(vertex_trace, (double)w0);
+    VEC_PUSH(vertex_trace, (double)v0);
+    VEC_PUSH(vertex_trace, (double)n);
+    for (int i = 0; i < n; i++) {
+      const Vertex *v = &verts[v0 + i];
+      for (int k = 0; k < 4; k++) VEC_PUSH(vertex_trace, v->clip[k]);
+      for (int k = 0; k < 4; k++) VEC_PUSH(vertex_trace, v->color[k]);
+      VEC_PUSH(vertex_trace, v->s);
+      VEC_PUSH(vertex_trace, v->t);
+    }
   }
 }
 
@@ -1209,7 +1226,16 @@ const GfxResult *gfx_result(void) {
   return &result;
 }
 
+void gfx_trace_vertices(uint32_t on) {
+  vertex_trace.n = 0;
+  vertex_trace_on = on != 0;
+}
+const double *gfx_vertex_trace(void) { return vertex_trace.v; }
+uint32_t gfx_vertex_trace_length(void) { return (uint32_t)vertex_trace.n; }
+
 void gfx_reset(void) {
+  VEC_FREE(vertex_trace);
+  vertex_trace_on = 0;
   reset();
   clear_tile_cache();
   clear_bg_cache();

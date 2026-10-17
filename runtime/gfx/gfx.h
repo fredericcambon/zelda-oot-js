@@ -111,6 +111,11 @@ const GfxResult *gfx_result(void);
 // Frees the caches and the result buffers.
 void gfx_reset(void);
 uint32_t gfx_layout(uint32_t what);
+// Records the vertices of every vertex load of the runs that follow (on != 0; clears the record). The record is a sequence of
+// (w0, first slot, count) followed by count vertices of ten doubles: clip x y z w, colour r g b a, s, t.
+void gfx_trace_vertices(uint32_t on);
+const double *gfx_vertex_trace(void);
+uint32_t gfx_vertex_trace_length(void);
 
 // ---- Texture decoding (decode.c) ------------------------------------------------------------------------------
 

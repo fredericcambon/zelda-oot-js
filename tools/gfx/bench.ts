@@ -1,6 +1,6 @@
-// Headless speed of the display-list interpreters: plays the scripted new game and runs every graphics task through the chosen
-// one. Usage: tsx tools/gfx/bench.ts [--dist dist] [--rom file] [--frames 6000] [--mode none|ts|c|c-read]
-//   none    the game alone         ts      the TypeScript interpreter
+// Headless speed of the display-list interpreter: plays the scripted new game and runs every graphics task through the chosen
+// one. Usage: tsx tools/gfx/bench.ts [--dist dist] [--rom file] [--frames 6000] [--mode none|c|c-read]
+//   none    the game alone
 //   c       the interpreter in the module, its buffers left unread
 //   c-read  the same, and the result read into a DisplayListResult
 import { readFileSync } from 'node:fs';
@@ -9,9 +9,8 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { readCartridge } from '../assets/write.ts';
 import { padAt, parseInput } from '../headless/input.ts';
-import { RDRAM_SIZE, startModule, type OotCore } from '../runtime/instance.ts';
+import { startModule, type OotCore } from '../runtime/instance.ts';
 import { readResult, type GfxCore } from './c-dl.ts';
-import { DisplayListInterpreter } from './dl.ts';
 
 interface GameCore extends OotCore, GfxCore {
   _oot_gfx_tasks(): number;
@@ -23,13 +22,11 @@ async function main(): Promise<void> {
   const frames = Number(values.frames);
   const mode = values.mode!;
   const script = parseInput(readFileSync(new URL('../headless/newgame.input', import.meta.url), 'utf8'), 'newgame.input');
-  const reference = new DisplayListInterpreter();
   let spent = 0;
   const mod = await startModule<GameCore>(pathToFileURL(resolve(values.dist!, 'oot.js')).href, values.rom ? new Uint8Array(readFileSync(values.rom)) : readCartridge(join(resolve(values.dist!), 'assets')), {
     onGfxTask: (data: number) => {
       const t0 = performance.now();
-      if (mode === 'ts') reference.run(mod.HEAPU8.subarray(mod._oot_rdram(), mod._oot_rdram() + RDRAM_SIZE), data >>> 0);
-      else if (mode === 'c' || mode === 'c-read') {
+      if (mode === 'c' || mode === 'c-read') {
         mod._gfx_run(data >>> 0);
         if (mode === 'c-read') readResult(mod);
       }

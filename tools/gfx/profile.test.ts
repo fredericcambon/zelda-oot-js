@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { DisplayListResult } from './dl.ts';
+import type { DisplayListResult } from './types.ts';
 import { drawCallsOf, formatBreakdown, FrameProfiler, RollingMean } from './profile.ts';
 
 describe('RollingMean', () => {

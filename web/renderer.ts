@@ -1,6 +1,6 @@
-// WebGL2 back end for the draw batches of tools/gfx/dl.ts. Every colour image the game draws into is a 320x240 texture
+// WebGL2 back end for the draw batches of tools/gfx/types.ts (produced by the interpreter in runtime/gfx/). Every colour image the game draws into is a 320x240 texture
 // keyed by its address, so double buffering behaves as on the console; the depth image is one shared buffer.
-import type { Batch, DecodedTexture, DisplayListResult, DrawState, RectBatch, TriangleBatch } from '../tools/gfx/dl.ts';
+import type { Batch, DecodedTexture, DisplayListResult, DrawState, RectBatch, TriangleBatch } from '../tools/gfx/types.ts';
 import { GpuTimer } from './gpu-timer.ts';
 import { Geo } from '../tools/gfx/opcodes.ts';
 import { CycleType, cycleTypeOf, fragmentSource, OtherL, shiftScale, specKey, specOf, VERTEX_SHADER, type ShaderSpec } from './shader.ts';
@@ -345,7 +345,7 @@ export class Renderer {
     const vp = state.viewport;
     if (triangles && vp.scale[0] !== 0 && vp.scale[1] !== 0) {
       // The viewport is twice as wide and high as the screen it maps to, around the same centre: triangles are clipped to
-      // twice the screen's size (dl.ts), and the vertex shader halves x and y, so that this guard band is the clip volume.
+      // twice the screen's size (runtime/gfx/dl.c), and the vertex shader halves x and y, so that this guard band is the clip volume.
       const hw = Math.abs(vp.scale[0]) / 4, hh = Math.abs(vp.scale[1]) / 4;
       const cx = vp.trans[0] / 4, cy = vp.trans[1] / 4;
       gl.viewport(Math.round((cx - 2 * hw) * k), Math.round((SCREEN_H - (cy + 2 * hh)) * k), Math.round(hw * 4 * k), Math.round(hh * 4 * k));

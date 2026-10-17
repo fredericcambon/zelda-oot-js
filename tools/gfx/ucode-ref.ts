@@ -1,6 +1,6 @@
 // Reference execution of the graphics microcode, used only by tests and by the notes' verification runs: it executes the
 // microcode text the game ships (boot microcode, then the microcode it loads) on a display list and returns what the RSP
-// computes and what it sends to the RDP, so that the display-list interpreter's formulas (`dl.ts`) can be compared with
+// computes and what it sends to the RDP, so that the display-list interpreter's formulas (`runtime/gfx/dl.c`) can be compared with
 // the real thing. It implements the RSP instruction set as documented at n64brew.dev (scalar subset, COP0 DMA and display
 // processor registers, vector unit); nothing in the shipped game runs it.
 import { LOAD_STORE_SCALE } from '../audio/rspdis.ts';

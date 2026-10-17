@@ -1,6 +1,6 @@
-// A software renderer for the draw batches of dl.ts, used to dump frames without a browser. It follows the same
+// A software renderer for the draw batches of the display-list interpreter (types.ts), used to dump frames without a browser. It follows the same
 // rules as the WebGL path (web/shader.ts, web/renderer.ts).
-import type { Batch, DecodedTexture, DisplayListResult, DrawState, RectBatch, TileState, TriangleBatch } from './dl.ts';
+import type { Batch, DecodedTexture, DisplayListResult, DrawState, RectBatch, TileState, TriangleBatch } from './types.ts';
 import { Geo } from './opcodes.ts';
 import { CycleType, cycleTypeOf, MIN_COVERAGE_ALPHA, OtherL, shiftScale, specOf, type BlendCycle, type ShaderSpec } from '../../web/shader.ts';
 

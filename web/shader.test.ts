@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decodeCombine, type DrawState } from '../tools/gfx/dl.ts';
+import { decodeCombine, type DrawState } from '../tools/gfx/types.ts';
 import { CycleType, equation, fragmentSource, MIN_COVERAGE_ALPHA, rgbInput, shiftScale, specKey, specOf, VERTEX_SHADER } from './shader.ts';
 
 const rgba = { r: 0, g: 0, b: 0, a: 0 };

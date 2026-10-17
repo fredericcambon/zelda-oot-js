@@ -4,7 +4,6 @@ import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { loadContext } from '../analyze/context.ts';
 import { analyze } from '../analyze/run.ts';
-import { DisplayListInterpreter } from '../gfx/dl.ts';
 import { flatness, SoftRenderer } from '../gfx/raster.ts';
 import { bootGame } from '../headless/boot.ts';
 import { compileAll, link, runtimeSources } from '../port/build.ts';
@@ -38,10 +37,9 @@ describe.skipIf(!rom || !existsSync(rom))('boot from the assets', () => {
     const cartridge = readCartridge(join(run, 'assets'));
     expect(cartridge.length).toBe(ctx.rom.length);
 
-    const interpreter = new DisplayListInterpreter();
     const soft = new SoftRenderer();
     const game = await bootGame(pathToFileURL(join(run, 'oot.js')).href, cartridge, {
-      onGfxTask: (task) => soft.drawTask(interpreter.run(task.ram, task.data)),
+      onGfxTask: (task) => soft.drawTask(task.displayList()),
     });
     const flat: string[] = [];
     for (let k = 1; k <= FRAMES; k++) {

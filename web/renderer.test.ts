@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decodeCombine, type DrawState, type TriangleBatch } from '../tools/gfx/dl.ts';
+import { decodeCombine, type DrawState, type TriangleBatch } from '../tools/gfx/types.ts';
 import { Renderer } from './renderer.ts';
 
 /** A WebGL2 context that records what is bound to each texture unit and which texture each upload went to. */

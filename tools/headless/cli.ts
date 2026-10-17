@@ -7,7 +7,6 @@ import { parseArgs } from 'node:util';
 import { readCartridge } from '../assets/write.ts';
 import { AudioCapture } from '../audio/capture.ts';
 import { encodeWav } from '../audio/wav.ts';
-import { DisplayListInterpreter } from '../gfx/dl.ts';
 import { encodePng } from '../gfx/png.ts';
 import { HEIGHT, SoftRenderer, WIDTH } from '../gfx/raster.ts';
 import { drawCallsOf, formatBreakdown, FrameProfiler, WINDOW } from '../gfx/profile.ts';
@@ -42,7 +41,6 @@ async function main(): Promise<number> {
   const frames = Number(values.frames);
   // The game runs from the assets `npm run port` wrote; a ROM file is only for comparing against them.
   const rom = values.rom ? readFileSync(values.rom) : readCartridge(join(resolve(values.dist!), 'assets'));
-  const interpreter = new DisplayListInterpreter();
   const totals = new DlTotals();
   const soft = values.dump ? new SoftRenderer() : undefined;
   const dumpDir = values.dump ? resolve(values.dump) : undefined;
@@ -68,7 +66,7 @@ async function main(): Promise<number> {
         ? (task) => {
             const handle = () => {
               const t0 = performance.now();
-              const result = interpreter.run(task.ram, task.data);
+              const result = task.displayList();
               profiler?.addDisplayList(performance.now() - t0);
               profiler?.addDrawCalls(drawCallsOf(result));
               profiler?.taskDone();

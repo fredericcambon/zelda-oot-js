@@ -1,6 +1,6 @@
 // Per-phase frame timing shared by the browser and the headless CLI. A game frame is one graphics task; the samples are
 // averaged over the last WINDOW of them.
-import type { DisplayListResult } from './dl.ts';
+import type { DisplayListResult } from './types.ts';
 
 export const WINDOW = 60;
 

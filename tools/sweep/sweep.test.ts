@@ -6,7 +6,7 @@ import { loadContext } from '../analyze/context.ts';
 import { analyze } from '../analyze/run.ts';
 import { classify } from '../assets/classify.ts';
 import { buildManifest, readCartridge, writeAssets } from '../assets/write.ts';
-import { DisplayListInterpreter } from '../gfx/dl.ts';
+import { sharedInterpreter } from '../gfx/c-dl-node.ts';
 import { bootGame } from '../headless/boot.ts';
 import { padAt, parseInput } from '../headless/input.ts';
 import { compileAll, link, runtimeSources } from '../port/build.ts';
@@ -17,6 +17,7 @@ import { mergeReports, sweepScenes, type SceneSweepReport } from './scenes.ts';
 import { BOOT_HALT_UCODE, JPEG_UCODE, staticSweep } from './static.ts';
 
 const rom = process.env.OOT_ROM;
+const interpreter = await sharedInterpreter();
 const work = resolve('out', 'sweep-test');
 const inputPath = fileURLToPath(new URL('../headless/newgame.input', import.meta.url));
 
@@ -67,14 +68,14 @@ describe('report blocks', () => {
   it('accepts a list that ends at once', () => {
     const ram = new Uint8Array(64);
     new DataView(ram.buffer).setUint32(0, 0xdf000000);
-    expect(new DisplayListInterpreter().run(ram, 0).unknown).toEqual([]);
+    expect(interpreter.run(ram, 0).unknown).toEqual([]);
   });
 });
 
 describe.skipIf(!rom || !existsSync(rom))('gap sweep', () => {
   it('lists every RSP task, with the boot halt task and the type-4 task', async () => {
     const { inventory } = await buildGame();
-    const s = staticSweep(loadContext(rom!), inventory, resolve('runtime'));
+    const s = staticSweep(loadContext(rom!), inventory, resolve('runtime'), interpreter);
     const kinds = s.tasks.tasks.map((t) => `${t.type}:${t.ucode?.toString(16)}`);
     expect(kinds).toContain(`4:${BOOT_HALT_UCODE.toString(16)}`);
     expect(kinds).toContain(`4:${JPEG_UCODE.toString(16)}`);
@@ -116,7 +117,7 @@ describe.skipIf(!rom || !existsSync(rom))('gap sweep', () => {
     expect(report.coverage?.functions.length).toBeGreaterThan(500);
     expect(report.coverage?.osCalls.length).toBeGreaterThan(10);
 
-    const s = staticSweep(loadContext(rom!), inventory, resolve('runtime'));
+    const s = staticSweep(loadContext(rom!), inventory, resolve('runtime'), interpreter);
     writeFileSync(join(work, 'scenes.json'), JSON.stringify(report));
     writeFileSync(join(work, 'report.md'), `${renderStatic(s, report)}\n${renderScenes(report, s)}`);
     expect(readFileSync(join(work, 'report.md'), 'utf8')).toContain('Sweep of 5 entrances');
@@ -125,8 +126,7 @@ describe.skipIf(!rom || !existsSync(rom))('gap sweep', () => {
   it('runs well above 3 frames per second with the display lists interpreted', async () => {
     const { moduleUrl, dist } = await buildGame();
     const script = parseInput(readFileSync(inputPath, 'utf8'), 'newgame.input');
-    const interpreter = new DisplayListInterpreter();
-    const game = await bootGame(moduleUrl, readCartridge(join(dist, 'assets')), { onGfxTask: (task) => interpreter.run(task.ram, task.data) });
+    const game = await bootGame(moduleUrl, readCartridge(join(dist, 'assets')), { onGfxTask: (task) => task.displayList() });
     const frames = 2500;
     const start = performance.now();
     for (let frame = 1; frame <= frames; frame++) {

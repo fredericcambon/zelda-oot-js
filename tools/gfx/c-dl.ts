@@ -1,14 +1,9 @@
-// The display-list interpreter that lives in the wasm module (runtime/gfx/), and a reader that turns the buffers it
-// writes into the DisplayListResult of dl.ts. Float arrays and decoded images are views into the module's memory, valid
+// Reader for the display-list interpreter that lives in the wasm module (runtime/gfx/): turns the buffers it writes into
+// the DisplayListResult of types.ts. Float arrays and decoded images are views into the module's memory, valid
 // until the next run (and not across a growth of the memory: read the result right after the run).
-import { existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { emcc, GFX_DIR } from '../port/build.ts';
-import { repoRoot, type Toolchain } from '../recomp/toolchain.ts';
 import {
   decodeCombine, type Batch, type DecodedTexture, type DisplayListResult, type DrawState, type RunOptions, type TileState,
-} from './dl.ts';
+} from './types.ts';
 
 /** The exports of the interpreter (runtime/gfx/dl.c). */
 export interface GfxCore {
@@ -19,6 +14,24 @@ export interface GfxCore {
   _gfx_result(): number;
   _gfx_reset(): void;
   _gfx_layout(what: number): number;
+}
+
+/** The vertex trace of the interpreter, for tests (runtime/gfx/gfx.h). */
+export interface GfxTraceCore extends GfxCore {
+  _gfx_trace_vertices(on: number): void;
+  _gfx_vertex_trace(): number;
+  _gfx_vertex_trace_length(): number;
+}
+
+/** A game module, whose interpreter runs over the module's own RDRAM. */
+export interface GfxGameCore extends GfxCore {
+  _gfx_run(start: number): number;
+}
+
+/** Runs the display list at `start` over the module's RDRAM and reads the result; valid until the next run. */
+export function runDisplayList(core: GfxGameCore, start: number): DisplayListResult {
+  core._gfx_run(start >>> 0);
+  return readResult(core);
 }
 
 /** Words of the records of the result (GfxResult, GfxBatch, GfxState, GfxTextureRef, GfxUnknown in runtime/gfx/gfx.h). */
@@ -32,6 +45,7 @@ const TILE_WORDS = 16;
 
 type Tuple17 = [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number];
 
+const LATIN1 = new TextDecoder('latin1');
 const KINDS = ['triangles', 'texrect', 'fillrect'] as const;
 
 function checkLayout(core: GfxCore): void {
@@ -89,7 +103,7 @@ export function readResult(core: GfxCore): DisplayListResult {
     const start = problemsAt + i * PROBLEM_BYTES;
     let end = start;
     while (heap[end] !== 0) end++;
-    problems.push(Buffer.from(heap.subarray(start, end)).toString('latin1'));
+    problems.push(LATIN1.decode(heap.subarray(start, end)));
   }
   const unknownWords = new Uint32Array(buffer, unknownAt || 0, unknownCount * UNKNOWN_WORDS);
   const unknown = Array.from({ length: unknownCount }, (_, i) => ({
@@ -154,22 +168,44 @@ export class CDisplayListInterpreter {
   }
 }
 
-const GFX_EXPORTS = ['_malloc', '_free', '_gfx_run_ram', '_gfx_result', '_gfx_reset', '_gfx_layout'];
-
-/** Builds the interpreter alone into a module under `outDir` (rebuilt when a source is newer) and loads it. */
-export async function loadGfxModule(toolchain: Toolchain, outDir: string): Promise<GfxCore> {
-  const sources = readdirSync(GFX_DIR).filter((f) => (f.endsWith('.c') && f !== 'task.c') || f.endsWith('.h')).map((f) => join(GFX_DIR, f));
-  const out = join(outDir, 'gfx.mjs');
-  const newest = Math.max(...sources.map((s) => statSync(s).mtimeMs));
-  if (!existsSync(out) || statSync(out).mtimeMs < newest) {
-    mkdirSync(outDir, { recursive: true });
-    const r = await emcc(toolchain, [
-      '-O2', '-ffp-contract=off', '-Wall', '-sENVIRONMENT=node', '-sALLOW_MEMORY_GROWTH=1', '-sMODULARIZE=1', '-sEXPORT_ES6=1',
-      `-sEXPORTED_FUNCTIONS=${GFX_EXPORTS.join(',')}`, '-sEXPORTED_RUNTIME_METHODS=HEAPU8',
-      ...sources.filter((s) => s.endsWith('.c')), '-o', out,
-    ], repoRoot);
-    if (r.code !== 0) throw new Error(`the interpreter failed to build:\n${r.output.slice(0, 4000)}`);
+/** The vertices of every vertex load since `_gfx_trace_vertices(1)`, as the module recorded them. */
+export function readVertexTrace(core: GfxTraceCore): { w0: number; first: number; vertices: { clip: number[]; color: number[]; s: number; t: number }[] }[] {
+  const length = core._gfx_vertex_trace_length();
+  const data = new Float64Array(core.HEAPU8.buffer as ArrayBuffer, core._gfx_vertex_trace() || 0, length);
+  const loads = [];
+  for (let at = 0; at < length;) {
+    const w0 = data[at]!, first = data[at + 1]!, count = data[at + 2]!;
+    at += 3;
+    const vertices = [];
+    for (let i = 0; i < count; i++, at += 10) {
+      vertices.push({ clip: Array.from(data.subarray(at, at + 4)), color: Array.from(data.subarray(at + 4, at + 8)), s: data[at + 8]!, t: data[at + 9]! });
+    }
+    loads.push({ w0, first, vertices });
   }
-  const factory = (await import(/* @vite-ignore */ `${pathToFileURL(out).href}?${statSync(out).mtimeMs}`)).default as (opts: object) => Promise<GfxCore>;
-  return factory({ print: () => {}, printErr: (m: string) => console.error(m) });
+  return loads;
+}
+
+/** A copy of a result that stays valid after the next run (float arrays and images are copied; shared ones stay shared). */
+export function copyResult(result: DisplayListResult): DisplayListResult {
+  const pixels = new Map<Uint8Array, Uint8Array>();
+  const copyImage = (image: DecodedTexture | null): DecodedTexture | null => {
+    if (!image) return null;
+    let rgba = pixels.get(image.rgba);
+    if (!rgba) pixels.set(image.rgba, (rgba = image.rgba.slice()));
+    return { ...image, rgba };
+  };
+  const states = new Map<DrawState, DrawState>();
+  const copyState = (state: DrawState): DrawState => {
+    let copy = states.get(state);
+    if (!copy) {
+      copy = { ...state, textures: [copyImage(state.textures[0]), copyImage(state.textures[1])] };
+      states.set(state, copy);
+    }
+    return copy;
+  };
+  const batches = result.batches.map((b): Batch =>
+    b.kind === 'triangles'
+      ? { ...b, state: copyState(b.state), positions: b.positions.slice(), colors: b.colors.slice(), uvs: b.uvs.slice() }
+      : { ...b, state: copyState(b.state) });
+  return { ...result, batches };
 }

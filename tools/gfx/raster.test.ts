@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decodeCombine, type DecodedTexture, type DisplayListResult, type DrawState, type TileState, type TriangleBatch } from './dl.ts';
+import { decodeCombine, type DecodedTexture, type DisplayListResult, type DrawState, type TileState, type TriangleBatch } from './types.ts';
 import { HEIGHT, SoftRenderer, WIDTH } from './raster.ts';
 
 const IMAGE = 0x80100000;

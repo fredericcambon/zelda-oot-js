@@ -1,7 +1,7 @@
 // Turns the RDP's per-draw configuration (combiner, blender, filtering, fog and alpha tests) into GLSL ES 3.00 fragment
 // shaders. A shader depends only on the `ShaderSpec` derived from the draw state; colours, tile sizes and the like are
 // uniforms, so a handful of programs cover a whole scene.
-import type { DrawState } from '../tools/gfx/dl.ts';
+import type { DrawState } from '../tools/gfx/types.ts';
 
 /** Cycle type, bits 20-21 of the high half of the other modes. */
 export const CycleType = { ONE: 0, TWO: 1, COPY: 2, FILL: 3 } as const;

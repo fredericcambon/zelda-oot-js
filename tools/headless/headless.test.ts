@@ -15,15 +15,18 @@ import { RspReference } from '../audio/rsp-ref.ts';
 import { Synth } from '../audio/synth.ts';
 import { encodeWav } from '../audio/wav.ts';
 import { buildManifest, readCartridge, writeAssets } from '../assets/write.ts';
-import { DisplayListInterpreter, type Batch, type DisplayListResult } from '../gfx/dl.ts';
+import { copyResult } from '../gfx/c-dl.ts';
+import { sharedGfxModule } from '../gfx/c-dl-node.ts';
+import type { Batch, DisplayListResult } from '../gfx/types.ts';
 import { encodePng } from '../gfx/png.ts';
 import { HEIGHT, SoftRenderer, WIDTH } from '../gfx/raster.ts';
-import { bootGame } from './boot.ts';
+import { bootGame, type GfxTask } from './boot.ts';
 import { padAt, parseInput } from './input.ts';
 import { FILE_SELECT_INIT_LINKED, FILE_SELECT_RECORD, RECORD, fileSelectLoaded, linkPosition, playState, requestEntrance } from './state.ts';
 import { compareWithMicrocode } from '../gfx/ucode-compare.ts';
 
 const rom = process.env.OOT_ROM;
+const gfx = await sharedGfxModule();
 const FRAMES = 300;
 
 const CONFIRM_FRAME = 3470;
@@ -76,14 +79,13 @@ function buildGame(): Promise<{ moduleUrl: string; cartridge: Uint8Array }> {
 /** A game whose display lists are drawn into frame images only shortly before each frame in `capture`. */
 async function bootCapturing(capture: ReadonlySet<number>) {
   const { moduleUrl, cartridge } = await buildGame();
-  const interpreter = new DisplayListInterpreter();
   const soft = new SoftRenderer();
   let frame = 0;
   const unknown: string[] = [];
   const game = await bootGame(moduleUrl, cartridge, {
     onGfxTask: (task) => {
       if (![...capture].some((c) => frame <= c && frame > c - DRAW_LEAD)) return;
-      const result = interpreter.run(task.ram, task.data);
+      const result = task.displayList();
       unknown.push(...result.unknown.map((u) => `frame ${frame} 0x${u.w0.toString(16)}`), ...result.problems);
       soft.drawTask(result);
     },
@@ -280,12 +282,11 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
 
     const start = async () => {
       let soft = new SoftRenderer();
-      let interpreter = new DisplayListInterpreter();
       let sound = createHash('sha256');
       let drawing = false;
       const game = await bootGame(moduleUrl, cartridge, {
         onGfxTask: (task) => {
-          if (drawing) soft.drawTask(interpreter.run(task.ram, task.data));
+          if (drawing) soft.drawTask(task.displayList());
         },
         onAiBuffer: (b) => {
           if (drawing) sound.update(b.ram.subarray(b.addr & 0x7fffff, (b.addr & 0x7fffff) + b.length));
@@ -294,7 +295,6 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
       /** Plays the frames after `from`, hashing the shown picture, the sound queued and Link's position of each. */
       const play = async (from: number, to: number): Promise<string[]> => {
         soft = new SoftRenderer();
-        interpreter = new DisplayListInterpreter();
         drawing = true;
         const frames: string[] = [];
         for (let frame = from + 1; frame <= to; frame++) {
@@ -433,12 +433,11 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
     /** The graphics tasks of the last frames before `target`, and the colour image the video interface shows then. */
     const capture = async (target: number) => {
       const { moduleUrl, cartridge } = await buildGame();
-      const interpreter = new DisplayListInterpreter();
       const results: DisplayListResult[] = [];
       let frame = 0;
       const game = await bootGame(moduleUrl, cartridge, {
         onGfxTask: (task) => {
-          if (frame > target - DRAW_LEAD) results.push(interpreter.run(task.ram, task.data));
+          if (frame > target - DRAW_LEAD) results.push(copyResult(task.displayList()));
         },
       });
       while (frame < target) {
@@ -519,7 +518,7 @@ describe.skipIf(!rom || !existsSync(rom))('Kokiri Forest and its interiors', () 
   const PLATFORM_FRAME = 2448;
 
   /** Plays the new game to Link's house, loads `entrance` and runs `frames` frames, calling `onTask` for the tasks after `from`. */
-  async function visit(entrance: number, frames: number, from: number, onTask: (task: { ram: Uint8Array; data: number; task: number }, frame: number) => void) {
+  async function visit(entrance: number, frames: number, from: number, onTask: (task: GfxTask, frame: number) => void) {
     const { moduleUrl, cartridge } = await buildGame();
     let frame = 0;
     let record = false;
@@ -545,16 +544,15 @@ describe.skipIf(!rom || !existsSync(rom))('Kokiri Forest and its interiors', () 
   }
 
   it('draws the forest without an unknown command or an inconsistency, and its display lists agree with the microcode', async () => {
-    const interpreter = new DisplayListInterpreter();
     const unknown: string[] = [];
     let compared = 0;
     const worst = { colour: 0, texture: 0, uncovered: 0 };
     const { scene } = await visit(FOREST_ENTRANCE, 2410, 1, (task, frame) => {
       const k = frame - CONTROL_FRAME;
-      const result = interpreter.run(task.ram, task.data);
+      const result = task.displayList();
       unknown.push(...result.unknown.map((u) => `frame ${k} 0x${u.w0.toString(16)}`), ...result.problems.map((p) => `frame ${k} ${p}`));
       if (k >= 2400) {
-        const c = compareWithMicrocode(task.ram, task.data, task.task);
+        const c = compareWithMicrocode(gfx, task.ram, task.data, task.task);
         compared++;
         worst.colour = Math.max(worst.colour, c.colourError);
         worst.texture = Math.max(worst.texture, c.textureError);
@@ -573,16 +571,15 @@ describe.skipIf(!rom || !existsSync(rom))('Kokiri Forest and its interiors', () 
 
   it('draws the interiors without an unknown command and as the microcode does', async () => {
     for (const entrance of INTERIOR_ENTRANCES) {
-      const interpreter = new DisplayListInterpreter();
       const unknown: string[] = [];
       let compared = 0;
       const worst = { colour: 0, texture: 0, uncovered: 0 };
       await visit(entrance, 202, 1, (task, frame) => {
         const k = frame - CONTROL_FRAME;
-        const result = interpreter.run(task.ram, task.data);
+        const result = task.displayList();
         unknown.push(...result.unknown.map((u) => `frame ${k} 0x${u.w0.toString(16)}`), ...result.problems);
         if (k >= 200) {
-          const c = compareWithMicrocode(task.ram, task.data, task.task);
+          const c = compareWithMicrocode(gfx, task.ram, task.data, task.task);
           compared++;
           worst.colour = Math.max(worst.colour, c.colourError);
           worst.texture = Math.max(worst.texture, c.textureError);
@@ -599,8 +596,7 @@ describe.skipIf(!rom || !existsSync(rom))('Kokiri Forest and its interiors', () 
 
   it('draws the decal surfaces (the path, the leaves, the shadow) over the ground they lie on', async () => {
     const results: DisplayListResult[] = [];
-    const interpreter = new DisplayListInterpreter();
-    await visit(FOREST_ENTRANCE, PLATFORM_FRAME, PLATFORM_FRAME - DRAW_LEAD + 1, (task) => results.push(interpreter.run(task.ram, task.data)));
+    await visit(FOREST_ENTRANCE, PLATFORM_FRAME, PLATFORM_FRAME - DRAW_LEAD + 1, (task) => results.push(copyResult(task.displayList())));
     const isPath = (b: Batch) => b.kind === 'triangles' && ((b.state.otherModeL >>> 10) & 3) === 3;
     const paths = results.flatMap((r) => r.batches.filter(isPath));
     expect(paths.length).toBeGreaterThan(0);

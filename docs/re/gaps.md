@@ -49,6 +49,17 @@ npm run headless -- --input tools/headless/newgame.input --frames 21400 --entran
 - Submit and GPU time need a browser: the debug overlay shows them (GPU as "n/a" when the browser lacks the timer query extension) and they were not measured here. Draw calls headless are counted as the renderer issues them: one per non-empty triangle batch and per rectangle that is not a fill.
 - Timing is a handful of `performance.now()` reads per task; browsers round them (about 0.1 ms, 1 ms in some), so single frames are coarse and only the means are meaningful.
 
+After the switch (every consumer on the C interpreter, `dl.ts` deleted), the same command with the display lists read into a `DisplayListResult` as the page reads them (`GfxTask.displayList()`, the same `runDisplayList` as `web/game.ts`):
+
+| Phase | ms per game frame, before (TypeScript) | ms per game frame, after (C) |
+|---|---|---|
+| Game code | 0.69–0.73 | 0.67–0.98 |
+| Display lists | 5.04–5.17 | 0.78–0.91 |
+| WebGL submit, GPU | n/a headless | n/a headless |
+
+- The after column is the quietest four of ten runs; the machine was shared with other builds, and the slower runs scaled game code and display lists together (game code 1.4–2.8 ms with display lists 1.2–2.5 ms), so the ratio, about 1 to 1.2, is the stable figure. Display lists went from about 7 times the game code to about equal to it.
+- **Browser:** the page now spends this display-list time per game frame (`runDisplayList` in `web/game.ts`, shown as "display lists" in the debug overlay) plus the WebGL submit and GPU phases, which need a browser and were not measured here. The overlay shows all four phases per game frame.
+
 ### Display lists in C
 
 The same scripted new game with the display lists run by the interpreter in the module (`runtime/gfx/`, built with the game at `-O2`), 6,000 video frames (2,365 game frames), two runs each, `npx tsx tools/gfx/bench.ts --mode <mode>`:
@@ -56,7 +67,7 @@ The same scripted new game with the display lists run by the interpreter in the 
 | Run | Video frames/s | Game frames/s | Display lists, ms per game frame |
 |---|---|---|---|
 | Game alone (`none`) | 7,872–7,926 | 3,103–3,124 | – |
-| TypeScript interpreter (`ts`) | 813–823 | 320–324 | 2.64–2.68 |
+| TypeScript interpreter (`ts`, measured before it was deleted) | 813–823 | 320–324 | 2.64–2.68 |
 | C interpreter, result left in the module (`c`) | 3,393–3,472 | 1,337–1,369 | 0.39 |
 | C interpreter and the result read into a `DisplayListResult` (`c-read`) | 2,503–2,604 | 987–1,026 | 0.64–0.66 |
 

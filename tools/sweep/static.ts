@@ -8,7 +8,7 @@ import { buildSpecs, type ImageSpec } from '../analyze/image.ts';
 import { disassemble, type Insn } from '../analyze/mips.ts';
 import type { Inventory, InvFunction, InvImage } from '../analyze/types.ts';
 import { disassembleRspRange } from '../audio/rspdis.ts';
-import { DisplayListInterpreter } from '../gfx/dl.ts';
+import type { CDisplayListInterpreter } from '../gfx/c-dl.ts';
 import { Op } from '../gfx/opcodes.ts';
 import { Synth } from '../audio/synth.ts';
 import { ENTRANCE_COUNT, ENTRANCE_TABLE, SCENE_TABLE } from '../headless/state.ts';
@@ -258,17 +258,17 @@ function gfxName(op: number): string {
 }
 
 /** Whether the display-list interpreter accepts a command with this opcode. */
-function interpreterAccepts(op: number): boolean {
+function interpreterAccepts(interpreter: CDisplayListInterpreter, op: number): boolean {
   const ram = new Uint8Array(64);
   const dv = new DataView(ram.buffer);
   dv.setUint32(0, op * 0x1000000);
   dv.setUint32(16, 0xdf000000);
   dv.setUint32(8, 0xdf000000);
-  const result = new DisplayListInterpreter().run(ram, 0, { maxCommands: 6 });
+  const result = interpreter.run(ram, 0, { maxCommands: 6 });
   return result.unknown.length === 0;
 }
 
-export function graphicsOpcodes(specs: Map<string, ImageSpec>): { table: OpcodeRow[]; ucode: number; data: number; signature: string } {
+export function graphicsOpcodes(specs: Map<string, ImageSpec>, interpreter: CDisplayListInterpreter): { table: OpcodeRow[]; ucode: number; data: number; signature: string } {
   const code = specs.get('code')!;
   const dv = dataWords(code);
   const text = dv.getUint32(GFX_UCODE_DESCRIPTOR - code.base);
@@ -287,7 +287,7 @@ export function graphicsOpcodes(specs: Map<string, ImageSpec>): { table: OpcodeR
   for (let op = 0; op < 256; op++) {
     const entry = entryOf(op);
     const hasHandler = inTable.has(op);
-    const accepted = interpreterAccepts(op);
+    const accepted = interpreterAccepts(interpreter, op);
     let status: OpcodeStatus;
     let reason: string;
     if (accepted) {
@@ -579,10 +579,10 @@ export interface StaticSweep {
   functionsByImage: { image: string; kind: InvImage['kind']; starts: number[] }[];
 }
 
-export function staticSweep(ctx: RomContext, inv: Inventory, runtimeDir: string): StaticSweep {
+export function staticSweep(ctx: RomContext, inv: Inventory, runtimeDir: string, interpreter: CDisplayListInterpreter): StaticSweep {
   const specs = new Map(buildSpecs(ctx).map((s) => [s.name, s]));
   return {
-    tasks: rspTasks(inv, specs), microcodes: microcodeTexts(inv, specs), graphics: graphicsOpcodes(specs), audio: audioOpcodes(specs), os: osRoutines(inv, specs, runtimeDir),
+    tasks: rspTasks(inv, specs), microcodes: microcodeTexts(inv, specs), graphics: graphicsOpcodes(specs, interpreter), audio: audioOpcodes(specs), os: osRoutines(inv, specs, runtimeDir),
     recompiler: recompilerGaps(inv, specs), scenes: sceneTables(ctx, specs),
     functionsByImage: inv.images.map((i) => ({ image: i.name, kind: i.kind, starts: i.functions.map((f) => f.start) })),
   };

@@ -1,6 +1,6 @@
 // Boots the recompiled game in the page and feeds each graphics task it submits to the renderer.
 import { Synth } from '../tools/audio/synth.ts';
-import { DisplayListInterpreter } from '../tools/gfx/dl.ts';
+import { runDisplayList, type GfxGameCore } from '../tools/gfx/c-dl.ts';
 import { FrameProfiler } from '../tools/gfx/profile.ts';
 import { shownFramebuffer } from '../tools/gfx/vi.ts';
 import { RDRAM_SIZE, startModule } from '../tools/runtime/instance.ts';
@@ -36,11 +36,11 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
   const profiler = new FrameProfiler();
   renderer.onGpuTime = (ms) => profiler.addGpu(ms);
   const guestRam = () => mod.HEAPU8.subarray(mod._oot_rdram(), mod._oot_rdram() + RDRAM_SIZE);
-  const mod = await startModule<SnapshotCore>(moduleUrl, rom, {
+  const mod = await startModule<SnapshotCore & GfxGameCore>(moduleUrl, rom, {
     onGfxTask: (data: number) => profiler.hook(() => {
       try {
         const t0 = performance.now();
-        const result = new DisplayListInterpreter().run(guestRam(), data >>> 0);
+        const result = runDisplayList(mod, data);
         const t1 = performance.now();
         renderer.drawTask(result);
         profiler.addDisplayList(t1 - t0);
