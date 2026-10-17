@@ -16,6 +16,7 @@ caller's stack from `sp+16`, floats in `$f12`) and returns in `$v0` (`$v0:$v1` f
 | `cont.c` | controllers |
 | `rsp.c` | RSP task submission, RDP status, audio interface |
 | `osinit.c` | `osInitialize`, cache and TLB no-ops, `rt_reset` |
+| `state.c` | the portable save state: `rt_state_save`, `rt_state_load` |
 | `rt.h` | host interface and shared declarations |
 
 ## Guest-visible state
@@ -88,14 +89,75 @@ destination. Addresses that no image holds are logged (`rt_missing_get`) and end
 ## Portable save states
 
 A raw dump of the module's memory is tied to the wasm file that made it: every guest thread runs on a fiber whose C stack
-and Asyncify stack hold host frames and wasm-internal indices (`runtime/sched.c`, `start_fiber`). Everything else the game
-depends on is data of the guest or of the runtime. This section covers the part that rebuilds the fibers from build-independent
-facts: which of the ROM's functions are active on each thread, and where the thread waits. The file around it (RDRAM,
-devices, clock) is described with the state format.
+and Asyncify stack hold host frames and wasm-internal indices (`runtime/sched.c`, `start_fiber`), C statics sit at link-dependent
+addresses, and clock events held C function pointers. Everything the game depends on is data of the guest or of the runtime, except
+each thread's host call chain. A state therefore holds that data, and describes the call chains by the ROM's functions
+and call sites, from which a fresh instance rebuilds the fibers. A state taken by one build loads into any other build of
+the same ROM.
+
+### The state
+
+`rt_state_save(buf, cap)` writes it and `rt_state_load(buf, len)` reads it (exported as `oot_state_save`, `oot_state_load`,
+then `oot_state_loaded`; `tools/runtime/snapshot.ts` wraps them as `saveState` and `loadState`, and keeps states gzipped). Call
+them between two `oot_frame()` calls. Words are little-endian. The file is a header (`"OOTP"`, the format version, the number of
+sections) and sections, each a four-character tag, a byte length and its payload. `runtime/state.c` holds the table of
+sections, in this order:
+
+| Tag | Contents | Written by |
+|---|---|---|
+| `RDRM` | RDRAM, 8 MiB | `state.c` |
+| `COP0` | the 32 COP0 registers | `dispatch.c` |
+| `OVLY` | for each overlay image: its index, link address, whether it is loaded, and its delta | `dispatch.c` |
+| `THRD` | `running` (always 0), Status, the interrupt mask; for each thread its registers, flags, blocking site and call chain (below) | `sched.c` |
+| `CLCK` | the clock, then the queued events in due order as (kind, `a`, `b`, due time) | `clock.c` |
+| `CONT` | `connected`, `initialised` and the latched pads | `cont.c` |
+| `PI  ` | `pi_free_at` | `pi.c` |
+| `VI  ` | the next retrace, the retrace count and the count since the last notice | `vi.c` |
+| `AUDO` | `ai_hz`, the number of queued buffers and each buffer's end and length | `rsp.c` |
+| `JPEG` | the number of JPEG tasks run | `jpeg.c` |
+| `FRMS` | the frame counters, the end of the current frame and the idle flag (headless host only) | `headless.c` |
+
+What is not in it: the module's memory, the heap, the stacks of the fibers, any host pointer, the cartridge image, the save memory
+(SRAM, which keeps its contents when a state is loaded) and what the host sets before each frame (the pads it holds, the
+hooks). Timed events carry a kind from `enum TimedKind` (`runtime/rt.h`), not a function pointer; the handler of each kind is a
+`te_*` function that `clock.c` calls. `TE_USER` belongs to hosts and tests and cannot be saved.
+
+A state is saved only at a frame boundary. It is refused, with a message and no change to the game, while the boot code runs, and
+when a thread waits anywhere but at a blocking site (below). A scripted new game gives a state of 8.4 MB that gzips to 1.7 MB, within the
+4 MB limit that `tools/headless/headless.test.ts` checks.
+
+### Loading
+
+`rt_state_load` checks the whole state before it changes anything, so a refused state leaves the running game as it was. It
+refuses, with a message in `rt_state_error`:
+
+- a state in the earlier raw-dump format ("saved in the old format"), or data that is not a state;
+- another format version ("this state uses format N, this build reads M"); there is no migration and no build check;
+- a state that is cut short, has data after its last section, an unknown or repeated section, or lacks one;
+- a section whose data is damaged or that this build cannot place: an overlay image it lacks, a timed event of an unknown kind,
+  a function and call site that are not in `oot_sites`, a blocking site or runtime frame it lacks.
+
+When everything is acceptable, each `*_load` is called again with `apply` set: RDRAM and the devices first, the threads last, because
+rebuilding them runs their fibers up to the point where they wait (see "Resume mode") and relies on the rest of the state being in place.
+
+### Adding a runtime variable to the state
+
+A C variable whose value the game's behaviour depends on (a static of a device, a counter, a flag) belongs in the state, or a
+state loaded into a fresh build would differ from continuing the old one. For a new variable:
+
+1. Write it in the `*_save` function of its file and read it in the `*_load` function, in the same order. A `*_load` reads
+   every field, checks it (`r->bad` after the reads, ranges, enumerations), refuses with `rt_state_refuse` when it is not acceptable,
+   and assigns only `if (apply)`. A new device gets its own tag in the table of `state.c`.
+2. Raise `RT_STATE_VERSION` (`runtime/rt.h`) and `STATE_VERSION` (`tools/runtime/snapshot.ts`). The format changes whenever a
+   variable is added or removed; older states are refused with the message above.
+3. A new kind of timed event takes the next number in `enum TimedKind`, a `te_*` handler, a case in `run_event` (`clock.c`) and a place
+   in `known_kind`.
+4. The cross-build test in `tools/headless/headless.test.ts` fails when the variable is missing from the state: the frames, the
+   memory or the saved state after the replay differ.
 
 ### What is described
 
-`rt_threads_describe` (exported as `oot_threads_describe`) writes, between two `oot_frame()` calls, the words that
+The `THRD` section is the description of the threads. `rt_threads_describe` (exported as `oot_threads_describe`) writes, between two `oot_frame()` calls, the words that
 `tools/runtime/threads.ts` reads and writes (`parseThreads`, `encodeThreads`):
 
 - `running` (always 0 between frames), `rt_status` and the interrupt mask;

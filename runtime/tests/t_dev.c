@@ -37,7 +37,8 @@ static void set_timer(uint32_t timer, uint64_t countdown, uint64_t interval, uin
 TEST(run_stops_at_the_requested_time_and_reports_idle_when_nothing_is_left) {
   CHECK_EQ(rt_run(100), RT_RUN_IDLE);
   CHECK_EQ(rt_clock(), 0);
-  rt_schedule(1000, noop, 0, 0);
+  rt_set_user_event(noop);
+  rt_schedule(1000, TE_USER, 0, 0);
   CHECK_EQ(rt_run(500), RT_RUN_TIME);
   CHECK_EQ(rt_clock(), 500);
   CHECK_EQ(rt_run(2000), RT_RUN_IDLE);
@@ -47,18 +48,20 @@ TEST(run_stops_at_the_requested_time_and_reports_idle_when_nothing_is_left) {
 static void log_event(uint32_t a, uint32_t b) { tlog("%u%u ", a, b); }
 
 TEST(events_run_in_time_order_and_in_scheduling_order_when_simultaneous) {
-  rt_schedule(30, log_event, 3, 0);
-  rt_schedule(10, log_event, 1, 0);
-  rt_schedule(10, log_event, 1, 1);
-  rt_schedule(20, log_event, 2, 0);
-  CHECK_EQ(rt_cancel(log_event, 2), 1);
-  CHECK_EQ(rt_cancel(log_event, 2), 0);
+  rt_set_user_event(log_event);
+  rt_schedule(30, TE_USER, 3, 0);
+  rt_schedule(10, TE_USER, 1, 0);
+  rt_schedule(10, TE_USER, 1, 1);
+  rt_schedule(20, TE_USER, 2, 0);
+  CHECK_EQ(rt_cancel(TE_USER, 2), 1);
+  CHECK_EQ(rt_cancel(TE_USER, 2), 0);
   rt_run(100);
   CHECK_STR(tlog_get(), "10 11 30 ");
 }
 
 TEST(count_and_time_follow_the_virtual_clock) {
-  rt_schedule(0x100000000ull + 5, noop, 0, 0);
+  rt_set_user_event(noop);
+  rt_schedule(0x100000000ull + 5, TE_USER, 0, 0);
   rt_run(0x100000000ull + 5);
   uint32_t count = os(&host, rt_osGetCount, 0, 0, 0, 0);
   CHECK(count >= 5 && count < 100);

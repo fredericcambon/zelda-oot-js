@@ -184,3 +184,56 @@ void rt_mtc0(Cpu *c, uint32_t reg, uint64_t value) {
 
 void rt_tlb(Cpu *c, int op, uint32_t pc) { (void)c; (void)op; (void)pc; }
 void rt_cache(Cpu *c, uint32_t op, uint32_t addr) { (void)c; (void)op; (void)addr; }
+
+// ---- Saved state -------------------------------------------------------------------------------------------
+// COP0 registers, and the overlay registry: for every overlay image, where it sits in RAM, if it does.
+
+int dispatch_save(Writer *w) {
+  for (int k = 0; k < 32; k++) put64(w, cop0[k]);
+  return 1;
+}
+
+int dispatch_load(Reader *r, int apply) {
+  uint64_t regs[32];
+  for (int k = 0; k < 32; k++) regs[k] = get64(r);
+  if (r->bad) return rt_state_refuse("the COP0 state is damaged");
+  if (apply) memcpy(cop0, regs, sizeof regs);
+  return 1;
+}
+
+int overlays_save(Writer *w) {
+  uint32_t n = 0;
+  for (uint32_t k = 0; k < oot_image_count; k++) n += oot_images[k].overlay != 0;
+  put32(w, n);
+  for (uint32_t k = 0; k < oot_image_count; k++) {
+    const ImageInfo *im = &oot_images[k];
+    if (!im->overlay) continue;
+    put32(w, k);
+    put32(w, im->link_start);
+    put32(w, (uint32_t)im->loaded);
+    put32(w, im->delta);
+  }
+  return 1;
+}
+
+int overlays_load(Reader *r, int apply) {
+  uint32_t n = get32(r);
+  if (r->bad || n > oot_image_count) return rt_state_refuse("the overlay registry of the state is damaged");
+  if (apply) {
+    for (uint32_t k = 0; k < oot_image_count; k++) {
+      if (oot_images[k].overlay) oot_images[k].loaded = 0;
+    }
+  }
+  for (uint32_t j = 0; j < n; j++) {
+    uint32_t k = get32(r), link = get32(r), loaded = get32(r), delta = get32(r);
+    if (r->bad) return rt_state_refuse("the overlay registry of the state is damaged");
+    if (k >= oot_image_count || !oot_images[k].overlay || oot_images[k].link_start != link || loaded > 1) {
+      return rt_state_refuse("this build has no overlay image %u linked at 0x%08x", k, link);
+    }
+    if (apply) {
+      oot_images[k].loaded = (int)loaded;
+      oot_images[k].delta = delta;
+    }
+  }
+  return 1;
+}

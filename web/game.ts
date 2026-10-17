@@ -8,7 +8,7 @@ import type { PadState } from './input.ts';
 import type { Renderer } from './renderer.ts';
 import type { SaveMemory } from './saves.ts';
 import { buildIdOf, compress, decompress, type StateSource } from './savestate.ts';
-import { captureMemory, decodeMemory, encodeMemory, restoreMemory, type SnapshotCore } from '../tools/runtime/snapshot.ts';
+import { loadState, saveState, type StateCore } from '../tools/runtime/snapshot.ts';
 
 export interface Game {
   /** Sets controller 1 for the frames that follow. */
@@ -31,7 +31,7 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
   let audioError = '';
   const synth = new Synth();
   const guestRam = () => mod.HEAPU8.subarray(mod._oot_rdram(), mod._oot_rdram() + RDRAM_SIZE);
-  const mod = await startModule<SnapshotCore>(moduleUrl, rom, {
+  const mod = await startModule<StateCore>(moduleUrl, rom, {
     onGfxTask: (data: number) => {
       try {
         renderer.drawTask(new DisplayListInterpreter().run(guestRam(), data >>> 0));
@@ -62,8 +62,8 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
       takeIfDirty: () => (mod._oot_sram_take_dirty() ? sram().slice() : null),
     },
     states: {
-      capture: () => compress(encodeMemory(captureMemory(mod))),
-      apply: async (data) => restoreMemory(mod, decodeMemory(await decompress(data))),
+      capture: () => compress(saveState(mod)),
+      apply: async (data) => loadState(mod, await decompress(data)),
     },
     buildId: async () => {
       const wasmUrl = moduleUrl.replace(/\.js$/, '.wasm');

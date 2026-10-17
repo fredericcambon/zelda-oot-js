@@ -6,7 +6,6 @@
 // run queue puts first, with the same ordering rules as the original dispatcher: higher priority first,
 // first come first served among equals.
 #include <emscripten/fiber.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "rt.h"
@@ -165,7 +164,7 @@ void rt_poll(Cpu *c, int site, uint32_t cycles) {
   yield_if_preempted(site);
 }
 
-static void wake_sleeper(uint32_t thread, uint32_t unused) {
+void te_wake_sleeper(uint32_t thread, uint32_t unused) {
   (void)unused;
   make_runnable(thread);
 }
@@ -174,7 +173,7 @@ void thread_sleep_until(Cpu *c, uint64_t when, int site) {
   if (!resuming_at(c, site)) {
     if (rt_clock() >= when) return;
     if (!running) rt_fatal("sleep outside a thread");
-    rt_schedule(when, wake_sleeper, running->addr, 0);
+    rt_schedule(when, TE_WAKE_SLEEPER, running->addr, 0);
   }
   block_on(0, site);
 }
@@ -350,7 +349,7 @@ void rt_osDestroyThread(Cpu *c) {
     link = node + TH_TLNEXT;
   }
   if (!h) return;
-  rt_cancel(wake_sleeper, t);
+  rt_cancel(TE_WAKE_SLEEPER, t);
   if (h == running) {
     h->dead = 1;
     leave_cpu(BS_NONE);
@@ -546,19 +545,6 @@ void rt_os_internal_get_fpc_csr(Cpu *c) { RET(c->fcsr); }
 // outermost function is entered in resume mode, each function jumps to the site on the stack and re-issues the
 // call, and the routine at the end parks the fiber at its blocking site.
 
-static char state_error[256];
-
-const char *rt_state_error(void) { return state_error; }
-
-static int refuse(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-static int refuse(const char *fmt, ...) {
-  va_list ap;
-  va_start(ap, fmt);
-  vsnprintf(state_error, sizeof state_error, fmt, ap);
-  va_end(ap);
-  return 0;
-}
-
 // The routine a thread waits in at blocking site `id`.
 static GuestFn blocking_routine(uint32_t id) {
   switch (id) {
@@ -615,39 +601,6 @@ static int chain_next(const Cpu *c, uint32_t *pos, uint32_t *a, uint32_t *b, uin
   return CHAIN_BAD;
 }
 
-// Writes little-endian words; with no buffer it only counts.
-typedef struct Writer {
-  uint8_t *buf;
-  uint32_t cap, len;
-} Writer;
-
-static void put32(Writer *w, uint32_t v) {
-  if (w->buf && w->len + 4 <= w->cap) memcpy(w->buf + w->len, &v, 4);
-  w->len += 4;
-}
-static void put64(Writer *w, uint64_t v) {
-  put32(w, (uint32_t)v);
-  put32(w, (uint32_t)(v >> 32));
-}
-
-typedef struct Reader {
-  const uint8_t *buf;
-  uint32_t len, pos;
-  int bad;
-} Reader;
-
-static uint32_t get32(Reader *r) {
-  uint32_t v = 0;
-  if (r->pos + 4 > r->len) { r->bad = 1; return 0; }
-  memcpy(&v, r->buf + r->pos, 4);
-  r->pos += 4;
-  return v;
-}
-static uint64_t get64(Reader *r) {
-  uint64_t lo = get32(r);
-  return lo | (uint64_t)get32(r) << 32;
-}
-
 // The registers a guest program can see; the rest of the context belongs to the host.
 static void put_cpu(Writer *w, const Cpu *c) {
   for (int k = 0; k < 32; k++) put64(w, c->r[k]);
@@ -680,19 +633,19 @@ static void get_cpu(Reader *r, Cpu *c) {
 #define FRAME_RUNTIME 1u
 
 uint32_t rt_threads_describe(uint8_t *buf, uint32_t cap) {
-  state_error[0] = 0;
-  if (boot_live) return (uint32_t)refuse("the game is still booting");
-  if (current) return (uint32_t)refuse("the threads are described from the host's context only");
-  if (running) return (uint32_t)refuse("thread 0x%08x is running", running->addr);
+  rt_state_clear();
+  if (boot_live) return (uint32_t)rt_state_refuse("the game is still booting");
+  if (current) return (uint32_t)rt_state_refuse("the threads are described from the host's context only");
+  if (running) return (uint32_t)rt_state_refuse("thread 0x%08x is running", running->addr);
   uint32_t count = 0;
   for (int k = 0; k < MAX_THREADS; k++) {
     const HostThread *t = &threads[k];
     if (!t->used) continue;
     count++;
-    if (t->dead) return (uint32_t)refuse("thread 0x%08x is being destroyed", t->addr);
+    if (t->dead) return (uint32_t)rt_state_refuse("thread 0x%08x is being destroyed", t->addr);
     if (!t->started) continue;
     if (!blocking_routine(t->cpu.blk_id)) {
-      return (uint32_t)refuse("thread 0x%08x waits at a place the state cannot hold (site %u)", t->addr, t->cpu.blk_id);
+      return (uint32_t)rt_state_refuse("thread 0x%08x waits at a place the state cannot hold (site %u)", t->addr, t->cpu.blk_id);
     }
     uint32_t pos = 0, a, b, d;
     int frames = 0, kind, ends_waiting = 0;
@@ -701,7 +654,7 @@ uint32_t rt_threads_describe(uint8_t *buf, uint32_t cap) {
       ends_waiting = kind == CHAIN_SITE || rt_frame_blocks(a);
     }
     if (kind == CHAIN_BAD || frames == 0 || !ends_waiting) {
-      return (uint32_t)refuse("the call chain of thread 0x%08x is not one the state can hold", t->addr);
+      return (uint32_t)rt_state_refuse("the call chain of thread 0x%08x is not one the state can hold", t->addr);
     }
   }
 
@@ -739,7 +692,7 @@ uint32_t rt_threads_describe(uint8_t *buf, uint32_t cap) {
       }
     }
   }
-  if (buf && w.len > cap) return (uint32_t)refuse("the buffer holds %u bytes and the threads need %u", cap, w.len);
+  if (buf && w.len > cap) return (uint32_t)rt_state_refuse("the buffer holds %u bytes and the threads need %u", cap, w.len);
   return w.len;
 }
 
@@ -763,18 +716,18 @@ static void run_rebuild(HostThread *t) {
   current = NULL;
 }
 
-int rt_threads_rebuild(const uint8_t *buf, uint32_t len) {
-  state_error[0] = 0;
+static int rebuild(const uint8_t *buf, uint32_t len, int apply) {
+  rt_state_clear();
   Reader r = { buf, len, 0, 0 };
-  if (get32(&r) != THREADS_MAGIC) return refuse("the thread description is not one this build reads");
+  if (get32(&r) != THREADS_MAGIC) return rt_state_refuse("the thread description is not one this build reads");
   uint32_t count = get32(&r);
   uint32_t running_addr = get32(&r);
   uint32_t status = get32(&r);
   uint32_t mask = get32(&r);
-  if (r.bad || count > MAX_THREADS) return refuse("the thread description is damaged");
-  if (running_addr != 0) return refuse("a state with a running thread cannot be loaded");
+  if (r.bad || count > MAX_THREADS) return rt_state_refuse("the thread description is damaged");
+  if (running_addr != 0) return rt_state_refuse("a state with a running thread cannot be loaded");
   Plan *plans = calloc(count ? count : 1, sizeof *plans);
-  if (!plans) return refuse("out of memory");
+  if (!plans) return rt_state_refuse("out of memory");
   int ok = 0;
   uint32_t used = 0;
   for (uint32_t k = 0; k < count; k++) {
@@ -786,19 +739,19 @@ int rt_threads_rebuild(const uint8_t *buf, uint32_t len) {
     get_cpu(&r, &p->cpu);
     p->blk = get32(&r);
     uint32_t frames = get32(&r);
-    if (r.bad || p->slot >= MAX_THREADS || (used & (1u << p->slot))) { refuse("the thread description is damaged"); goto done; }
+    if (r.bad || p->slot >= MAX_THREADS || (used & (1u << p->slot))) { rt_state_refuse("the thread description is damaged"); goto done; }
     used |= 1u << p->slot;
     for (uint32_t j = 0; j < k; j++) {
-      if (plans[j].addr == p->addr) { refuse("thread 0x%08x is described twice", p->addr); goto done; }
+      if (plans[j].addr == p->addr) { rt_state_refuse("thread 0x%08x is described twice", p->addr); goto done; }
     }
     int ends_waiting = 0;
     for (uint32_t j = 0; j < frames; j++) {
       uint32_t kind = get32(&r), a = get32(&r), b = get32(&r), d = get32(&r);
-      if (r.bad) { refuse("the thread description is damaged"); goto done; }
-      if (p->cpu.shn + 3 > OOT_SH_MAX) { refuse("the call chain of thread 0x%08x is too deep", p->addr); goto done; }
+      if (r.bad) { rt_state_refuse("the thread description is damaged"); goto done; }
+      if (p->cpu.shn + 3 > OOT_SH_MAX) { rt_state_refuse("the call chain of thread 0x%08x is too deep", p->addr); goto done; }
       if (kind == FRAME_SITE) {
         int64_t key = find_site(a, b, d);
-        if (key < 0) { refuse("this build has no call site 0x%08x in the function at 0x%08x (image %u)", d, b, a); goto done; }
+        if (key < 0) { rt_state_refuse("this build has no call site 0x%08x in the function at 0x%08x (image %u)", d, b, a); goto done; }
         p->cpu.sh[p->cpu.shn++] = (uint32_t)key;
         ends_waiting = 1;
       } else if (kind == FRAME_RUNTIME && (a == RT_FRAME_OVERLAY_LOAD || a == RT_FRAME_CONT_TRANSFER)) {
@@ -807,19 +760,24 @@ int rt_threads_rebuild(const uint8_t *buf, uint32_t len) {
         p->cpu.sh[p->cpu.shn++] = b;
         p->cpu.sh[p->cpu.shn++] = d;
       } else {
-        refuse("this build has no runtime frame %u", a);
+        rt_state_refuse("this build has no runtime frame %u", a);
         goto done;
       }
     }
     if (p->flags & FLAG_STARTED) {
-      if (!blocking_routine(p->blk)) { refuse("this build has no blocking site %u", p->blk); goto done; }
-      if (frames == 0 || !ends_waiting) { refuse("the call chain of thread 0x%08x is not one this build reads", p->addr); goto done; }
+      if (!blocking_routine(p->blk)) { rt_state_refuse("this build has no blocking site %u", p->blk); goto done; }
+      if (frames == 0 || !ends_waiting) { rt_state_refuse("the call chain of thread 0x%08x is not one this build reads", p->addr); goto done; }
     } else if (p->blk != 0 || frames != 0) {
-      refuse("the thread description is damaged");
+      rt_state_refuse("the thread description is damaged");
       goto done;
     }
   }
-  if (r.bad) { refuse("the thread description is damaged"); goto done; }
+  if (r.bad) { rt_state_refuse("the thread description is damaged"); goto done; }
+
+  if (!apply) {
+    ok = 1;
+    goto done;
+  }
 
   // Everything checked out: from here on the threads are replaced.
   for (int k = 0; k < MAX_THREADS; k++) free_thread(&threads[k]);
@@ -845,7 +803,7 @@ int rt_threads_rebuild(const uint8_t *buf, uint32_t len) {
     start_fiber(t, thread_main);
     run_rebuild(t);
     if (t->cpu.blk_id != p->blk || t->cpu.resume || t->cpu.rpos != t->cpu.shn) {
-      ok = refuse("the call chain of thread 0x%08x did not rebuild", p->addr);
+      ok = rt_state_refuse("the call chain of thread 0x%08x did not rebuild", p->addr);
       break;
     }
   }
@@ -853,3 +811,6 @@ done:
   free(plans);
   return ok;
 }
+
+int rt_threads_check(const uint8_t *buf, uint32_t len) { return rebuild(buf, len, 0); }
+int rt_threads_rebuild(const uint8_t *buf, uint32_t len) { return rebuild(buf, len, 1); }

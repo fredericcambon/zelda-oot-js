@@ -99,10 +99,31 @@ void rt_start(uint32_t entry, uint32_t sp);
 // can ever run again (RT_RUN_IDLE).
 int rt_run(uint64_t until);
 uint64_t rt_clock(void);
-// Schedules `fn(a, b)` at an absolute time; used by the devices.
+// Timed events are named by kind, not by function, so that a queued event can be written to a saved state. The numbers
+// are part of the state: new kinds take new numbers.
+enum TimedKind {
+  TE_WAKE_SLEEPER = 1, // a: OSThread address
+  TE_TIMER = 2,        // a: OSTimer address
+  TE_PI_DONE = 3,      // a: OSIoMesg address
+  TE_SI_DONE = 4,      // a: queue of the controller call
+  TE_VI_RETRACE = 5,
+  TE_RSP_EVENT = 6,    // a: interrupt event to send
+  TE_AI_FINISHED = 7,
+  TE_USER = 255,       // runs the function of rt_set_user_event; for hosts and tests, and not part of a saved state
+};
+// Schedules the event `kind` with arguments `a` and `b` at an absolute time; used by the devices.
+void rt_schedule(uint64_t when, int kind, uint32_t a, uint32_t b);
+int rt_cancel(int kind, uint32_t a);
 typedef void (*TimedFn)(uint32_t a, uint32_t b);
-void rt_schedule(uint64_t when, TimedFn fn, uint32_t a, uint32_t b);
-int rt_cancel(TimedFn fn, uint32_t a);
+void rt_set_user_event(TimedFn fn);
+// The handlers of the device events, run by the clock.
+void te_wake_sleeper(uint32_t thread, uint32_t unused);
+void te_timer(uint32_t timer, uint32_t unused);
+void te_pi_done(uint32_t mesg, uint32_t unused);
+void te_si_done(uint32_t queue, uint32_t unused);
+void te_vi_retrace(uint32_t a, uint32_t b);
+void te_rsp_event(uint32_t event, uint32_t unused);
+void te_ai_finished(uint32_t a, uint32_t b);
 // Time at which the next scheduled event is due; returns 0 when there is none.
 int rt_next_event(uint64_t *when);
 
@@ -215,7 +236,59 @@ uint32_t rt_threads_describe(uint8_t *buf, uint32_t cap);
 // of the description already. Returns 0 and sets rt_state_error() when the description is refused; the threads
 // are then untouched.
 int rt_threads_rebuild(const uint8_t *buf, uint32_t len);
+// Like rt_threads_rebuild, but only checks the description.
+int rt_threads_check(const uint8_t *buf, uint32_t len);
 const char *rt_state_error(void);
+
+// ---- Portable state ---------------------------------------------------------------------------------
+// The state of the game as build-independent data (docs/runtime.md, "Portable save states"). All words are
+// little-endian. A Writer with no buffer only counts.
+typedef struct Writer {
+  uint8_t *buf;
+  uint32_t cap, len;
+} Writer;
+typedef struct Reader {
+  const uint8_t *buf;
+  uint32_t len, pos;
+  int bad;
+} Reader;
+void put32(Writer *w, uint32_t v);
+void put64(Writer *w, uint64_t v);
+uint32_t get32(Reader *r);
+uint64_t get64(Reader *r);
+
+// Version of the format that rt_state_save writes and rt_state_load reads. It changes when a variable is added to
+// or removed from the state.
+#define RT_STATE_VERSION 1u
+// Writes the state into `buf`; with `buf` NULL it only measures. Call between two frames. Returns the size in bytes, or
+// 0 with rt_state_error() set when the game is somewhere a state cannot hold.
+uint32_t rt_state_save(uint8_t *buf, uint32_t cap);
+// Replaces the state of the game with a saved one. Returns 0 with rt_state_error() set when the state is refused;
+// the game is then as it was. The cartridge's save memory is not part of a state and is left alone.
+int rt_state_load(const uint8_t *buf, uint32_t len);
+// Records why a save or load was refused; returns 0.
+int rt_state_refuse(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+void rt_state_clear(void);
+
+// Each part of the state writes its variables with `*_save` and reads them with `*_load`. A load with `apply` clear
+// only checks the data, so that a refusal leaves the game untouched; it returns 0 (after rt_state_refuse) when the
+// data is not acceptable.
+int dispatch_save(Writer *w);
+int dispatch_load(Reader *r, int apply);
+int overlays_save(Writer *w);
+int overlays_load(Reader *r, int apply);
+int clock_save(Writer *w);
+int clock_load(Reader *r, int apply);
+int cont_save(Writer *w);
+int cont_load(Reader *r, int apply);
+int pi_save(Writer *w);
+int pi_load(Reader *r, int apply);
+int vi_save(Writer *w);
+int vi_load(Reader *r, int apply);
+int rsp_save(Writer *w);
+int rsp_load(Reader *r, int apply);
+int jpeg_save(Writer *w);
+int jpeg_load(Reader *r, int apply);
 
 // ---- Shared by the runtime files ---------------------------------------------------------------------
 

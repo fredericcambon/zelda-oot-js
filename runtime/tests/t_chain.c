@@ -2,6 +2,7 @@
 //
 // The functions below are shaped like the recompiler's output: they push their call site before a call and pop
 // it after, and carry the entry that re-issues a call when they are re-entered in resume mode.
+#include <stdlib.h>
 #include "harness.h"
 
 #define BOOT 0x80100000u
@@ -419,4 +420,159 @@ TEST(a_controller_read_waiting_for_the_serial_interface_is_rebuilt_with_its_fram
   rebuild(n);
   CHECK_EQ(rt_run(RT_CPU_COUNTER), RT_RUN_IDLE);
   CHECK_STR(tlog_get(), "read(0) ");
+}
+
+// ---- Portable states -------------------------------------------------------------------------------------------
+
+static uint8_t *state;
+static uint32_t state_size;
+
+static void save_state(void) {
+  free(state);
+  state_size = rt_state_save(NULL, 0);
+  CHECK(state_size > RDRAM_SIZE);
+  state = malloc(state_size);
+  CHECK_EQ(rt_state_save(state, state_size), state_size);
+}
+
+// The offset of the payload of the section `tag` of the saved state.
+static uint32_t section_at(const char *tag) {
+  uint32_t at = 12;
+  while (at + 8 <= state_size) {
+    uint32_t length;
+    memcpy(&length, state + at + 4, 4);
+    if (memcmp(state + at, tag, 4) == 0) return at + 8;
+    at += 8 + length;
+  }
+  return 0;
+}
+
+static void expect_refusal(const char *part) {
+  CHECK(!rt_state_load(state, state_size));
+  CHECK(strstr(rt_state_error(), part) != NULL);
+  if (!strstr(rt_state_error(), part)) printf("  refusal was \"%s\"\n", rt_state_error());
+}
+
+// After a refusal the game goes on as before: the message the thread waits for completes its call.
+static void game_continues(void) {
+  CHECK(mq_try_send(QUEUE_A, 0x10));
+  CHECK_EQ(rt_run(1000000), RT_RUN_IDLE);
+  CHECK_STR(tlog_get(), "o1 i1 i2(10) o2 i1 ");
+}
+
+TEST(a_saved_state_loads_back_and_the_game_goes_on_as_it_did_from_the_save) {
+  blocked_chain_scenario();
+  save_state();
+  CHECK(mq_try_send(QUEUE_A, 0x10));
+  CHECK_EQ(rt_run(1000000), RT_RUN_IDLE);
+  CHECK_STR(tlog_get(), "o1 i1 i2(10) o2 i1 ");
+  uint64_t later = rt_clock();
+  CHECK(rt_state_load(state, state_size));
+  CHECK_STR(rt_state_error(), "");
+  CHECK(rt_clock() <= later);
+  CHECK_EQ(rd32(QUEUE_A + MQ_VALID), 0);
+  // The log is the host's and keeps both runs: the second repeats the first from the save.
+  CHECK(mq_try_send(QUEUE_A, 0x10));
+  CHECK_EQ(rt_run(1000000), RT_RUN_IDLE);
+  CHECK_STR(tlog_get(), "o1 i1 i2(10) o2 i1 i2(10) o2 i1 ");
+}
+
+TEST(a_state_is_not_saved_while_the_game_boots_and_the_game_then_runs_on) {
+  scenario(ENT_A, 10);
+  CHECK_EQ(rt_state_save(NULL, 0), 0);
+  CHECK(strstr(rt_state_error(), "booting") != NULL);
+  CHECK_EQ(rt_run(100000), RT_RUN_IDLE);
+  CHECK_STR(tlog_get(), "o1 i1 ");
+}
+
+TEST(a_state_is_not_saved_with_a_host_event_queued) {
+  blocked_chain_scenario();
+  rt_schedule(rt_clock() + 100, TE_USER, 0, 0);
+  CHECK_EQ(rt_state_save(NULL, 0), 0);
+  CHECK(strstr(rt_state_error(), "host event") != NULL);
+}
+
+TEST(a_state_with_another_format_version_is_refused_with_both_versions_named) {
+  blocked_chain_scenario();
+  save_state();
+  uint32_t other = RT_STATE_VERSION + 1;
+  memcpy(state + 4, &other, 4);
+  expect_refusal("uses format 2, this build reads 1");
+  game_continues();
+}
+
+TEST(a_state_in_the_old_format_or_no_state_at_all_is_refused) {
+  blocked_chain_scenario();
+  save_state();
+  memcpy(state, "OOTS", 4);
+  expect_refusal("old format");
+  memcpy(state, "junk", 4);
+  expect_refusal("not a saved game state");
+  state_size = 6;
+  expect_refusal("not a saved game state");
+  game_continues();
+}
+
+TEST(a_cut_short_or_padded_state_is_refused) {
+  blocked_chain_scenario();
+  save_state();
+  uint32_t full = state_size;
+  state_size = full - 1;
+  expect_refusal("cut short");
+  state_size = full - 4096;
+  expect_refusal("cut short");
+  state = realloc(state, full + 4);
+  memset(state + full, 0, 4);
+  state_size = full + 4;
+  expect_refusal("after its last section");
+  game_continues();
+}
+
+TEST(a_state_with_an_unknown_duplicate_or_missing_section_is_refused) {
+  blocked_chain_scenario();
+  save_state();
+  uint32_t at = section_at("CLCK");
+  CHECK(at != 0);
+  memcpy(state + at - 8, "NEWS", 4);
+  expect_refusal("section NEWS");
+  memcpy(state + at - 8, "CLCK", 4);
+  uint32_t cont_at = section_at("CONT");
+  memcpy(state + cont_at - 8, "CLCK", 4);
+  expect_refusal("two clock sections");
+  memcpy(state + cont_at - 8, "CONT", 4);
+  game_continues();
+}
+
+TEST(a_state_with_an_unknown_timed_event_kind_or_function_site_is_refused_and_nothing_changes) {
+  blocked_chain_scenario();
+  rt_schedule(rt_clock() + 100000, TE_RSP_EVENT, EVENT_VI, 0);
+  save_state();
+  uint32_t kind = 99, at = section_at("CLCK") + 8 + 4;
+  memcpy(state + at, &kind, 4);
+  expect_refusal("kind 99");
+  kind = TE_RSP_EVENT;
+  memcpy(state + at, &kind, 4);
+
+  // A call site the build does not have: the thread section names the outermost function and call address.
+  uint32_t site_at = section_at("THRD") + DESC_HEADER + DESC_THREAD_HEAD + 12;
+  uint32_t site;
+  memcpy(&site, state + site_at, 4);
+  uint32_t bad = site + 4;
+  memcpy(state + site_at, &bad, 4);
+  wr32(0x80500400u, 0xdeadbeefu);
+  expect_refusal("no call site");
+  CHECK_EQ(rd32(0x80500400u), 0xdeadbeefu);
+  memcpy(state + site_at, &site, 4);
+  game_continues();
+}
+
+TEST(a_state_with_a_damaged_device_section_is_refused) {
+  blocked_chain_scenario();
+  save_state();
+  uint32_t zero = 0;
+  memcpy(state + section_at("AUDO") + 0, &zero, 4);
+  expect_refusal("audio interface state is damaged");
+  state_size = section_at("RDRM") + 100;
+  expect_refusal("cut short");
+  game_continues();
 }

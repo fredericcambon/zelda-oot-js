@@ -56,7 +56,7 @@ void rt_osContInit(Cpu *c) {
 
 // The completion of a transfer is signalled through the SI event the game registered, or straight to the
 // queue passed to the call when it registered none.
-static void si_done(uint32_t queue, uint32_t unused) {
+void te_si_done(uint32_t queue, uint32_t unused) {
   (void)unused;
   if (rd32(OS_EVENT_TABLE + 8 * EVENT_SI)) event_send(EVENT_SI);
   else mq_try_send(queue, 0);
@@ -72,7 +72,7 @@ static void transfer(Cpu *c, uint32_t queue, int read) {
     read = (int)c->sh[c->rpos + 2];
     c->rpos += 3;
   } else {
-    rt_schedule(rt_clock() + SI_CYCLES, si_done, queue, 0);
+    rt_schedule(rt_clock() + SI_CYCLES, TE_SI_DONE, queue, 0);
     c->r[4] = SX32(queue);
     c->r[5] = 0;
     c->r[6] = OS_MESG_BLOCK;
@@ -83,7 +83,7 @@ static void transfer(Cpu *c, uint32_t queue, int read) {
   rt_osRecvMesg(c);
   c->shn -= 3;
   if (read) memcpy(latched, host_pad, sizeof latched);
-  rt_schedule(rt_clock() + SI_CYCLES, si_done, queue, 0);
+  rt_schedule(rt_clock() + SI_CYCLES, TE_SI_DONE, queue, 0);
 }
 
 void rt_osContStartReadData(Cpu *c) { transfer(c, ARG(0), 1); }
@@ -108,3 +108,34 @@ void rt_osContGetQuery(Cpu *c) { write_status(ARG(0)); }
 
 // osPfsInit(queue, pfs, channel): no controller pak is ever plugged in, so every channel answers "no pak".
 void rt_osPfsInit(Cpu *c) { RET(PFS_ERR_NOPACK); }
+
+// ---- Saved state -------------------------------------------------------------------------------------------
+// The pads the host holds are not saved: the host sets them before each frame.
+
+int cont_save(Writer *w) {
+  put32(w, connected);
+  put32(w, (uint32_t)initialised);
+  for (unsigned ch = 0; ch < CHANNELS; ch++) {
+    put32(w, latched[ch].buttons);
+    put32(w, (uint8_t)latched[ch].x);
+    put32(w, (uint8_t)latched[ch].y);
+  }
+  return 1;
+}
+
+int cont_load(Reader *r, int apply) {
+  unsigned c = get32(r), init = get32(r);
+  Pad pads[CHANNELS];
+  for (unsigned ch = 0; ch < CHANNELS; ch++) {
+    pads[ch].buttons = (uint16_t)get32(r);
+    pads[ch].x = (int8_t)get32(r);
+    pads[ch].y = (int8_t)get32(r);
+  }
+  if (r->bad || c >= (1u << CHANNELS) || init > 1) return rt_state_refuse("the controller state is damaged");
+  if (apply) {
+    connected = c;
+    initialised = (int)init;
+    memcpy(latched, pads, sizeof latched);
+  }
+  return 1;
+}
