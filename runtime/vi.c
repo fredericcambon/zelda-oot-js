@@ -162,13 +162,20 @@ int vi_save(Writer *w) {
   put64(w, next_retrace);
   put32(w, retraces);
   put32(w, since_notice);
+  put32(w, vi_hz);
   return 1;
 }
 
+// A state from before the retrace rate was stored ends after since_notice; its rate is unknown and not checked here.
 int vi_load(Reader *r, int apply) {
   uint64_t next = get64(r);
   uint32_t n = get32(r), since = get32(r);
   if (r->bad) return rt_state_refuse("the video interface state is damaged");
+  if (r->pos < r->len) {
+    uint32_t hz = get32(r);
+    if (r->bad) return rt_state_refuse("the video interface state is damaged");
+    if (hz != vi_hz) return rt_state_refuse("this state was saved at %u Hz and this game runs at %u Hz", hz, vi_hz);
+  }
   if (apply) {
     next_retrace = next;
     retraces = n;

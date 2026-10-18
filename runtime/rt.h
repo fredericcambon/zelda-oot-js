@@ -92,7 +92,7 @@ enum { RT_RUN_TIME = 0, RT_RUN_IDLE = 1 };
 
 // Clears the host side of the runtime (threads, devices, pending events, clock). Guest memory is untouched.
 void rt_reset(void);
-// Writes the values the IPL leaves in low memory for a PAL cartridge.
+// Writes the values the IPL leaves in low memory for the cartridge: the TV type is 1 when rt_vi_hz() is 60, else 0.
 void rt_boot_state(void);
 // The retrace rate (RT_VI_HZ_PAL or RT_VI_HZ_NTSC). It decides the TV type that rt_boot_state writes, so set it before booting;
 // a reset leaves it alone.

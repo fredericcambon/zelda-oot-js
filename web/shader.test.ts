@@ -73,6 +73,27 @@ describe('shader generation', () => {
     expect(src).toContain('float shadeAlpha = shade.a;');
   });
 
+  it('applies the filter option over what the draw asks for', () => {
+    const bilinear = state({ otherModeH: 2 << 12 });
+    const n64 = specOf(bilinear), smooth = specOf(bilinear, { filter: 'smooth' }), sharp = specOf(bilinear, { filter: 'sharp' });
+    expect([n64.bilerp, n64.smooth]).toEqual([true, false]);
+    expect([smooth.bilerp, smooth.smooth]).toEqual([true, true]);
+    expect(sharp.bilerp).toBe(false);
+    expect(fragmentSource(smooth)).toContain('#define SMOOTH 1');
+    expect(fragmentSource(n64)).not.toContain('#define SMOOTH 1');
+    expect(new Set([n64, smooth, sharp].map(specKey)).size).toBe(3);
+    // A draw that asks for point sampling stays point whatever the option.
+    expect(specOf(state(), { filter: 'smooth' }).bilerp).toBe(false);
+  });
+
+  it('samples mip levels only when asked, never in copy mode', () => {
+    const mipped = specOf(state({ otherModeH: 2 << 12 }), { mip: true });
+    expect(fragmentSource(mipped)).toContain('#define MIP 1');
+    expect(fragmentSource(specOf(state()))).not.toContain('#define MIP 1');
+    expect(specKey(mipped)).not.toBe(specKey(specOf(state({ otherModeH: 2 << 12 }))));
+    expect(specOf(state({ otherModeH: CycleType.COPY << 20 }), { mip: true }).mip).toBe(false);
+  });
+
   it('turns on bilinear filtering, alpha test and framebuffer blending from the other modes', () => {
     const plain = specOf(state());
     expect(plain.bilerp).toBe(false);

@@ -73,6 +73,44 @@ The same scripted new game with the display lists run by the interpreter in the 
 
 The target was at least 700 game frames per second. Reading the result through `tools/gfx/c-dl.ts` costs 0.25 ms per game frame (it builds one object per state and per batch); a consumer that reads the arrays directly pays less.
 
+## Texture filtering and sharpness
+
+What the WebGL renderer did before this work (read from `web/renderer.ts`, `web/shader.ts`, `web/main.ts`; the game side from `docs/re/display-lists.md`):
+
+- **Resolution.** The 3D image was a whole multiple of 320x240, `ceil(canvas CSS width x devicePixelRatio / 320)` capped at 4 (1280x960 at most). A 960 px canvas on a 2x display got 1280x960 stretched to 1920x1440 by the browser; a phone got the same cap.
+- **Sampling.** Every texture is a `NEAREST` GL texture read with `texelFetch`; tile origin, shift, clamp, mirror and mask are applied in the shader (`wrapCoord`). The RDP filter field (other modes bits 13-12) was honoured: 0 samples the nearest texel, any other value (bilinear 2 and average 3) runs the 3-point filter; copy-mode rectangles take the texel under the pixel. The game sets bilinear on every draw (`docs/re/display-lists.md`), so every textured draw used the 3-point filter.
+- **Not present:** mip levels (distant tiling textures shimmered), multisampling, any choice of filter.
+
+What it does now (`web/gfx-settings.ts`, key toggles in `web/main.ts`):
+
+- **Resolution.** The 3D image is `canvas CSS width x min(devicePixelRatio, scaleCap)` pixels wide, 4:3, at most 8x320. `scaleCap` defaults to 2 on a coarse pointer and to no cap elsewhere. Scissor, viewport and rectangle edges are rounded to device pixels, so rectangles (HUD, text, copy-mode pictures) meet without seams at a fractional scale; their texture coordinates are not changed.
+- **Filter** (`filter`, key F): `n64` (default) is the console's 3-point filter, now three fetches blended with weights; `smooth` is four-texel bilinear; `sharp` makes every draw nearest. A draw that asks for point sampling stays point in `n64` and `smooth`.
+- **Mip levels and anisotropy** (`mipmaps`, `anisotropy`, key H): in the shader, since the wrap and mirror rules need `texelFetch`. The level comes from the screen derivatives of the texel coordinate; taps (at most `anisotropy`, 4 on desktop, 2 on a coarse pointer) are spread along the long side of the footprint, each filtered with the chosen filter at two levels and blended. Only triangle draws, and only a tile whose mask is zero or equals the texture size (a smaller mask repeats part of a texture, and a level of the whole texture would blend the repeat with its neighbours). Rectangles, the HUD and copy mode never use mip levels. Nothing changes where a texel is magnified.
+- **MSAA x4** (`msaa`, key G): the colour images and the depth buffer are multisampled renderbuffers, resolved into the textures the video interface presents at the end of each task; 0 samples when the browser offers none.
+- **Settings** are stored as JSON in `localStorage['oot.gfx']` (`filter`, `msaa`, `scaleCap`, `mipmaps`, `anisotropy`); a missing, unreadable or invalid field takes its default. The overlay shows the 3D size, filter, samples and shader build time.
+
+Measured with `npx tsx tools/gfx/browser-bench.ts` (`tools/gfx/browser-bench.ts`): headless Chrome on this machine (RTX 4060 Ti, ANGLE/D3D11), 60 Hz mode, the scene of save state 1 (Kokiri Forest, Link in front of the Kokiri house), 8 one-second overlay samples after 4 s. "Before" is the old resolution rule with `msaa`, `mipmaps` off. Mobile is an emulated 844x390 viewport at devicePixelRatio 3 with touch emulation, on the same desktop GPU: it checks the resolution cap and the frame rate, not a phone GPU. Pictures are in `out/tex-filter/` (ROM-derived, not committed).
+
+| Screen | Settings | 3D image | fps | submit ms | GPU ms |
+|---|---|---|---|---|---|
+| desktop, ratio 1 | before | 960x720 | 59.9 | 1.13 | 2.78 |
+| | default (n64, msaa, mips) | 960x720 | 60.1 | 1.14 | 3.69 |
+| | smooth / sharp / no msaa / no mips | 960x720 | 60.0-60.1 | 0.94-1.16 | 2.96-3.56 |
+| desktop, ratio 2 | before | 1280x960 | 60.0 | 0.67 | 2.12 |
+| | default | 1920x1440 | 60.1 | 0.68 | 2.96 |
+| | smooth / sharp / no msaa / no mips | 1920x1440 | 60.1 | 0.81-0.89 | 3.01-3.36 |
+| phone (emulated), ratio 3 | before | 1231x924 | 60.0 | 0.84 | 2.67 |
+| | default (cap 2) | 1624x1218 | 60.1 | 0.84 | 3.16 |
+| | smooth / sharp / no msaa / no mips | 1624x1218 | 60.0-60.1 | 0.66-0.82 | 2.61-3.10 |
+
+**Shader build time** (the overlay's `programs ... ms to build`, which counts the time the page's thread spends compiling and linking; a fresh Chrome profile, so nothing cached, one configuration per run, desktop ratio 1, `--configs before` and `--configs after-default`): 624 ms before, 681 ms with the new default. A first version that built the mip-level programs at first use took 2.2 s. Now a program with mip levels is started in the background (KHR_parallel_shader_compile when the browser has it; otherwise one per task) and the draws use the same program without mip levels until it is ready, so the first frames cost what the old renderer cost and the mip levels appear a few frames later. A mip program that fails to build leaves its draws on the program without mip levels (logged). A table row after the first in a run reuses the profile's program cache, so build times in later rows (40-100 ms) say nothing about a cold start. The scene's display-list time (about 1 ms) and draw calls (146-147) do not change.
+
+- On this GPU nothing reaches the frame budget (GPU 4.5 ms against 16.7 ms), so the numbers say the cost is small here, not that it is small on a phone. A real phone is not measured; `scaleCap`, `anisotropy` and `msaa` are the levers if one is too slow.
+- The tap and level loop has a single filter call to keep the build time down (a version with separate calls per level and tap built far slower: over 1 s of submit time per frame in its window).
+- Until a mip program is ready, distant tiling textures shimmer as before; on a browser without parallel compilation this lasts one task per program.
+- Mip levels are averages of non-premultiplied RGBA, so a cut-out texture (leaves, grates) can lose or darken its edge with distance; not seen in the forest scene, not checked elsewhere.
+- Not checked: other scenes, a real touch device, any effect that reads a colour image back as a texture.
+
 ## Interpolated rendering ("Smooth")
 
 The game produces one picture per game frame: one graphics task every third retrace (a 20 ms video frame at 50 Hz, so 16.7 game frames per second; the 117 tasks of the walking run below were spaced 3 video frames apart every time). (In the 60 Hz mode the video frame is 1/60 s and a game frame still takes three of them, 20 per second; times below are counted in video frames, so the mapping is the same.) With the "Smooth" toggle on, the page draws a picture on every display refresh between the last two game frames. It interpolates the matrices the display lists load, never pixels, and draws with the interpreter's own pipeline (lighting, culling, clipping, textures), so everything that is not a matrix is exactly the current game frame's.
@@ -128,6 +166,22 @@ Fast-forward: smoothing is off while Tab is held, tasks are drawn as they come, 
 ### Browser check
 
 Checked in headless Chrome with software GL (SwiftShader; no real display or GPU): with the toggle on, the title scene (3D camera, Epona and Link, the logo drawn in 2D over it) is drawn correctly, the overlay reports every 3D matrix matched for it, the choice is stored in localStorage (`oot.smooth`) and the button takes no keyboard focus. The displayed fps there is limited by the software GL (35 to 53 ms of GPU time per game frame): 37 fps with smoothing off, 18 with it on. So "a new picture on every refresh of a 60 Hz or faster display" is not measured on a real display; the page draws one per `requestAnimationFrame`.
+### Browser check on a real GPU
+
+Measured with `tools/port/measure-render.ts` (CDP-driven Chrome; `tools/port/make-forest-state.ts` writes the state it loads: the scripted new game at 60 Hz, entrance 238 at frame 19,000, saved at video frame 21,400, scene 85). Chrome 155.0.8059.82, headless (`--use-angle=d3d11 --enable-gpu`), dev build at `-O2`, 60 Hz mode, `EXT_disjoint_timer_query_webgl2` available. WebGL's `UNMASKED_RENDERER_WEBGL`: **ANGLE (NVIDIA, NVIDIA GeForce RTX 4060 Ti, Direct3D11 vs_5_0 ps_5_0)**, so not SwiftShader (the script aborts on a software renderer). **The display refreshes at 120 Hz**: the median `requestAnimationFrame` interval is 8.30 ms (8.33 ms used as the refresh interval, so "over 1.5x" is above 12.5 ms); the game's 60 Hz mode is its video rate, 3 video frames per game frame, so 20 game frames per second and 6 display refreshes per game frame. Link steps left and right on the spot (0.4 s each) in front of his house, so he and the camera move; the script stops if a row's display lists drop below 4,000 commands (he walked into a house: the forest's are 5,000 to 6,500, the houses' about 2,500). Each row is 30 s after an 8 s warm-up (the sliders and toggle are set through the page); the overlay means are the average of 15 samples taken every 2 s. A headed window was tried first and discarded: a window that was covered while the user worked is throttled by Chrome to 1 frame per second, so the headed numbers did not measure the page. Two complete runs agree within 0.1 ms on the intervals and 0.2 ms on the phase means (a third stopped on the forest check); the second:
+
+| Mode | rAF mean (ms) | p95 | p99 | max | frames over 1.5x | game fps | game code (ms) | display lists | submit | CPU per refresh | GPU (per sample) | draw calls per game frame | per refresh |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Smooth off | 8.34 | 8.50 | 8.50 | 9.60 | 0.0 % | 20.0 | 1.489 | 0.922 | 0.778 | 0.53 | 1.974 | 90.3 | 15.0 |
+| Smooth on (strength 100 %, catch-up 100 %) | 8.34 | 8.50 | 8.50 | 8.80 | 0.0 % | 20.0 | 1.399 | 9.376 | 4.285 | 2.50 | 1.788 | 556.8 | 92.4 |
+| Smooth on (strength 50 %, catch-up 50 %) | 8.34 | 8.50 | 8.50 | 8.70 | 0.0 % | 20.1 | 1.348 | 6.719 | 2.894 | 1.83 | 1.748 | 365.9 | 60.9 |
+
+- The overlay's phases are means per game frame, in ms. With Smooth on a game frame contains 6 pictures, so display lists, submit and draw calls per game frame are the sum of 6 (about 93 draw calls each, the same as the 90 of a plain forest frame: the pictures are the same display list with other matrices). "CPU per refresh" is the overlay's total CPU (game code, display lists, submit) divided by the 6 refreshes of a game frame, and "per refresh" draw calls likewise (with Smooth off the game draws 1 picture in 6 refreshes, the other 5 re-show the image).
+- **GPU** is the overlay's value, the mean over timer-query samples: one sample is one task's draws plus the presents since the previous task (`Renderer.collectGpu`), so it is per drawn picture with Smooth on (1.75 to 1.79 ms, 21 % of the 8.33 ms interval) and per game frame (the task plus 3 presents) with Smooth off (1.97 ms).
+- Nothing limits the frame rate: every row keeps the display's 120 Hz (no frame over 1.5 intervals; p99 is the refresh interval to within 0.2 ms; the one 9.6 ms maximum is a single frame), the game keeps 20 game frames per second, and a refresh costs 2.5 ms of CPU and 1.8 ms of GPU at most against 8.33 ms.
+- The costly piece is the CPU side of Smooth, not the draws: the 6 pictures cost 9.4 ms of display-list work (`gfx_run_kept`) and 4.3 ms of submit per game frame, against 0.9 and 0.8 for the plain draw. Submit is 0.7 ms per picture for about 93 draw calls, 8 µs per call.
+- SwiftShader's 18 to 37 fps above is the software rasteriser; on the GPU the same page makes no dropped refresh.
+
 ## Cost of the shadow stack
 
 The generated code keeps a shadow stack of its active calls, so that the threads of a saved state can be rebuilt in another build (`docs/runtime.md`, "Portable save states"). Measured on `-O2` builds of the same sources with and without it, guest alone (no hooks), the scripted new game: 3,000 frames of warm-up, then 16,000 timed video frames, the two wasm files run alternately six times each.
