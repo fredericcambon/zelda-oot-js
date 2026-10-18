@@ -4,6 +4,7 @@ import { useEffect, useState } from 'preact/hooks';
 import { clampWidth, loadPrefs, savePrefs, type PanelPrefs } from './prefs.ts';
 import type { Store } from './store.ts';
 import { DebugTab, GameTab, SavesTab } from './tabs.ts';
+import { WarpTab } from './warp-tab.ts';
 import type { TabProps, UiActions, UiState } from './types.ts';
 import { keepFocus } from './widgets.ts';
 
@@ -18,6 +19,7 @@ interface TabDef {
 const TABS: TabDef[] = [
   { id: 'game', label: 'Game', icon: '🎮', body: GameTab },
   { id: 'saves', label: 'Saves', icon: '💾', body: SavesTab },
+  { id: 'warp', label: 'Warp', icon: '🌀', body: WarpTab },
   { id: 'debug', label: 'Debug', icon: '🐞', body: DebugTab },
 ];
 
@@ -59,7 +61,7 @@ function Shell({ store, actions }: ShellProps): VNode {
   };
 
   const visible = touch ? sheetOpen : !folded;
-  useEffect(() => store.set({ debugVisible: visible && prefs.tab === 'debug' }), [store, visible, prefs.tab]);
+  useEffect(() => store.set({ debugVisible: visible && prefs.tab === 'debug', warpVisible: visible && prefs.tab === 'warp' }), [store, visible, prefs.tab]);
   useEffect(() => {
     document.documentElement.classList.toggle('sheet-open', touch && sheetOpen);
   }, [touch, sheetOpen]);

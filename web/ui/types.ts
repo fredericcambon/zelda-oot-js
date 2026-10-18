@@ -1,5 +1,6 @@
 import type { CullMode } from '../renderer.ts';
 import type { Hz } from '../mode.ts';
+import type { Entrance, WarpSnapshot } from '../inspect/warp.ts';
 
 /** What the panels show; the game loop and the controls write it. */
 export interface UiState {
@@ -22,6 +23,10 @@ export interface UiState {
   debugText: string;
   /** The Debug tab is on screen. */
   debugVisible: boolean;
+  /** The Warp tab is on screen. */
+  warpVisible: boolean;
+  /** The scene, entrance and position of the running game; kept current only while `warpVisible`. */
+  warp: WarpSnapshot;
   /** Mobile: the menu sheet is open, and touch input is ignored. */
   sheetOpen: boolean;
 }
@@ -44,6 +49,10 @@ export interface UiActions {
   loadSaveFile(): void;
   loadIntoPlay(slot: number): void;
   backToFileSelect(): void;
+  /** The entrance table, or null while no game runs. */
+  entrances(): Entrance[] | null;
+  /** Queues a warp to table entry `entry`; the game refuses it with a message in an unsafe state. */
+  warp(entry: number): void;
 }
 
 export interface TabProps {

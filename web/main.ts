@@ -16,7 +16,7 @@ import { FramePacer, loadHz, saveHz, type Hz } from './mode.ts';
 import { AutoStart, fileSelectReached, guestRam } from '../tools/headless/load-save.ts';
 import { backToFileSelect, loadSaveFile, loadSlotIntoPlay, type SaveTarget } from './save-actions.ts';
 import { pickSaveFile } from './save-picker.ts';
-import { Bridge } from './inspect/index.ts';
+import { Bridge, readEntrances, sameSnapshot, snapshot, warpTo } from './inspect/index.ts';
 import { mountUi } from './ui/panel.ts';
 import { Store } from './ui/store.ts';
 import { isTyping } from './ui/typing.ts';
@@ -85,6 +85,8 @@ const store = new Store<UiState>({
   overlayShown: location.hash === '#debug',
   debugText: '',
   debugVisible: false,
+  warpVisible: false,
+  warp: { live: null, refusal: 'no game is running' },
   sheetOpen: false,
 });
 overlay.hidden = !store.get().overlayShown;
@@ -232,7 +234,15 @@ function smoothLines(): string[] {
   return [`smooth: on, ${info.matched} of ${info.threeD} 3D matrices matched (${share.toFixed(1)}%)${info.cut ? ', cut: drawn as is' : ''}, vertices written by the game ${(info.rewritten * 100).toFixed(1)}%`];
 }
 
+function updateWarp(): void {
+  const s = store.get();
+  if (!s.warpVisible) return;
+  const next = snapshot(bridge);
+  if (!sameSnapshot(s.warp, next)) store.set({ warp: next });
+}
+
 function updateOverlay(): void {
+  updateWarp();
   const showing = store.get().debugVisible;
   if (overlay.hidden && !showing) return;
   const s = renderer.stats;
@@ -407,6 +417,11 @@ const actions: UiActions = {
   },
   loadIntoPlay: (slot) => saveAction((target) => loadSlotIntoPlay(target, slot)),
   backToFileSelect: () => saveAction((target) => backToFileSelect(target)),
+  entrances() {
+    const mem = bridge.ram();
+    return mem ? readEntrances(mem) : null;
+  },
+  warp: (entry) => bridge.queue.push(() => warpTo(bridge, entry), 'Warp failed'),
 };
 // Touch input stops while the menu sheet covers the picture.
 store.subscribe(() => {

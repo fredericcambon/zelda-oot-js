@@ -18,7 +18,7 @@ export interface PrefStore {
   setItem(key: string, value: string): void;
 }
 
-function defaultStore(): PrefStore | null {
+export function defaultStore(): PrefStore | null {
   try {
     return localStorage;
   } catch {
