@@ -1,6 +1,7 @@
 import { AudioOutput } from './audio.ts';
 import { startGame, type Game } from './game.ts';
 import { Renderer, type CullMode } from './renderer.ts';
+import { FILTER_MODES, loadSettings, renderScale, saveSettings, type GfxSettings } from './gfx-settings.ts';
 import { loadCartridge } from './cartridge.ts';
 import { Input, mergePads } from './input.ts';
 import { TouchControls } from './touch.ts';
@@ -110,8 +111,9 @@ const setStatus = (text: string, error = false) => {
   status.classList.toggle('error', error);
 };
 
-// Whole multiples of the 320x240 the game addresses, enough to fill the canvas as displayed.
-const displayScale = () => Math.min(4, Math.max(1, Math.ceil((canvas.clientWidth * devicePixelRatio) / 320)));
+let gfx = loadSettings();
+// The 3D image has as many pixels as the canvas has on the display, within the settings' cap.
+const displayScale = () => renderScale(canvas.clientWidth, devicePixelRatio, gfx);
 
 // Started now so the module downloads and compiles while the cartridge image loads.
 const wasm = fetchWasm();
@@ -119,7 +121,7 @@ preloadModule();
 
 let renderer: Renderer;
 try {
-  renderer = new Renderer(canvas, displayScale());
+  renderer = new Renderer(canvas, displayScale(), gfx);
 } catch (err) {
   setStatus(err instanceof Error ? err.message : String(err), true);
   throw err;
@@ -186,6 +188,32 @@ addEventListener('keydown', (e) => {
 });
 
 const CULL_MODES: CullMode[] = ['normal', 'swapped', 'off'];
+
+// F cycles the texture filter, G switches multisampling and H the mip levels with anisotropic taps.
+function changeGfx(change: Partial<GfxSettings>, text: string): void {
+  gfx = { ...gfx, ...change };
+  renderer.setSettings(gfx);
+  if (!saveSettings(gfx)) showNotice('The browser did not keep the graphics settings');
+  else showNotice(text);
+}
+addEventListener('keydown', (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === 'f' || e.key === 'F') {
+    const filter = FILTER_MODES[(FILTER_MODES.indexOf(gfx.filter) + 1) % FILTER_MODES.length]!;
+    changeGfx({ filter }, `Texture filter: ${filter}`);
+  } else if (e.key === 'g' || e.key === 'G') {
+    changeGfx({ msaa: !gfx.msaa }, `Multisampling: ${gfx.msaa ? 'off' : 'on'}`);
+  } else if (e.key === 'h' || e.key === 'H') {
+    changeGfx({ mipmaps: !gfx.mipmaps }, `Mip levels: ${gfx.mipmaps ? 'off' : 'on'}`);
+  }
+});
+let resizeTimer = 0;
+addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = window.setTimeout(() => {
+    if (renderer.resolutionScale !== 1 && Math.abs(displayScale() - renderer.resolutionScale) > 0.01) renderer.setScale(displayScale());
+  }, 200);
+});
 addEventListener('keydown', (e) => {
   if (e.key === 'n' || e.key === 'N') {
     // Native 320x240, shown with hard pixels, for comparing with the console's resolution.
@@ -220,9 +248,9 @@ function updateOverlay(): void {
     `last task: ${s.commands} commands, ${s.batches} batches, ${s.triangles} triangles, ${s.rects} rects`,
     ...(game ? formatBreakdown(game.profiler.breakdown()) : []),
     `unknown commands ${s.unknown}  problems ${s.problems.length}`,
-    `programs ${s.programs}  textures ${s.textures}  colour images ${s.targets}`,
+    `programs ${s.programs} (${s.compileMs.toFixed(0)} ms to build)  textures ${s.textures}  colour images ${s.targets}`,
     game ? `video framebuffer 0x${game.framebuffer().toString(16)}` : '',
-    `culling ${renderer.cullMode}  resolution ${renderer.resolutionScale}x`,
+    `culling ${renderer.cullMode}  resolution ${renderer.resolutionScale.toFixed(2)}x (${canvas.width}x${canvas.height})  filter ${gfx.filter}  msaa ${renderer.msaaSamples || 'off'}  mips ${gfx.mipmaps ? `on, ${gfx.anisotropy} taps` : 'off'}`,
     g ? `audio tasks ${g.audioTasks}  sound ${audio.state === 'running' ? `on, level ${audio.level().toFixed(3)}` : 'off: press a key'}` : '',
     ...audio.status(),
     g?.renderError ? `render error: ${g.renderError}` : '',

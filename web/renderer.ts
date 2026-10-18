@@ -5,6 +5,7 @@ import { mergeRuns, type DrawRun, type Run } from './batching.ts';
 import { GpuTimer } from './gpu-timer.ts';
 import { Geo } from '../tools/gfx/opcodes.ts';
 import { CycleType, cycleTypeOf, fragmentSource, OtherL, shiftScale, specKey, specOf, VERTEX_SHADER, type ShaderSpec } from './shader.ts';
+import { MAX_SCALE, type GfxSettings } from './gfx-settings.ts';
 
 export const SCREEN_W = 320;
 export const SCREEN_H = 240;
@@ -25,6 +26,8 @@ export interface RenderStats {
   unknown: number;
   problems: string[];
   programs: number;
+  /** Milliseconds spent compiling and linking the programs so far. */
+  compileMs: number;
   textures: number;
   targets: number;
 }
@@ -38,12 +41,28 @@ interface GpuTexture {
   texture: WebGLTexture;
   width: number;
   height: number;
+  mipmapped: boolean;
 }
 
 interface Target {
+  /** The finished image, which is what gets presented. */
   texture: WebGLTexture;
   framebuffer: WebGLFramebuffer;
+  /** With multisampling: the buffers drawn into, resolved into `texture` at the end of a task. */
+  samples: { color: WebGLRenderbuffer; framebuffer: WebGLFramebuffer } | null;
+  dirty: boolean;
 }
+
+/** What a renderer made without settings uses: no multisampling, no mip levels. */
+const PLAIN: GfxSettings = { filter: 'n64', msaa: false, scaleCap: 0, mipmaps: false, anisotropy: 1 };
+const MSAA_SAMPLES = 4;
+
+/**
+ * Whether the mip levels of a texture are the right pictures for the tile: a mask smaller than the texture repeats only part
+ * of it, and a level made from the whole texture would blend that repeat with its neighbours.
+ */
+const mipmappable = (tile: { maskS: number; maskT: number }, tex: GpuTexture): boolean =>
+  tex.mipmapped && (tile.maskS === 0 || 1 << tile.maskS === tex.width) && (tile.maskT === 0 || 1 << tile.maskT === tex.height);
 
 const FLOATS_PER_VERTEX = 10;
 const MAX_TEXTURES = 512;
@@ -70,7 +89,7 @@ const physical = (addr: number): number => addr & 0x1fffffff;
 
 export class Renderer {
   cullMode: CullMode = 'normal';
-  readonly stats: RenderStats = { tasks: 0, commands: 0, batches: 0, triangles: 0, rects: 0, drawCalls: 0, unmergedDrawCalls: 0, unknown: 0, problems: [], programs: 0, textures: 0, targets: 0 };
+  readonly stats: RenderStats = { tasks: 0, commands: 0, batches: 0, triangles: 0, rects: 0, drawCalls: 0, unmergedDrawCalls: 0, unknown: 0, problems: [], programs: 0, compileMs: 0, textures: 0, targets: 0 };
 
   private readonly gl: WebGL2RenderingContext;
   /** Called with the GPU milliseconds of each finished game frame (its task plus the presents that followed). */
@@ -84,16 +103,19 @@ export class Renderer {
   private readonly vao: WebGLVertexArrayObject;
   private readonly depth: WebGLRenderbuffer;
   private scale = 1;
+  private settings: GfxSettings;
+  private samples = 0;
   private readonly targets = new Map<number, Target>();
   private readonly textureCache = new Map<number, GpuTexture>();
   private readonly white: GpuTexture;
   private lastTarget: Target | null = null;
   private vertices = new Float32Array(0);
 
-  constructor(readonly canvas: HTMLCanvasElement, scale = 1) {
+  constructor(readonly canvas: HTMLCanvasElement, scale = 1, settings: GfxSettings = PLAIN) {
     const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, preserveDrawingBuffer: true });
     if (!gl) throw new Error('WebGL2 is not available in this browser');
     this.gl = gl;
+    this.settings = { ...settings };
     this.gpuTimer = new GpuTimer(gl);
     this.presentProgram = this.link(PRESENT_VERTEX, PRESENT_FRAGMENT);
     this.buffer = gl.createBuffer()!;
@@ -109,27 +131,65 @@ export class Renderer {
     gl.vertexAttribPointer(2, 2, gl.FLOAT, false, stride, 32);
     this.depth = gl.createRenderbuffer()!;
     this.setScale(scale);
-    this.white = this.upload(1, 1, Uint8Array.of(255, 255, 255, 255));
+    this.white = this.upload(1, 1, Uint8Array.of(255, 255, 255, 255), false);
   }
 
   /** Renders at `scale` times the 320x240 the game addresses; the colour images are dropped and redrawn by the game. */
   setScale(scale: number): void {
     const gl = this.gl;
-    this.scale = Math.max(1, Math.round(scale));
-    this.canvas.width = SCREEN_W * this.scale;
-    this.canvas.height = SCREEN_H * this.scale;
-    for (const t of this.targets.values()) {
-      gl.deleteTexture(t.texture);
-      gl.deleteFramebuffer(t.framebuffer);
-    }
+    this.scale = Math.min(MAX_SCALE, Math.max(1, Number.isFinite(scale) ? scale : 1));
+    this.canvas.width = Math.round(SCREEN_W * this.scale);
+    this.canvas.height = Math.round(SCREEN_H * this.scale);
+    for (const t of this.targets.values()) this.deleteTarget(t);
     this.targets.clear();
     this.lastTarget = null;
+    this.samples = this.settings.msaa ? this.supportedSamples() : 0;
     gl.bindRenderbuffer(gl.RENDERBUFFER, this.depth);
-    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, this.canvas.width, this.canvas.height);
+    if (this.samples > 0) gl.renderbufferStorageMultisample(gl.RENDERBUFFER, this.samples, gl.DEPTH_COMPONENT24, this.canvas.width, this.canvas.height);
+    else gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, this.canvas.width, this.canvas.height);
+  }
+
+  /** Applies new options; the colour images and the cached textures are dropped and rebuilt as the game draws. */
+  setSettings(settings: GfxSettings): void {
+    this.settings = { ...settings };
+    this.setScale(this.scale);
+    this.clearTextures();
+  }
+
+  get options(): Readonly<GfxSettings> {
+    return this.settings;
   }
 
   get resolutionScale(): number {
     return this.scale;
+  }
+
+  /** Samples per pixel of the 3D framebuffer in use (0 without multisampling). */
+  get msaaSamples(): number {
+    return this.samples;
+  }
+
+  /** The largest sample count up to four that both the colour and the depth format offer, 0 when there is none. */
+  private supportedSamples(): number {
+    const gl = this.gl;
+    const offered = (format: number): number[] => Array.from(gl.getInternalformatParameter(gl.RENDERBUFFER, format, gl.SAMPLES) ?? []);
+    const depth = offered(gl.DEPTH_COMPONENT24);
+    return offered(gl.RGBA8).filter((n) => n <= MSAA_SAMPLES && depth.includes(n)).sort((a, b) => b - a)[0] ?? 0;
+  }
+
+  /** Device pixels from a position in the 320x240 the game addresses. */
+  private devX(x: number): number {
+    return Math.round((x * this.canvas.width) / SCREEN_W);
+  }
+
+  private devY(y: number): number {
+    return Math.round((y * this.canvas.height) / SCREEN_H);
+  }
+
+  /** Scissors to the rectangle with corners (x0, y0) and (x1, y1) in the 320x240 the game addresses, y down. */
+  private setScissor(x0: number, y0: number, x1: number, y1: number): void {
+    const left = this.devX(x0), top = this.devY(y0), bottom = this.devY(y1);
+    this.gl.scissor(left, this.canvas.height - bottom, this.devX(x1) - left, bottom - top);
   }
 
   // ---- Frame interface ---------------------------------------------------------------------------------------------
@@ -153,6 +213,7 @@ export class Renderer {
     try {
       this.drawRuns(mergeRuns(result.batches));
     } finally {
+      this.resolveTargets();
       this.gpuTimer.end();
     }
     s.programs = this.programs.size;
@@ -216,20 +277,57 @@ export class Renderer {
       const framebuffer = gl.createFramebuffer()!;
       gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
-      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, this.depth);
+      let samples: Target['samples'] = null;
+      if (this.samples > 0) {
+        const color = gl.createRenderbuffer()!;
+        gl.bindRenderbuffer(gl.RENDERBUFFER, color);
+        gl.renderbufferStorageMultisample(gl.RENDERBUFFER, this.samples, gl.RGBA8, this.canvas.width, this.canvas.height);
+        const multisampled = gl.createFramebuffer()!;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, multisampled);
+        gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, color);
+        gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, this.depth);
+        samples = { color, framebuffer: multisampled };
+      } else gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, this.depth);
       gl.disable(gl.SCISSOR_TEST);
+      gl.colorMask(true, true, true, true);
       gl.clearColor(0, 0, 0, 1);
       gl.clear(gl.COLOR_BUFFER_BIT);
-      t = { texture, framebuffer };
+      t = { texture, framebuffer, samples, dirty: samples !== null };
       this.targets.set(key, t);
     }
     return t;
   }
 
+  private deleteTarget(t: Target): void {
+    const gl = this.gl;
+    gl.deleteTexture(t.texture);
+    gl.deleteFramebuffer(t.framebuffer);
+    if (t.samples) {
+      gl.deleteRenderbuffer(t.samples.color);
+      gl.deleteFramebuffer(t.samples.framebuffer);
+    }
+  }
+
   private bindTarget(address: number): void {
     const t = this.target(address);
-    this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, t.framebuffer);
+    this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, t.samples ? t.samples.framebuffer : t.framebuffer);
+    t.dirty = true;
     this.lastTarget = t;
+  }
+
+  /** Copies the multisampled buffers drawn into since the last resolve into the images that get presented. */
+  private resolveTargets(): void {
+    if (this.samples === 0) return;
+    const gl = this.gl;
+    const { width, height } = this.canvas;
+    gl.disable(gl.SCISSOR_TEST);
+    for (const t of this.targets.values()) {
+      if (!t.dirty || !t.samples) continue;
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, t.samples.framebuffer);
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, t.framebuffer);
+      gl.blitFramebuffer(0, 0, width, height, 0, 0, width, height, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+      t.dirty = false;
+    }
   }
 
   // ---- Batches -----------------------------------------------------------------------------------------------------
@@ -280,8 +378,7 @@ export class Renderer {
     const x1 = Math.min(sc.x + sc.w, (b.xl >> 2) + 1), y1 = Math.min(sc.y + sc.h, (b.yl >> 2) + 1);
     if (x1 <= x0 || y1 <= y0) return;
     gl.enable(gl.SCISSOR_TEST);
-    const k = this.scale;
-    gl.scissor(x0 * k, (SCREEN_H - y1) * k, (x1 - x0) * k, (y1 - y0) * k);
+    this.setScissor(x0, y0, x1, y1);
     gl.colorMask(true, true, true, true);
     gl.depthMask(true);
     if (physical(b.state.colorImage.addr) === physical(b.state.depthImage)) {
@@ -323,9 +420,12 @@ export class Renderer {
     const stepS = b.dsdx / 1024 / (cycleTypeOf(state.otherModeH) === CycleType.COPY ? 4 : 1);
     const stepT = b.dtdy / 1024;
     const s0 = b.s / 32, t0 = b.t / 32;
+    // Edges sit on device pixels, so neighbouring rectangles meet without a seam or a doubled row.
+    const snapX = (px: number) => this.devX(px) / this.canvas.width;
+    const snapY = (py: number) => this.devY(py) / this.canvas.height;
     const corner = (px: number, py: number, o: number) => {
-      v[o] = (px / SCREEN_W) * 2 - 1;
-      v[o + 1] = 1 - (py / SCREEN_H) * 2;
+      v[o] = snapX(px) * 2 - 1;
+      v[o + 1] = 1 - snapY(py) * 2;
       v[o + 2] = 0;
       v[o + 3] = 1;
       v[o + 4] = v[o + 5] = v[o + 6] = v[o + 7] = 1;
@@ -345,11 +445,11 @@ export class Renderer {
   private draw(run: DrawRun, first: number, count: number): void {
     const gl = this.gl;
     const state = run.state;
-    const spec = specOf(state);
+    const spec = specOf(state, { filter: this.settings.filter, mip: this.settings.mipmaps && run.triangles });
     const program = this.program(spec);
     gl.useProgram(program.gl);
     this.applyRaster(state, run.triangles, spec);
-    this.applyUniforms(program, state, run.triangles);
+    this.applyUniforms(program, state, run.triangles, spec.mip);
     gl.drawArrays(gl.TRIANGLES, first, count);
     this.stats.drawCalls++;
   }
@@ -361,8 +461,7 @@ export class Renderer {
     gl.colorMask(true, true, true, true);
     const sc = this.scissorRect(state);
     gl.enable(gl.SCISSOR_TEST);
-    const k = this.scale;
-    gl.scissor(sc.x * k, (SCREEN_H - sc.y - sc.h) * k, sc.w * k, sc.h * k);
+    this.setScissor(sc.x, sc.y, sc.x + sc.w, sc.y + sc.h);
 
     const vp = state.viewport;
     if (triangles && vp.scale[0] !== 0 && vp.scale[1] !== 0) {
@@ -370,7 +469,8 @@ export class Renderer {
       // twice the screen's size (runtime/gfx/dl.c), and the vertex shader halves x and y, so that this guard band is the clip volume.
       const hw = Math.abs(vp.scale[0]) / 4, hh = Math.abs(vp.scale[1]) / 4;
       const cx = vp.trans[0] / 4, cy = vp.trans[1] / 4;
-      gl.viewport(Math.round((cx - 2 * hw) * k), Math.round((SCREEN_H - (cy + 2 * hh)) * k), Math.round(hw * 4 * k), Math.round(hh * 4 * k));
+      const left = this.devX(cx - 2 * hw), top = this.devY(cy - 2 * hh), bottom = this.devY(cy + 2 * hh);
+      gl.viewport(left, this.canvas.height - bottom, this.devX(cx + 2 * hw) - left, bottom - top);
     } else gl.viewport(0, 0, this.canvas.width, this.canvas.height);
 
     if (spec.framebufferBlend) {
@@ -404,7 +504,7 @@ export class Renderer {
     } else gl.disable(gl.CULL_FACE);
   }
 
-  private applyUniforms(program: Program, state: DrawState, triangles: boolean): void {
+  private applyUniforms(program: Program, state: DrawState, triangles: boolean, mip: boolean): void {
     const gl = this.gl;
     const u = (name: string) => this.uniform(program, name);
     const p = state.primColor, e = state.envColor, f = state.fogColor, bl = state.blendColor;
@@ -413,6 +513,7 @@ export class Renderer {
     gl.uniform4f(u('uFog'), f.r / 255, f.g / 255, f.b / 255, f.a / 255);
     gl.uniform4f(u('uBlend'), bl.r / 255, bl.g / 255, bl.b / 255, bl.a / 255);
     gl.uniform1f(u('uPrimLod'), p.lodFrac / 255);
+    gl.uniform1f(u('uAniso'), this.settings.anisotropy);
     gl.uniform1f(u('uXyScale'), state.viewport.scale[0] !== 0 && state.viewport.scale[1] !== 0 && triangles ? 0.5 : 1);
 
     const a = new Float32Array(8), m = new Float32Array(8), c = new Float32Array(8);
@@ -425,7 +526,7 @@ export class Renderer {
       gl.uniform1i(u(`uTex${i}`), i);
       a.set([tex.width, tex.height, tile ? tile.uls / 4 : 0, tile ? tile.ult / 4 : 0], i * 4);
       m.set(tile ? [tile.maskS, tile.maskT, tile.cmS, tile.cmT] : [0, 0, 0, 0], i * 4);
-      c.set(tile ? [shiftScale(tile.shiftS), shiftScale(tile.shiftT), 0, 0] : [1, 1, 0, 0], i * 4);
+      c.set(tile ? [shiftScale(tile.shiftS), shiftScale(tile.shiftT), mip && mipmappable(tile, tex) ? 1 : 0, 0] : [1, 1, 0, 0], i * 4);
     }
     gl.uniform4fv(u('uTexA'), a);
     gl.uniform4fv(u('uTexB'), m);
@@ -455,7 +556,9 @@ export class Renderer {
     const key = specKey(spec);
     let p = this.programs.get(key);
     if (!p) {
+      const started = performance.now();
       p = this.link(VERTEX_SHADER, fragmentSource(spec));
+      this.stats.compileMs += performance.now() - started;
       this.programs.set(key, p);
     }
     return p;
@@ -470,16 +573,17 @@ export class Renderer {
     return loc;
   }
 
-  private upload(width: number, height: number, rgba: Uint8Array): GpuTexture {
+  private upload(width: number, height: number, rgba: Uint8Array, mipmaps = this.settings.mipmaps): GpuTexture {
     const gl = this.gl;
     const texture = gl.createTexture()!;
     gl.activeTexture(gl.TEXTURE0 + UPLOAD_UNIT);
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, mipmaps ? gl.NEAREST_MIPMAP_NEAREST : gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    return { texture, width, height };
+    if (mipmaps) gl.generateMipmap(gl.TEXTURE_2D);
+    return { texture, width, height, mipmapped: mipmaps };
   }
 
   private clearTextures(): void {
