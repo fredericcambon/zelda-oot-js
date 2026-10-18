@@ -34,8 +34,8 @@ describe('report blocks', () => {
       frames: 10, startFrame: 1, sceneRecords: 2, restarts: 1, rspTasks: [{ type: 1, ucode: 5, count: op }],
       graphicsOpcodes: { '05': op }, audioOpcodes: {},
       results: [{
-        entrance, scene: 0, spawn: 0, variant: 0, forced: entrance, effective: entrance, effectiveScene: 0, newFunctions: 0, outsideRdram: [], status: 'ok', reachedScene: 0, frames: 10, gfxTasks: 1, primitivesAtEnd: 1, blank: 'no',
-        unknownCommands: {}, unknownSamples: {}, unknownAudio: {}, problems: [], dumps: [],
+        entrance, age: 'child', scene: 0, spawn: 0, variant: 0, forced: entrance, effective: entrance, effectiveScene: 0, newFunctions: 0, outsideRdram: [], status: 'ok', reachedScene: 0, frames: 10, gfxTasks: 1, primitivesAtEnd: 1, blank: 'no',
+        unknownCommands: {}, unknownSamples: {}, unknownAudio: {}, audioRange: 0, problems: [], dumps: [],
       }],
       coverage: { functions: [0x80000400 + entrance * 4], osCalls: [[1, op]], outsideRdram: [] },
     });
@@ -70,7 +70,7 @@ describe.skipIf(!rom || !existsSync(rom))('gap sweep', () => {
     expect(s.graphics.table.filter((r) => r.status === 'implemented').length).toBeGreaterThan(30);
     expect(s.graphics.table.find((r) => r.op === 0xdf)?.status).toBe('implemented');
     expect(s.audio.table).toHaveLength(24);
-    expect(s.audio.table.filter((r) => r.status === 'missing').map((r) => r.op)).toEqual([0x00, 0x03, 0x04, 0x06, 0x17]);
+    expect(s.audio.table.filter((r) => r.status === 'missing').map((r) => r.op)).toEqual([]);
     expect(s.os.entries.length).toBeGreaterThan(100);
     expect(s.os.entries.filter((e) => e.disposition === 'replaced').length).toBeGreaterThan(50);
     expect(s.os.mmio.length).toBeGreaterThan(0);
@@ -87,7 +87,7 @@ describe.skipIf(!rom || !existsSync(rom))('gap sweep', () => {
     const { dist, inventory } = buildGame();
     const entrances = [0, 5, 100, 205, 465];
     const dumpDir = join(work, 'frames');
-    const report = await sweepScenes({ dist, entrances, frames: 60, startFrame: 19000, input: inputPath, dumpDir, dumpsPerScene: 1, log: () => {} });
+    const report = await sweepScenes({ dist, entrances, ages: ['child'], frames: 60, startFrame: 19000, input: inputPath, dumpDir, dumpsPerScene: 1, log: () => {} });
     expect(report.results.map((r) => r.entrance)).toEqual(entrances);
     for (const r of report.results) {
       expect(r.status, `entrance ${r.entrance}`).toBe('ok');
@@ -103,7 +103,7 @@ describe.skipIf(!rom || !existsSync(rom))('gap sweep', () => {
     const s = staticSweep(loadContext(rom!), inventory, resolve('runtime'), interpreter);
     writeFileSync(join(work, 'scenes.json'), JSON.stringify(report));
     writeFileSync(join(work, 'report.md'), `${renderStatic(s, report)}\n${renderScenes(report, s)}`);
-    expect(readFileSync(join(work, 'report.md'), 'utf8')).toContain('Sweep of 5 entrances');
+    expect(readFileSync(join(work, 'report.md'), 'utf8')).toContain('Sweep of 5 entrances as child');
   }, 900_000);
 
   it('runs well above 3 frames per second with the display lists interpreted', async () => {

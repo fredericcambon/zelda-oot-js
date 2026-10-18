@@ -10,8 +10,10 @@ import { encodePng } from '../gfx/png.ts';
 import { HEIGHT, SoftRenderer, WIDTH } from '../gfx/raster.ts';
 import { bootGame, type CoverageSnapshot, type Game } from '../headless/boot.ts';
 import { padAt, parseInput, type InputScript } from '../headless/input.ts';
+import { Synth } from '../audio/synth.ts';
+import { findShortLoop } from './loops.ts';
 import { mixerAccepts } from './static.ts';
-import { ENTRANCE_COUNT, ENTRANCE_TABLE, playState, requestEntrance, SCENE_RECORD_SIZE, SCENE_TABLE, SETUP_VARIANT } from '../headless/state.ts';
+import { ENTRANCE_COUNT, ENTRANCE_TABLE, playState, requestEntrance, SCENE_RECORD_SIZE, SCENE_TABLE, SETUP_FLAG, SETUP_VARIANT } from '../headless/state.ts';
 
 /** Frames drawn before a dumped frame, so that its colour image is complete. */
 const DRAW_LEAD = 8;
@@ -23,9 +25,16 @@ export const DEFAULT_START_FRAME = 19000;
 /** `not-reached`: the play state shows another scene than the table names. */
 export type EntranceStatus = 'ok' | 'trap' | 'halted' | 'invalid-scene' | 'left-play-state' | 'not-reached';
 
+/**
+ * The age the run is made as. The flag at SETUP_FLAG chooses the setup layers (non-zero: 0 and 1, zero: 2 and 3, `setupVariantFor`);
+ * the new game, a child, has it non-zero (checked when the sweep starts).
+ */
+export type Age = 'child' | 'adult';
+
 export interface EntranceResult {
   /** The table entry the run aims at. */
   entrance: number;
+  age: Age;
   /** Scene and spawn that entry names. */
   scene: number;
   spawn: number;
@@ -57,6 +66,9 @@ export interface EntranceResult {
   unknownSamples: Record<string, string>;
   /** Audio opcodes the mixer rejects, with counts. */
   unknownAudio: Record<string, number>;
+  /** Peak-to-peak range of the last 8192 mono samples the game queued, and the period in samples when they repeat exactly. */
+  audioRange: number;
+  audioLoop?: number;
   problems: string[];
   dumps: string[];
 }
@@ -83,6 +95,7 @@ export interface SceneSweepReport {
 export interface SweepOptions {
   dist: string;
   entrances: number[];
+  ages: Age[];
   frames: number;
   startFrame: number;
   /** The controller script that plays the new game up to the start frame. */
@@ -107,6 +120,8 @@ class Collector {
   unknownSamples: Record<string, string> = {};
   unknownAudio: Record<string, number> = {};
   problems = new Set<string>();
+  /** Mono samples (left and right averaged) the game queued to the audio interface. */
+  pcm: Int16Array[] = [];
   recent: number[] = [];
   retrace = 0;
   /** Whether the display lists of the tasks now arriving are drawn into the software renderer. */
@@ -128,6 +143,7 @@ class Session {
     // The display lists of the scripted start are not interpreted: nothing of it is reported and it is most of the run's time.
     let replaying = true;
     const soft = new SoftRenderer();
+    const synth = new Synth();
     const game = await bootGame(pathToFileURL(resolve(opts.dist, 'oot.js')).href, cartridge, {
       onGfxTask: (task) => {
         if (replaying) return;
@@ -144,10 +160,23 @@ class Session {
         const c = collector.current;
         const view = new DataView(task.ram.buffer, task.ram.byteOffset, task.ram.byteLength);
         for (let at = task.data & 0x7ffff8; at + 8 <= (task.data & 0x7ffff8) + task.size; at += 8) {
-          const op = view.getUint32(at) >>> 24;
+          const op = (view.getUint32(at) >>> 24) & 0x7f;
           bump(total.audio, opKey(op));
           if (!AUDIO_OPCODES.has(op)) bump(c.unknownAudio, opKey(op));
         }
+        try {
+          synth.run(task.ram, { list: task.data & 0x1fffffff, size: task.size, dataSegment: task.microcodeData & 0x1fffffff });
+        } catch (err) {
+          if (c.problems.size < 8) c.problems.add(`audio: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      },
+      onAiBuffer: (buffer) => {
+        if (replaying) return;
+        const at = buffer.addr & 0x7fffff;
+        const dv = new DataView(buffer.ram.buffer, buffer.ram.byteOffset + at, buffer.length);
+        const mono = new Int16Array(buffer.length >> 2);
+        for (let i = 0; i < mono.length; i++) mono[i] = (dv.getInt16(i * 4) + dv.getInt16(i * 4 + 2)) >> 1;
+        collector.current.pcm.push(mono);
       },
     });
     const session = new Session(game, collector, soft, total);
@@ -276,12 +305,14 @@ export async function sweepScenes(opts: SweepOptions): Promise<SceneSweepReport>
   const dumped = new Map<number, number>();
   if (opts.dumpDir) mkdirSync(resolve(opts.dumpDir), { recursive: true });
 
-  for (const entrance of opts.entrances) {
+  const childFlag = session.game.rd32(SETUP_FLAG);
+  if (childFlag === 0) throw new Error('the scripted new game starts with the age flag clear; the sweep cannot tell the ages apart');
+  for (const entrance of opts.entrances) for (const age of opts.ages) {
     const info = table[entrance];
     if (!info) throw new Error(`entrance ${entrance} is outside the table of ${ENTRANCE_COUNT}`);
     const base: EntranceResult = {
-      entrance, scene: info.scene, spawn: info.spawn, variant: 0, forced: entrance, effective: entrance, effectiveScene: null, newFunctions: 0, outsideRdram: [], status: 'ok', reachedScene: null, frames: 0, gfxTasks: 0, primitivesAtEnd: 0, blank: 'no',
-      unknownCommands: {}, unknownSamples: {}, unknownAudio: {}, problems: [], dumps: [],
+      entrance, age, scene: info.scene, spawn: info.spawn, variant: 0, forced: entrance, effective: entrance, effectiveScene: null, newFunctions: 0, outsideRdram: [], status: 'ok', reachedScene: null, frames: 0, gfxTasks: 0, primitivesAtEnd: 0, blank: 'no',
+      unknownCommands: {}, unknownSamples: {}, unknownAudio: {}, audioRange: 0, problems: [], dumps: [],
     };
     if (info.scene < 0 || info.scene >= report.sceneRecords) {
       report.results.push({ ...base, status: 'invalid-scene' });
@@ -297,10 +328,12 @@ export async function sweepScenes(opts: SweepOptions): Promise<SceneSweepReport>
     }
     const collector = session.begin();
     const before = session.game.coverage();
+    session.write32(SETUP_FLAG, age === 'child' ? childFlag : 0);
     const forced = requestEntrance(session.game.rd32, session.write32, play, entrance);
-    const wantDumps = opts.dumpDir && (dumped.get(info.scene) ?? 0) === 0;
+    const dumpKey = info.scene * 2 + (age === 'child' ? 0 : 1);
+    const wantDumps = opts.dumpDir && (dumped.get(dumpKey) ?? 0) === 0;
     const dumpFrames = wantDumps ? Array.from({ length: opts.dumpsPerScene }, (_, k) => Math.round((opts.frames * (k + 1)) / opts.dumpsPerScene)) : [];
-    if (wantDumps) dumped.set(info.scene, opts.dumpsPerScene);
+    if (wantDumps) dumped.set(dumpKey, opts.dumpsPerScene);
     const result: EntranceResult = { ...base, forced };
     let lastImage: Uint8Array | undefined;
     for (let k = 1; k <= opts.frames; k++) {
@@ -320,7 +353,7 @@ export async function sweepScenes(opts: SweepOptions): Promise<SceneSweepReport>
         const img = session.soft.image(session.game.framebuffer());
         if (img) {
           lastImage = img.slice();
-          const name = `entrance-${String(entrance).padStart(4, '0')}-scene-${info.scene}-frame-${k}.png`;
+          const name = `entrance-${String(entrance).padStart(4, '0')}-scene-${info.scene}-${age}-frame-${k}.png`;
           writeFileSync(join(resolve(opts.dumpDir!), name), encodePng(WIDTH, HEIGHT, img));
           result.dumps.push(name);
         }
@@ -332,6 +365,10 @@ export async function sweepScenes(opts: SweepOptions): Promise<SceneSweepReport>
     result.unknownSamples = collector.unknownSamples;
     result.unknownAudio = collector.unknownAudio;
     result.problems = [...collector.problems];
+    const pcm = new Int16Array(collector.pcm.reduce((n, c) => n + c.length, 0));
+    collector.pcm.reduce((at, c) => (pcm.set(c, at), at + c.length), 0);
+    result.audioRange = pcm.length === 0 ? 0 : Math.max(...pcm.subarray(-8192)) - Math.min(...pcm.subarray(-8192));
+    result.audioLoop = findShortLoop(pcm)?.period;
     result.reachedScene = playState(session.game.rd32)?.scene ?? null;
     result.variant = session.game.rd32(SETUP_VARIANT);
     result.effective = forced + result.variant;
@@ -350,7 +387,7 @@ export async function sweepScenes(opts: SweepOptions): Promise<SceneSweepReport>
       else if (lastImage && nonFlatPixels(lastImage) === 0) result.blank = 'single-colour';
     }
     report.results.push(result);
-    opts.log(`entrance ${entrance} (scene ${info.scene} spawn ${info.spawn}): ${result.status}, reached ${result.reachedScene ?? 'none'}${result.blank === 'no' ? '' : `, ${result.blank}`}${result.trap ? `, ${result.trap}` : ''}`);
+    opts.log(`entrance ${entrance} ${age} (scene ${info.scene} spawn ${info.spawn}): ${result.status}, reached ${result.reachedScene ?? 'none'}${result.blank === 'no' ? '' : `, ${result.blank}`}${result.trap ? `, ${result.trap}` : ''}`);
     // A game that did not take the entrance may be stuck in a state that would swallow the next one too.
     if (result.status === 'trap' || result.status === 'halted' || result.status === 'not-reached') {
       absorb(session.game);
@@ -385,7 +422,7 @@ export function mergeReports(reports: SceneSweepReport[]): SceneSweepReport {
   }
   const merged: SceneSweepReport = {
     ...first,
-    results: reports.flatMap((r) => r.results).sort((a, b) => a.entrance - b.entrance),
+    results: reports.flatMap((r) => r.results).sort((a, b) => a.entrance - b.entrance || a.age.localeCompare(b.age)),
     graphicsOpcodes: sum((r) => r.graphicsOpcodes), audioOpcodes: sum((r) => r.audioOpcodes), rspTasks: [...tasks.values()],
     restarts: reports.reduce((n, r) => n + r.restarts, 0),
   };

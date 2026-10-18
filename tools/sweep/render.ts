@@ -94,7 +94,8 @@ function countBy(items: string[]): Record<string, number> {
   return out;
 }
 
-function compactRanges(values: number[]): string {
+function compactRanges(all: number[]): string {
+  const values = [...new Set(all)].sort((a, b) => a - b);
   const out: string[] = [];
   for (let i = 0; i < values.length; ) {
     let j = i;
@@ -110,7 +111,8 @@ export function renderScenes(report: SceneSweepReport, s: StaticSweep): string {
   const results = report.results;
   const swept = results.filter((r) => r.status !== 'invalid-scene');
   const by = countBy(results.map((r) => r.status));
-  out.push(`Sweep of ${results.length} entrances (${swept.length} run, ${by['invalid-scene'] ?? 0} skipped as invalid), ${report.frames} video frames each, from the game under control at frame ${report.startFrame}; ${report.restarts} game instance(s) started (1 + recoveries).\n`);
+  const ages = [...new Set(results.map((r) => r.age))];
+  out.push(`Sweep of ${new Set(results.map((r) => r.entrance)).size} entrances as ${ages.join(' and ')} (${results.length} runs: ${swept.length} run, ${by['invalid-scene'] ?? 0} skipped as invalid), ${report.frames} video frames each, from the game under control at frame ${report.startFrame}; ${report.restarts} game instance(s) started (1 + recoveries).\n`);
   out.push(`Status: ${Object.entries(by).map(([k, v]) => `${v} ${k}`).join(', ')}. Blank: ${Object.entries(countBy(swept.map((r) => r.blank))).map(([k, v]) => `${v} ${k}`).join(', ')}.\n`);
 
   type Result = (typeof results)[number];
@@ -148,8 +150,29 @@ export function renderScenes(report: SceneSweepReport, s: StaticSweep): string {
   out.push('\nEntrances after which the play state shows another scene than the entry the game loaded (index plus setup variant) names. The game redirects some entries itself, and an entry with a cutscene setup shifts the variant:\n');
   const redirected = swept.filter((r) => r.status === 'not-reached');
   out.push(redirected.length === 0 ? 'none.' : table(['Entrance', 'Table scene', 'Variant', 'Loaded entry', 'Its scene', 'Reached scene'], redirected.map((r) => [
-    String(r.entrance), String(r.scene), String(r.variant), String(r.effective), String(r.effectiveScene ?? '–'), String(r.reachedScene ?? '–'),
+    `${r.entrance} (${r.age})`, String(r.scene), String(r.variant), String(r.effective), String(r.effectiveScene ?? '–'), String(r.reachedScene ?? '–'),
   ])));
+
+  out.push('\nEvery remaining failure, by scene, age and command (a short loop is output whose last 8192 samples repeat exactly at the period given, in samples at about 32 kHz; the entrances are table entries):\n');
+  const rows = new Map<string, { kind: string; what: string; scene: number; age: string; entrances: number[] }>();
+  const fail = (r: Result, kind: string, what: string) => {
+    const scene = r.effectiveScene ?? r.scene;
+    const key = `${kind}|${what}|${scene}|${r.age}`;
+    const row = rows.get(key) ?? { kind, what, scene, age: r.age, entrances: [] };
+    row.entrances.push(r.entrance);
+    rows.set(key, row);
+  };
+  for (const r of swept) {
+    if (r.status === 'trap' || r.status === 'halted') fail(r, r.status, r.trap ?? '');
+    for (const k of Object.keys(r.unknownCommands)) fail(r, 'display list', `\`${k}\``);
+    for (const k of Object.keys(r.unknownAudio)) fail(r, 'audio command', `\`${k}\``);
+    for (const p of r.problems) if (p.startsWith('audio:')) fail(r, 'audio error', p);
+    if (r.audioLoop !== undefined) fail(r, 'audio short loop', `period ${r.audioLoop}`);
+  }
+  out.push(rows.size === 0 ? 'none.' : table(['Kind', 'Command or message', 'Scene', 'Age', 'Entrances'], [...rows.values()].sort((a, b) => a.kind.localeCompare(b.kind) || a.what.localeCompare(b.what) || a.scene - b.scene || a.age.localeCompare(b.age))
+    .map((x) => [x.kind, x.what, String(x.scene), x.age, compactRanges(x.entrances.sort((p, q) => p - q))])));
+  const audible = swept.filter((r) => r.audioRange >= 512).length;
+  out.push(`\n${audible} of ${swept.length} runs were audible at the end (peak-to-peak range of the last 8192 samples at least 512); ${swept.filter((r) => r.audioLoop !== undefined).length} of them repeat a short stretch exactly.\n`);
 
   out.push('\nExecuted RSP tasks: ' + report.rspTasks.map((k) => `type ${k.type} microcode \`${hex(k.ucode)}\` ×${k.count}`).join('; ') + '.\n');
   out.push('Graphics opcodes executed (opcode ×count): ' + Object.entries(report.graphicsOpcodes).sort().map(([k, v]) => `\`${k}\`×${v}`).join(' ') + '.\n');
@@ -158,7 +181,7 @@ export function renderScenes(report: SceneSweepReport, s: StaticSweep): string {
   out.push('Audio opcodes executed (opcode ×count): ' + Object.entries(report.audioOpcodes).sort().map(([k, v]) => `\`${k}\`×${v}`).join(' ') + '.\n');
   const audioMissing = s.audio.table.filter((r) => r.status === 'missing').map((r) => r.op);
   const audioNever = s.audio.table.filter((r) => r.status === 'implemented' && !(r.op.toString(16).padStart(2, '0') in report.audioOpcodes)).map((r) => `\`${r.op.toString(16)}\``);
-  out.push(`Audio opcodes the mixer lacks: ${audioMissing.map((o) => `\`${o.toString(16)}\``).join(', ')}; of the implemented ones, never executed: ${audioNever.join(', ') || 'none'}.\n`);
+  out.push(`Audio opcodes the mixer lacks: ${audioMissing.map((o) => `\`${o.toString(16)}\``).join(', ') || 'none'}; of the implemented ones, never executed: ${audioNever.join(', ') || 'none'}.\n`);
 
   if (report.coverage) {
     const c = report.coverage;
