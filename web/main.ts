@@ -66,8 +66,9 @@ smoothToggle.addEventListener('click', () => {
 const tuneInput = (id: string, key: string): HTMLInputElement => {
   const input = document.getElementById(id) as HTMLInputElement;
   try {
-    const stored = Number(localStorage.getItem(key));
-    if (localStorage.getItem(key) !== null && stored >= Number(input.min) && stored <= Number(input.max)) input.value = String(stored);
+    const raw = localStorage.getItem(key);
+    const stored = Number(raw);
+    if (raw !== null && stored >= Number(input.min) && stored <= Number(input.max)) input.value = String(stored);
   } catch {
     // Storage may be blocked; the default stays.
   }
@@ -292,7 +293,6 @@ async function loop(): Promise<void> {
     }
     // Fast-forward runs frames back to back and has no time for in-between pictures.
     game?.setSmooth(smoothOn && !fastForward.active);
-    applyTuning();
     const now = performance.now();
     let due = pacer.advance(now - last);
     last = now;
@@ -368,6 +368,7 @@ async function boot(): Promise<void> {
       console.error('save states are not available:', err);
     }
     game = started;
+    applyTuning();
     setStatus('Running');
     void loop();
   } catch (err) {
