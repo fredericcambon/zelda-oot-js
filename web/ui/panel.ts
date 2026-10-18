@@ -4,6 +4,7 @@ import { useEffect, useState } from 'preact/hooks';
 import { clampWidth, loadPrefs, savePrefs, type PanelPrefs } from './prefs.ts';
 import type { Store } from './store.ts';
 import { DebugTab, GameTab, SavesTab } from './tabs.ts';
+import { ActorsTab } from './actors-tab.ts';
 import { MemoryTab } from './memory-tab.ts';
 import { InventoryTab } from './inventory-tab.ts';
 import { WarpTab } from './warp-tab.ts';
@@ -23,6 +24,7 @@ const TABS: TabDef[] = [
   { id: 'saves', label: 'Saves', icon: '💾', body: SavesTab },
   { id: 'warp', label: 'Warp', icon: '🌀', body: WarpTab },
   { id: 'inventory', label: 'Inventory', icon: '🎒', body: InventoryTab },
+  { id: 'actors', label: 'Actors', icon: '👾', body: ActorsTab },
   { id: 'memory', label: 'Memory', icon: '🧠', body: MemoryTab },
   { id: 'debug', label: 'Debug', icon: '🐞', body: DebugTab },
 ];
@@ -65,7 +67,12 @@ function Shell({ store, actions }: ShellProps): VNode {
   };
 
   const visible = touch ? sheetOpen : !folded;
-  useEffect(() => store.set({ debugVisible: visible && prefs.tab === 'debug', warpVisible: visible && prefs.tab === 'warp', inventoryVisible: visible && prefs.tab === 'inventory', memoryVisible: visible && prefs.tab === 'memory' }), [store, visible, prefs.tab]);
+  useEffect(() => store.set({ debugVisible: visible && prefs.tab === 'debug', warpVisible: visible && prefs.tab === 'warp', inventoryVisible: visible && prefs.tab === 'inventory', memoryVisible: visible && prefs.tab === 'memory', actorsVisible: visible && prefs.tab === 'actors' }), [store, visible, prefs.tab]);
+  useEffect(() => {
+    if (state.tabRequest === null) return;
+    update({ tab: state.tabRequest, collapsed: false });
+    store.set({ tabRequest: null });
+  }, [state.tabRequest]);
   useEffect(() => {
     document.documentElement.classList.toggle('sheet-open', touch && sheetOpen);
   }, [touch, sheetOpen]);

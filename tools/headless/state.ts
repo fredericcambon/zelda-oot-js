@@ -91,10 +91,10 @@ const PLAY_CONTEXT_POINTER = 0x80112be0;
 const CTX_SCENE_INDEX = 0xa4;
 const CTX_SCENE_RECORD = 0x1242c;
 /** Entries of {count, head} per actor category, 8 bytes each, found by looking for the player record's address in the context. */
-const CTX_ACTOR_LISTS = 0x1c30;
-const ACTOR_CATEGORY_PLAYER = 2;
+export const CTX_ACTOR_LISTS = 0x1c30;
+export const ACTOR_CATEGORY_PLAYER = 2;
 /** Offsets inside an actor record: the id halfword and category byte share the first word; the world position is three floats. */
-const ACTOR_POSITION = 0x24;
+export const ACTOR_POSITION = 0x24;
 
 export interface PlayState {
   context: number;

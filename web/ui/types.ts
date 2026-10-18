@@ -1,6 +1,7 @@
 import type { CullMode } from '../renderer.ts';
 import type { Hz } from '../mode.ts';
 import type { InventorySnapshot } from '../inspect/inventory.ts';
+import type { ActorsSnapshot } from '../inspect/actors.ts';
 import type { Cheat } from '../inspect/cheats.ts';
 import type { MemorySnapshot, SearchKind, ValueType } from '../inspect/memory.ts';
 import type { Entrance, WarpSnapshot } from '../inspect/warp.ts';
@@ -39,6 +40,12 @@ export interface UiState {
   /** The memory window, watches and search of the running game; kept current (about ten times a second) only while `memoryVisible`. */
   memory: MemorySnapshot;
   cheats: Cheat[];
+  /** The Actors tab is on screen. */
+  actorsVisible: boolean;
+  /** The live actors of the running game; kept current (about ten times a second) only while `actorsVisible`. */
+  actors: ActorsSnapshot;
+  /** A tab another tab asks the panel to open; the panel clears it once it has. */
+  tabRequest: string | null;
   /** Mobile: the menu sheet is open, and touch input is ignored. */
   sheetOpen: boolean;
 }
@@ -87,6 +94,10 @@ export interface UiActions {
   addCheat(name: string, code: string): string | undefined;
   toggleCheat(id: string): void;
   removeCheat(id: string): void;
+  /** Queues putting Link next to the actor whose record is at `addr`; refused in an unsafe state. */
+  goToActor(addr: number): void;
+  /** Shows the record at `addr` in the Memory tab. */
+  viewRecord(addr: number): void;
 }
 
 export interface TabProps {

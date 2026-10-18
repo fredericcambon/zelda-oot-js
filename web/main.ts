@@ -19,6 +19,7 @@ import { pickSaveFile } from './save-picker.ts';
 import { EMPTY_INVENTORY, editContext, inventorySnapshot, sameInventory, toggleFreeze } from './inspect/inventory.ts';
 import { Bridge, readEntrances, sameSnapshot, snapshot, warpTo } from './inspect/index.ts';
 import { applyCheats, loadCheats, parseCode, saveCheats, type Cheat } from './inspect/cheats.ts';
+import { EMPTY_ACTORS, goToActor, sameSnapshot as sameActors, snapshot as actorsSnapshot } from './inspect/actors.ts';
 import { EMPTY_MEMORY, MemoryModel, parseAddress } from './inspect/memory.ts';
 import { mountUi } from './ui/panel.ts';
 import { Store } from './ui/store.ts';
@@ -95,6 +96,9 @@ const store = new Store<UiState>({
   memoryVisible: false,
   memory: EMPTY_MEMORY,
   cheats: loadCheats(),
+  actorsVisible: false,
+  actors: EMPTY_ACTORS,
+  tabRequest: null,
   sheetOpen: false,
 });
 overlay.hidden = !store.get().overlayShown;
@@ -268,8 +272,19 @@ function updateMemory(now = performance.now(), force = false): void {
   store.set({ memory: memoryModel.tick(bridge) });
 }
 
+let actorsAt = 0;
+
+function updateActors(now = performance.now()): void {
+  const s = store.get();
+  if (!s.actorsVisible || now - actorsAt < MEMORY_REFRESH_MS) return;
+  actorsAt = now;
+  const next = actorsSnapshot(bridge);
+  if (!sameActors(s.actors, next)) store.set({ actors: next });
+}
+
 function updateOverlay(): void {
   updateWarp();
+  updateActors();
   updateInventory();
   updateMemory();
   const showing = store.get().debugVisible;
@@ -499,6 +514,12 @@ const actions: UiActions = {
   },
   toggleCheat: (id) => setCheats(store.get().cheats.map((c) => (c.id === id ? { ...c, enabled: !c.enabled } : c))),
   removeCheat: (id) => setCheats(store.get().cheats.filter((c) => c.id !== id)),
+  goToActor: (addr) => bridge.queue.push(() => goToActor(bridge, addr), 'Go to failed'),
+  viewRecord(addr) {
+    memoryModel.setStart(addr);
+    updateMemory(performance.now(), true);
+    store.set({ tabRequest: 'memory' });
+  },
 };
 // Touch input stops while the menu sheet covers the picture.
 store.subscribe(() => {
