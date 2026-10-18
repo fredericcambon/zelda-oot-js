@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { clampWidth, DEFAULT_WIDTH, loadPrefs, MAX_WIDTH, MIN_WIDTH, savePrefs } from './prefs.ts';
 import { Store } from './store.ts';
+import { countName, FIELD_NAMES, slotName } from './inventory-names.ts';
+import { Labels } from './labels.ts';
 import { isTyping } from './typing.ts';
 
 const memory = () => {
@@ -62,5 +64,64 @@ describe('isTyping', () => {
     expect(isTyping(on('BUTTON'))).toBe(false);
     expect(isTyping(on('CANVAS'))).toBe(false);
     expect(isTyping({ target: null })).toBe(false);
+  });
+});
+
+describe('user labels', () => {
+  it('survive a reload, and clear on an empty text', () => {
+    const store = memory();
+    const first = new Labels(store);
+    first.set('scene', 5, '  Forest  ');
+    first.set('field', 'count34', 'Money');
+    expect(new Labels(store).get('scene', '5')).toBe('Forest');
+    expect(new Labels(store).get('field', 'count34')).toBe('Money');
+    first.set('scene', 5, '');
+    expect(new Labels(store).get('scene', 5)).toBeUndefined();
+  });
+
+  it('export and import round-trip, and import merges', () => {
+    const a = new Labels(memory());
+    a.set('actor', 0x3c, 'Cucco');
+    a.set('entrance', 7, 'Door');
+    const b = new Labels(memory());
+    b.set('actor', 0x3c, 'Chicken');
+    b.set('scene', 1, 'Kept');
+    expect(b.importJson(a.exportJson())).toBe(2);
+    expect(b.get('actor', 0x3c)).toBe('Cucco');
+    expect(b.get('entrance', 7)).toBe('Door');
+    expect(b.get('scene', 1)).toBe('Kept');
+  });
+
+  it('refuses text that is not labels, leaving the stored ones alone', () => {
+    const a = new Labels(memory());
+    a.set('scene', 1, 'x');
+    expect(() => a.importJson('{nope')).toThrow('not JSON');
+    expect(() => a.importJson('[]')).toThrow();
+    expect(() => a.importJson('{"planet":{"1":"x"}}')).toThrow(/unknown kind/);
+    expect(() => a.importJson('{"scene":{"1":7}}')).toThrow(/not text/);
+    expect(a.count()).toBe(1);
+  });
+
+  it('survives blocked storage and notifies subscribers', () => {
+    const blocked = { getItem: () => { throw new Error('blocked'); }, setItem: () => { throw new Error('blocked'); } };
+    const a = new Labels(blocked);
+    const listener = vi.fn();
+    a.subscribe(listener);
+    expect(() => a.set('scene', 1, 'x')).not.toThrow();
+    expect(a.get('scene', 1)).toBe('x');
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('inventory names', () => {
+  it('leave no bare offset name', () => {
+    const bare = /^(count|counts|flag|byte|bytes|bits|level|limit)[0-9A-F]+(\.\d+)?$/;
+    const names = [...Object.values(FIELD_NAMES), ...Array.from({ length: 16 }, (_, i) => countName(i)), ...Array.from({ length: 24 }, (_, i) => slotName(i))];
+    for (const n of names) {
+      expect(n.name).not.toMatch(bare);
+      expect(n.hint.length).toBeGreaterThan(10);
+    }
+    expect(countName(1).name).toBe('Deku Nut count');
+    expect(countName(9).observed).toBe(false);
   });
 });

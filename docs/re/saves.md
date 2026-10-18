@@ -124,6 +124,26 @@ A new file is the record `sram_create_file` writes: the 76, 10 and 96 bytes `sav
 
 *Observed*, on a file built with `new` (`hearts=12`, `bitsA4.0`): the file select's "Open this file?" screen shows the name, twelve hearts and the icon of `bitsA4` bit 0 (frame 2880 of the scripted boot, the A of frame 2700 having selected the file).
 
+## Observed effects of the Inventory fields
+
+*Observed*: the built game was run headless (`tools/headless/boot.ts` with the soft renderer), a record was put in play in scene 85 (`loadRecordIntoPlay`, 7 hearts), then one field of the save context at `0x801183D0` was written between frames, the game ran 30 to 120 frames and the frame was drawn. The pictures are kept in the git-ignored `out/obs/shots/` (derived from the ROM). Item and quest icons are named by what they look like; item names are the text the pause menu itself shows for the cursor. Offsets are from `0x801183D0`.
+
+| Field | Address | Set to | What the screen showed |
+| --- | --- | --- | --- |
+| `count34` | `+0x34` s16 | 77, 99, 200 | The number beside the green gem at the bottom left of the HUD reads 77, 99, 200. Shown as **rupees**. |
+| `limit34` | `+0xA0` bits 12-13 | 0 with `count34` 99; 1 with 99 and 200 | With 0 the counter has two digits and is green at 99; with 1 it has three digits (`099`, white) and turns green at 200, the capacity of the table above. Shown as **wallet size**. |
+| `level32` | `+0x32` | 0, 1, 2 | The magic bar at the HUD's left is absent, short, long. Shown as **magic meter size**. |
+| `byte33` | `+0x33` | `0x30`, `0x60`, `0x20` | The bar's fill: full at `0x30` for a short bar and at `0x60` for a long one. Shown as **magic**. |
+| `flag3A`, `flag3C` | `+0x3A`, `+0x3C` | 1 / 0, 1 / 1 with `level32` 0 | `flag3A` alone drew the short bar, both drew the long one (the game rebuilt `level32` from them, as the routine at `0x80079148` says above). Shown as **has magic meter** and **double magic**. |
+| `countD0` | `+0xD0` u16 | 7 with `bitsA4` bit 23 | The Quest Status page shows a spider icon with the number 7 in the top left (with the bit clear there is no icon; with the bit set and `countD0` 0 the number is 0). Shown as **spider token count**. |
+| `bitsA4` | `+0xA4` | one bit at a time, 0 to 23 | Quest Status: bits 0-5 a green, red, blue, orange, purple, yellow medallion in the hexagon; 6-11 a green, red, blue, orange, purple, yellow song note in the lower row; 12-17 grey song notes in the upper row, one more position per bit; 18-20 a green, red, blue stone in the bottom bar; 21 and 22 the two boxes at the top left (a grey tile, a scroll); 23 the spider icon. |
+| `bytes68` | `+0x68`-`+0x6B` | item id 1 in one byte, `0xFF` in the others | `+0x68` replaced the B button's picture; `+0x69`, `+0x6A`, `+0x6B` each put an item on one C button, left, down, right in turn (the icon is garbled because its texture is not loaded, but its ammo number appears). Shown as **B button, C-left, C-down, C-right item**. |
+| `items.<i>` | `+0x74 + i` | `i` for 0-23; 3 in all 24 | Slot `i` is cell `i` of the pause menu's item grid, six per row, row 1 first; the picture is by the id stored. Id 1 was labelled "Deku Nut" and 3 "Fairy Bow" by the menu. |
+| `counts8C.<i>` | `+0x8C + i` | 11 + `i` for 0-15 | A small number appears under cells 0, 1, 2, 3 and 6 only (values 11, 12, 13, 14, 17). The menu names those cells' items "Deku Stick", "Deku Nut", "Bomb", "Fairy Bow", "Fairy Slingshot". With all 24 cells holding id 3 only cell 3 showed a number (23), so a number needs both the slot and its item. Shown as the count of that item. Counts 4, 5 and 7-15 showed nothing with the items tried: left neutral. |
+| `equip0`-`equip3` | `+0x9C`, `+0x70` nibbles | `+0x9C` `0x7777`, `+0x70` `0x1111` and `0x2222` | The Equipment page has four rows of three columns: a sword blade, a shield, a tunic, boots (top to bottom; the default `+0x70` of `0x1100` showed only the tunic and boots as worn). A nibble of `+0x70` outlines the worn column (1 the first, 2 the second; 0 none); the `+0x9C` bits make the columns of that row appear coloured. Shown as **swords, shields, tunics, boots** for groups 0-3, which agrees with group 0 writing its item to `+0x68`, the B button. |
+
+Not shown by any effect seen: `scene` (`+0x66`) and `name` stay as the table above gives them; no name is claimed for scenes.
+
 ## Loading a save into the running game
 
 `tools/headless/load-save.ts` (used by the page, `web/save-actions.ts`, and by `tools/headless/load-save-rom.test.ts`) does two things. Both run between two frames.
