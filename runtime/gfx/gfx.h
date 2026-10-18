@@ -65,10 +65,14 @@ typedef struct {
 } GfxBatch;
 
 // A decoded image: `id` is unique for the life of the module (a decode is never given an id twice), the pixels are
-// RGBA8, top row first.
+// RGBA8, top row first. `loaded` is NULL when every texel was written by the load commands that fed the tile, else one
+// byte per texel (1 = written by them, 0 = left over from earlier loads); the image is the tile's sampled rectangle (from
+// SetTileSize, else the mask). `fmt` and `siz` are those of the tile it was decoded for.
 typedef struct {
   uint32_t id, width, height;
   const uint8_t *rgba;
+  const uint8_t *loaded;
+  int32_t fmt, siz;
 } GfxTextureRef;
 
 typedef struct {

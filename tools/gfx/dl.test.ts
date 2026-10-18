@@ -327,6 +327,60 @@ describe('display list interpreter', () => {
     expect(Array.from(tex.rgba).filter((_, i) => i % 4 === 0).slice(0, 4)).toEqual([10, 20, 30, 40]);
   });
 
+  it('reports which texels the loads since the tile was last set up wrote', () => {
+    const ram = new Ram();
+    ram.triangleVertices(0x2000);
+    ram.bytes.set(Array.from({ length: 32 }, (_, i) => 100 + i), 0x5000);
+    ram.bytes.set(Array.from({ length: 16 }, (_, i) => 200 + i), 0x6000);
+    const settile = (fmt: number, siz: number, line: number, tile: number): [number, number] =>
+      [0xf5000000 | (fmt << 21) | (siz << 19) | (line << 9), tile << 24];
+    const draw: [number, number][] = [
+      settile(4, 1, 1, 0), // 8x4 I8 render tile, rows of one TMEM word
+      [0xf2000000, (7 << 14) | (3 << 2)],
+      [0xd7000002, 0xffffffff],
+      vtx(3, 0, 0x2000), tri(0, 1, 2),
+    ];
+    ram.list(0x1000,
+      [0xfd000000 | (2 << 19) | 15, 0x5000],
+      settile(0, 2, 0, 7),
+      [0xf3000000, (7 << 24) | (15 << 12)], // 32 bytes: the whole tile
+      ...draw,
+      [0xfd000000 | (2 << 19) | 7, 0x6000],
+      [0xf3000000, (7 << 24) | (7 << 12)], // 16 bytes: the first two rows only
+      ...draw, // sets the tile up again, after the load
+      ...draw, // and again, with no load in between
+      END);
+    const r = run(ram, 0x1000);
+    expect(r.problems).toEqual([]);
+    const [full, partial, again] = r.batches.map((b) => b.state.textures[0]!);
+    expect(full!.loaded).toBeNull();
+    expect(full!.fmt).toBe(4);
+    expect(full!.siz).toBe(1);
+    expect(Array.from(partial!.loaded!)).toEqual([...new Array<number>(16).fill(1), ...new Array<number>(16).fill(0)]);
+    // The rows the second load did not write still hold the first texture's bytes in the picture.
+    expect(Array.from(partial!.rgba).filter((_, i) => i % 4 === 0).slice(15, 18)).toEqual([215, 116, 117]);
+    expect(again!.id).toBe(partial!.id);
+  });
+
+  it('does not count the bytes a palette load overwrote as loaded texels', () => {
+    const ram = new Ram();
+    ram.triangleVertices(0x2000);
+    ram.bytes.set(Array.from({ length: 32 }, (_, i) => 100 + i), 0x5000);
+    const settile = (fmt: number, siz: number, line: number, tile: number): [number, number] =>
+      [0xf5000000 | (fmt << 21) | (siz << 19) | (line << 9), tile << 24];
+    ram.list(0x1000,
+      [0xfd000000 | (2 << 19) | 15, 0x5000],
+      settile(0, 2, 0, 7),
+      [0xf3000000, (7 << 24) | (15 << 12)],
+      settile(4, 1, 1, 0),
+      [0xf2000000, (7 << 14) | (3 << 2)],
+      [0xd7000002, 0xffffffff],
+      [0xf0000000, (7 << 24) | (3 << 14)], // four palette entries (8 bytes) over the first row
+      vtx(3, 0, 0x2000), tri(0, 1, 2), END);
+    const tex = (run(ram, 0x1000).batches[0] as TriangleBatch).state.textures[0]!;
+    expect(Array.from(tex.loaded!)).toEqual([...new Array<number>(8).fill(0), ...new Array<number>(24).fill(1)]);
+  });
+
   it('decodes a tile from where its load put the upper-left texel, whatever the tile bounds are', () => {
     const ram = new Ram();
     ram.triangleVertices(0x2000);

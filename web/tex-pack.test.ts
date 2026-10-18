@@ -41,17 +41,6 @@ describe('TexPack', () => {
     expect(pack.summary().pending).toBe(0);
   });
 
-  it('finds a texture by the key of its lower half when its own hash is not listed, if asked to', async () => {
-    const pack = new TexPack('/texpack/', true, 'a');
-    await pack.load(async () => indexOf(['bbbbbbbbbbbbbbbb']));
-    expect(pack.lookup('aaaaaaaaaaaaaaaa', () => 'bbbbbbbbbbbbbbbb')).toBeNull();
-    expect(pack.nameOf('aaaaaaaaaaaaaaaa')).toBe('bbbbbbbbbbbbbbbb');
-    expect(pack.summary().pending).toBe(1);
-    pack.aliasKeys = false;
-    pack.lookup('cccccccccccccccc', () => 'bbbbbbbbbbbbbbbb');
-    expect(pack.unresolved()).toEqual(['cccccccccccccccc']);
-  });
-
   it('does not request anything while switched off', async () => {
     const pack = new TexPack('/texpack/', false);
     const fetcher = vi.fn(async () => indexOf(['aaaaaaaaaaaaaaaa']));
@@ -84,7 +73,7 @@ describe('Renderer with a texture pack', () => {
   const texels = Uint8Array.from({ length: 32 }, (_, i) => (i % 4 === 3 ? 255 : i));
   const tile = { fmt: 0, siz: 3, line: 0, tmem: 0, palette: 0, cmT: 0, maskT: 1, shiftT: 0, cmS: 0, maskS: 2, shiftS: 0, uls: 8, ult: 4, lrs: 0, lrt: 0, sized: true };
   const state = (): DrawState => ({
-    geometryMode: 0, otherModeH: 0, otherModeL: 0, combine: decodeCombine(0, 0), primColor: { ...rgba, minLod: 0, lodFrac: 0 },
+    geometryMode: 0, otherModeH: 0, otherModeL: 0, combine: { ...decodeCombine(0, 0), cycles: [{ rgb: [1, 0, 1, 0], alpha: [0, 0, 0, 0] }, { rgb: [0, 0, 0, 0], alpha: [0, 0, 0, 0] }] }, primColor: { ...rgba, minLod: 0, lodFrac: 0 },
     envColor: rgba, fogColor: rgba, blendColor: rgba, fillColor: 0, texture: { on: true, level: 0, tile: 0, scaleS: 0, scaleT: 0 },
     tiles: [tile, tile], textures: [{ id: 5, width: 4, height: 2, rgba: texels, tile: 0 }, null], viewport: { scale: [0, 0, 0], trans: [0, 0, 0] },
     scissor: { mode: 0, xh: 0, yh: 0, xl: 0, yl: 0 }, colorImage: { fmt: 0, siz: 2, width: 320, addr: 0x80100000 }, depthImage: 0,

@@ -6,8 +6,8 @@ import { GpuTimer } from './gpu-timer.ts';
 import { Geo } from '../tools/gfx/opcodes.ts';
 import { CycleType, cycleTypeOf, fragmentSource, OtherL, shiftScale, specKey, specOf, VERTEX_SHADER, type ShaderSpec } from './shader.ts';
 import { MAX_SCALE, type GfxSettings } from './gfx-settings.ts';
-import { hashLowerHalf } from '../tools/tex/hash.ts';
-import { bindToggleKey, scaleOf, hashTexture, pagePack, type TexPack } from './tex-pack.ts';
+import { texturesRead } from '../tools/tex/used.ts';
+import { bindToggleKey, scaleOf, hashImage, pagePack, type TexPack } from './tex-pack.ts';
 
 export const SCREEN_W = 320;
 export const SCREEN_H = 240;
@@ -128,6 +128,8 @@ export class Renderer {
   private readonly textureCache = new Map<number, GpuTexture>();
   private readonly white: GpuTexture;
   private lastResult: DisplayListResult | null = null;
+  /** While recording (for tools/tex/compare.ts): per task, the textures it drew as `<hash><state>`, state `+` replaced, `~` in the pack but not yet loaded, `-` not in the pack. */
+  private textureLog: { frames: string[][]; facts: Map<string, { width: number; height: number; fmt: number; siz: number; unloaded: number; rgba?: string }> } | null = null;
   private lastPresented: number | null = null;
   private lastTarget: Target | null = null;
   private vertices = new Float32Array(0);
@@ -159,7 +161,7 @@ export class Renderer {
       this.texPack.onChange = (hash) => this.packChanged(hash);
       if (typeof addEventListener === 'function') bindToggleKey(this.texPack, globalThis);
       // The handle the screenshot tool (tools/tex/compare.ts) drives.
-      Object.assign(globalThis, { ootTexPack: { pack: this.texPack, redraw: () => this.redraw(), boundsOf: (hashes: string[]) => this.boundsOf(new Set(hashes)), inUse: () => [...this.textureCache.values()].filter((t) => t.scale > 1).length } });
+      Object.assign(globalThis, { ootTexPack: { pack: this.texPack, redraw: () => this.redraw(), boundsOf: (hashes: string[]) => this.boundsOf(new Set(hashes)), inUse: () => [...this.textureCache.values()].filter((t) => t.scale > 1).length, record: (on: boolean) => this.recordTextures(on), recorded: () => this.recorded() } });
     }
   }
 
@@ -167,6 +169,39 @@ export class Renderer {
   private packChanged(name?: string): void {
     if (name === undefined) this.clearTextures();
     else for (const [id, tex] of this.textureCache) if (tex.hash !== undefined && this.texPack?.nameOf(tex.hash) === name) this.dropTexture(id, tex);
+  }
+
+  private recordTextures(on: boolean): void {
+    this.textureLog = on ? { frames: [], facts: new Map() } : null;
+  }
+
+  private recorded(): { frames: string[][]; facts: Record<string, { width: number; height: number; fmt: number; siz: number; unloaded: number; rgba?: string }> } {
+    return { frames: this.textureLog?.frames ?? [], facts: Object.fromEntries(this.textureLog?.facts ?? []) };
+  }
+
+  private logTextures(result: DisplayListResult): void {
+    const log = this.textureLog!;
+    const ids = new Set<number>();
+    const frame: string[] = [];
+    for (const b of result.batches) {
+      const read = texturesRead(b.state);
+      for (const [slot, image] of b.state.textures.entries()) {
+        const tex = image && read[slot] && !ids.has(image.id) ? this.textureCache.get(image.id) : undefined;
+        if (!image || !tex?.hash) continue;
+        ids.add(image.id);
+        const state = tex.scale > 1 ? '+' : this.texPack?.nameOf(tex.hash) ? '~' : '-';
+        frame.push(tex.hash + state);
+        const known = log.facts.get(tex.hash);
+        if (!known || (state === '-' && known.rgba === undefined)) {
+          log.facts.set(tex.hash, {
+            width: image.width, height: image.height, fmt: image.fmt ?? 0, siz: image.siz ?? 0, unloaded: image.loaded ? image.loaded.reduce((n, v) => n + (v === 0 ? 1 : 0), 0) : 0,
+            // The picture of a texture the pack has no entry for, to look at.
+            rgba: state === '-' ? btoa(String.fromCharCode(...image.rgba)) : undefined,
+          });
+        }
+      }
+    }
+    log.frames.push(frame);
   }
 
   /** Draws the last task and shows the picture it drew (not the one the video interface scans out, which is the frame before). Only valid while the game is not running: the task reads the game's memory. */
@@ -198,7 +233,7 @@ export class Renderer {
     let sx = 0, sy = 0, total = 0;
     const { width, height } = this.canvas;
     for (const b of this.lastResult?.batches ?? []) {
-      if (b.kind !== 'triangles' || (b.state.geometryMode & Geo.ZBUFFER) === 0 || !b.state.textures.some((t) => t && hashes.has(hashTexture(t.width, t.height, t.rgba)))) continue;
+      if (b.kind !== 'triangles' || (b.state.geometryMode & Geo.ZBUFFER) === 0 || !b.state.textures.some((t) => t && hashes.has(hashImage(t)))) continue;
       for (let i = 0; i + 12 <= b.positions.length; i += 12) {
         let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, behind = false;
         for (let k = 0; k < 3; k++) {
@@ -301,6 +336,7 @@ export class Renderer {
       this.resolveTargets();
       this.gpuTimer.end();
     }
+    if (this.textureLog) this.logTextures(result);
     s.programs = this.programs.size;
     s.textures = this.textureCache.size;
     s.targets = this.targets.size;
@@ -607,9 +643,10 @@ export class Renderer {
     gl.uniform1f(u('uXyScale'), state.viewport.scale[0] !== 0 && state.viewport.scale[1] !== 0 && triangles ? 0.5 : 1);
 
     const a = new Float32Array(8), m = new Float32Array(8), c = new Float32Array(8);
+    const read = texturesRead(state);
     for (let i = 0; i < 2; i++) {
       const decoded = state.textures[i];
-      const tex = decoded ? this.textureFor(decoded) : this.white;
+      const tex = decoded ? this.textureFor(decoded, read[i]!) : this.white;
       const tile = decoded ? state.tiles[decoded.tile]! : null;
       gl.activeTexture(gl.TEXTURE0 + i);
       gl.bindTexture(gl.TEXTURE_2D, tex.texture);
@@ -737,13 +774,20 @@ ${source}`);
     this.textureCache.clear();
   }
 
-  /** The interpreter numbers each decoded image once, so the id names the pixels and no upload repeats across tasks. */
-  private textureFor(image: DecodedTexture): GpuTexture {
+  /**
+   * The interpreter numbers each decoded image once, so the id names the pixels and no upload repeats across tasks. `read`: the draw's combiner reads the
+   * image, so the pack may replace it (see tools/tex/used.ts).
+   */
+  private textureFor(image: DecodedTexture, read: boolean): GpuTexture {
     let tex = this.textureCache.get(image.id);
+    const pack = read && this.texPack?.available ? this.texPack : null;
+    if (tex && pack && tex.hash === undefined) {
+      this.dropTexture(image.id, tex);
+      tex = undefined;
+    }
     if (!tex) {
-      const pack = this.texPack?.available ? this.texPack : null;
-      const hash = pack ? hashTexture(image.width, image.height, image.rgba) : undefined;
-      const replacement = pack && hash ? pack.lookup(hash, () => hashLowerHalf(image.width, image.height, image.rgba)) : null;
+      const hash = pack ? hashImage(image) : undefined;
+      const replacement = pack && hash ? pack.lookup(hash) : null;
       const k = replacement ? scaleOf(image, replacement) : 0;
       tex = replacement && k > 0
         ? this.upload(replacement.width, replacement.height, replacement, this.settings.mipmaps, k)

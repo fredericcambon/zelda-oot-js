@@ -11,6 +11,7 @@ import type { RgbaImage } from '../gfx/types.ts';
 import { savesDir } from '../../web/saves-endpoint.ts';
 import { decodePng } from './png-read.ts';
 import type { TextureRecord } from './collect.ts';
+import { analyzeMoving, type TextureFacts } from './moving.ts';
 import { VARIANTS, type PackStats } from './upscale.ts';
 
 export interface CompareOptions {
@@ -151,8 +152,8 @@ export async function compare({ out, pack, dump = 'out/texdump', variants: wante
   // Close-ups are centred on the on-screen area drawn with a texture of the kind, in the views (1-based) that show it. Bush: the plants' leaf texture
   // (a 32x32 cut-out that clamps). Wall: the forest's cliff face (two textures). Both picked by looking at where each texture is drawn.
   const closeUps: Record<string, { hashes: string[]; views: number[] }> = {
-    bush: { hashes: ['36b4ac9377931977'], views: [3, 4, 6] },
-    wall: { hashes: ['602f8db5413d3717', 'c838eddb39e420dc'], views: [1, 2, 4] },
+    bush: { hashes: ['748beec470b5bc6a'], views: [3, 4, 6] },
+    wall: { hashes: ['909f9c2dbe2cf50b', 'bdaf804b5358c497'], views: [1, 2, 4] },
   };
   try {
     const vite = spawn('npx', ['vite', '--config', 'vite.config.ts', '--port', String(port), '--strictPort'], { stdio: 'ignore', shell: true, env: { ...process.env, OOT_SAVES_DIR: saves, OOT_TEXPACK_DIR: resolve(pack) } });
@@ -201,26 +202,33 @@ export async function compare({ out, pack, dump = 'out/texdump', variants: wante
     await tap('Digit6', '6');
     await sleep(4000);
 
-    // Moving capture: the same walk with the lower-half keys off and on; the textures the pack has no entry for are counted, split into those the dump
-    // knows (left original on purpose: size, too few frames) and those it never saw (hashes that vary with stale rows).
-    for (const aliasKeys of [false, true]) {
-      await evaluate(`globalThis.ootTexPack.pack.aliasKeys = ${aliasKeys}; globalThis.ootTexPack.pack.setVariant('${variants[0]}')`);
-      const unresolved = new Set<string>();
+    // Moving capture: the same walk with the first variant, every texture each graphics task draws recorded (web/renderer.ts). The walk runs twice: the
+    // first pass asks for the replacements, the second is recorded, so that a texture that was never replaced is not a texture still on its way.
+    const known = new Map(facts.map((t) => [t.hash, t]));
+    const walk = async (): Promise<void> => {
       for (const code of ['ArrowLeft', 'ArrowDown', 'ArrowRight', 'ArrowUp']) {
         await key('keyDown', code);
-        for (let i = 0; i < 8; i++) {
-          await sleep(500);
-          for (const h of (await evaluate('globalThis.ootTexPack.pack.unresolved()')) as string[]) unresolved.add(h);
-        }
+        await sleep(4000);
         await key('keyUp', code);
       }
-      const known = new Set(facts.map((t) => t.hash));
-      const summary = (await evaluate('globalThis.ootTexPack.pack.summary()')) as { replaced: number; seen: number };
-      log(`moving, lower-half keys ${aliasKeys ? 'on' : 'off'}: ${summary.seen} textures seen, ${summary.replaced} replaced; ${unresolved.size} without an entry, ${[...unresolved].filter((h) => !known.has(h)).length} of them not in the dump`);
-      await tap('Digit6', '6');
-      await sleep(4000);
+    };
+    await walk();
+    await evaluate('globalThis.ootTexPack.record(true)');
+    await walk();
+    const recorded = (await evaluate('globalThis.ootTexPack.recorded()')) as { frames: string[][]; facts: Record<string, TextureFacts> };
+    await evaluate('globalThis.ootTexPack.record(false)');
+    const moving = analyzeMoving(recorded.frames, recorded.facts, known);
+    writeFileSync(join(outDir, 'moving.json'), JSON.stringify(moving, null, 1));
+    rmSync(join(outDir, 'unresolved'), { recursive: true, force: true });
+    mkdirSync(join(outDir, 'unresolved'), { recursive: true });
+    for (const u of moving.unresolved) {
+      const f = recorded.facts[u.hash];
+      if (f?.rgba) writeFileSync(join(outDir, 'unresolved', `${u.hash}.png`), encodePng(f.width, f.height, Buffer.from(f.rgba, 'base64')));
     }
-    await evaluate("globalThis.ootTexPack.pack.aliasKeys = true");
+    log(`moving: ${moving.tasks} graphics tasks, ${moving.textures} textures drawn, ${moving.inPack} with an entry in the pack, ${moving.flickering.length} that went from replaced back to original, ${moving.unresolved.length} without an entry`);
+    for (const u of moving.unresolved) log(`  ${u.hash} (${u.tasks} tasks): ${u.reason}`);
+    await tap('Digit6', '6');
+    await sleep(4000);
 
     const screenshot = async (): Promise<RgbaImage> => {
       const url = (await evaluate("document.getElementById('screen').toDataURL('image/png')")) as string;

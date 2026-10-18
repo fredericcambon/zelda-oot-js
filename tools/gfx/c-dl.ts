@@ -38,7 +38,7 @@ export function runDisplayList(core: GfxGameCore, start: number): DisplayListRes
 const RESULT_WORDS = 17;
 const BATCH_WORDS = 13;
 const STATE_WORDS = 177;
-const TEXTURE_WORDS = 4;
+const TEXTURE_WORDS = 7;
 const UNKNOWN_WORDS = 3;
 const PROBLEM_BYTES = 160;
 const TILE_WORDS = 16;
@@ -67,8 +67,12 @@ export function readResult(core: GfxCore): DisplayListResult {
   const textureWords = new Uint32Array(buffer, texturesAt || 0, textureCount * TEXTURE_WORDS);
   const images: DecodedTexture[] = Array.from({ length: textureCount }, (_, i) => {
     const width = textureWords[i * TEXTURE_WORDS + 1]!, height = textureWords[i * TEXTURE_WORDS + 2]!;
-    const rgba = textureWords[i * TEXTURE_WORDS + 3]!;
-    return { id: textureWords[i * TEXTURE_WORDS]!, width, height, rgba: heap.subarray(rgba, rgba + width * height * 4), tile: 0 };
+    const rgba = textureWords[i * TEXTURE_WORDS + 3]!, loaded = textureWords[i * TEXTURE_WORDS + 4]!;
+    return {
+      id: textureWords[i * TEXTURE_WORDS]!, width, height, rgba: heap.subarray(rgba, rgba + width * height * 4), tile: 0,
+      fmt: textureWords[i * TEXTURE_WORDS + 5]! | 0, siz: textureWords[i * TEXTURE_WORDS + 6]! | 0,
+      loaded: loaded === 0 ? null : heap.subarray(loaded, loaded + width * height),
+    };
   });
 
   const stateWords = new Int32Array(buffer, statesAt || 0, stateCount * STATE_WORDS);
@@ -201,7 +205,7 @@ export function copyResult(result: DisplayListResult): DisplayListResult {
     if (!image) return null;
     let rgba = pixels.get(image.rgba);
     if (!rgba) pixels.set(image.rgba, (rgba = image.rgba.slice()));
-    return { ...image, rgba };
+    return { ...image, rgba, loaded: image.loaded ? image.loaded.slice() : image.loaded };
   };
   const states = new Map<DrawState, DrawState>();
   const copyState = (state: DrawState): DrawState => {

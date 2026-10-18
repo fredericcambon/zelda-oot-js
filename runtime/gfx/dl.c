@@ -187,6 +187,10 @@ static inline int64_t at_least_zero(int64_t v) { return v < 0 ? 0 : v; }
 typedef struct {
   uint32_t id, width, height;
   uint8_t *rgba;
+  // One byte per texel, 1 where every byte of the texel was written by the loads of the tile's current window (see "Loaded
+  // texels" below); NULL when all of them were.
+  uint8_t *loaded;
+  int32_t fmt, siz;
   // The run that last put the image in the result's texture table, and its index there.
   uint32_t stamp;
   uint32_t index;
@@ -229,17 +233,20 @@ static void retire(Texture *t) {
 static void free_retired(void) {
   for (size_t i = 0; i < retired.n; i++) {
     free(retired.v[i]->rgba);
+    free(retired.v[i]->loaded);
     free(retired.v[i]);
   }
   retired.n = 0;
 }
 
-static Texture *new_texture(uint32_t width, uint32_t height) {
+static Texture *new_texture(uint32_t width, uint32_t height, int32_t fmt, int32_t siz) {
   Texture *t = calloc(1, sizeof *t);
   if (!t) abort();
   t->id = next_texture_id++;
   t->width = width;
   t->height = height;
+  t->fmt = fmt;
+  t->siz = siz;
   t->rgba = malloc((size_t)width * height * 4 + 1);
   if (!t->rgba) abort();
   return t;
@@ -263,7 +270,7 @@ static int32_t texture_ref(Texture *t) {
   if (t->stamp != run_stamp) {
     t->stamp = run_stamp;
     t->index = (uint32_t)out_textures.n;
-    GfxTextureRef ref = { t->id, t->width, t->height, t->rgba };
+    GfxTextureRef ref = { t->id, t->width, t->height, t->rgba, t->loaded, t->fmt, t->siz };
     VEC_PUSH(out_textures, ref);
   }
   return (int32_t)t->index;
@@ -278,17 +285,35 @@ static uint32_t hash_bytes(const uint8_t *data, size_t len, size_t start, size_t
   return h;
 }
 
-// Hashes of ranges of the texture memory, valid until the next load into it.
+// ---- Loaded texels ----------------------------------------------------------------------------------------------
+//
+// A tile can be taller or wider than what the game loaded into it (a LoadBlock `F3000000 071FF200` copies a block from the
+// first texel of the image, while SetTile `F5900000 07014452` and SetTileSize `F2…` fix a tile whose mask covers more rows):
+// the texels outside the block are whatever earlier loads left in TMEM, which differs from one use of the texture to the next.
+// So each byte of TMEM remembers the ordinal of the load command (LOADBLOCK, LOADTILE, LOADTLUT) that last wrote it, and a
+// tile has a window of loads: the commands since the one before the last SetTile (F5) of that tile that came after a load.
+// The loads of a texture come before the SetTile of the tile that samples it, so that window holds the loads of the texture
+// and not those of the one before. A texel counts as loaded when all its bytes were written inside the window. A palette
+// load (LOADTLUT) is not a texel load: the bytes it writes stop counting as loaded, so a tile whose rows a palette later
+// overwrote (a palette sits at TMEM word 256, where a second texture's rows may be) does not hash the palette as texels.
+static uint32_t tmem_stamp[TMEM_BYTES];
+static uint32_t load_count;
+// Per tile: the load count at its last SetTile that followed a load, and the load count at the one before.
+static uint32_t tile_mark[8], tile_window[8];
+
+// Hashes of ranges of the texture memory (the bytes, and which of them lie in `window`), valid until the next load into it.
 enum { TMEM_HASH_SLOTS = 64 };
-static struct { uint64_t key; uint32_t hash; uint32_t epoch; } tmem_hashes[TMEM_HASH_SLOTS];
+static struct { uint64_t key; uint32_t window; uint32_t hash; uint32_t epoch; } tmem_hashes[TMEM_HASH_SLOTS];
 static uint32_t tmem_epoch = 1;
 
-static uint32_t tmem_hash(size_t start, size_t length) {
+static uint32_t tmem_hash(size_t start, size_t length, uint32_t window) {
   uint64_t key = (uint64_t)start * 65536 + length;
-  unsigned slot = (unsigned)((start * 31 + length) % TMEM_HASH_SLOTS);
-  if (tmem_hashes[slot].epoch == tmem_epoch && tmem_hashes[slot].key == key) return tmem_hashes[slot].hash;
+  unsigned slot = (unsigned)((start * 31 + length + window * 7) % TMEM_HASH_SLOTS);
+  if (tmem_hashes[slot].epoch == tmem_epoch && tmem_hashes[slot].key == key && tmem_hashes[slot].window == window) return tmem_hashes[slot].hash;
   uint32_t h = hash_bytes(tmem, TMEM_BYTES, start, length);
+  for (size_t i = start; i < start + length; i++) h = (h ^ (i < TMEM_BYTES && tmem_stamp[i] > window ? 1u : 0u)) * 0x01000193u;
   tmem_hashes[slot].key = key;
+  tmem_hashes[slot].window = window;
   tmem_hashes[slot].hash = h;
   tmem_hashes[slot].epoch = tmem_epoch;
   return h;
@@ -300,13 +325,16 @@ static int64_t row_bytes_of(int64_t texels, int32_t siz) {
   return bits >= 0 ? (bits + 7) / 8 : -((-bits) / 8);
 }
 
-static void store(int64_t dest, int64_t src, int64_t bytes) {
+static void store(int64_t dest, int64_t src, int64_t bytes, int texels) {
   int64_t d = dest & (TMEM_BYTES - 1);
   int64_t n = bytes;
   if (TMEM_BYTES - d < n) n = TMEM_BYTES - d;
   if ((int64_t)ram_len - src < n) n = (int64_t)ram_len - src;
   if (n < 0) n = 0;
-  if (n > 0) memcpy(tmem + d, ram + src, (size_t)n);
+  if (n > 0) {
+    memcpy(tmem + d, ram + src, (size_t)n);
+    for (int64_t i = 0; i < n; i++) tmem_stamp[d + i] = texels ? load_count : 0;
+  }
   tmem_epoch++;
   invalidate();
 }
@@ -317,6 +345,26 @@ static uint64_t tile_key_hash(const TileKey *k) {
     (uint32_t)k->tlut_on, (uint32_t)k->ia, k->tex_hash, k->pal_hash, (uint32_t)k->has_palette };
   for (size_t i = 0; i < sizeof words / sizeof words[0]; i++) h = (h ^ words[i]) * 1099511628211ull;
   return h ^ (h >> 29);
+}
+
+// Fills `t->loaded` for a texture decoded from rows of TMEM that start at byte `origin`, `row_bytes` apart.
+static void mark_loaded(Texture *t, size_t origin, int row_bytes, uint32_t window) {
+  const int bits = 4 << t->siz;
+  uint8_t *flags = malloc((size_t)t->width * t->height + 1);
+  if (!flags) abort();
+  int all = 1;
+  for (uint32_t y = 0; y < t->height; y++) {
+    const size_t row = origin + (size_t)y * (size_t)row_bytes;
+    for (uint32_t x = 0; x < t->width; x++) {
+      const size_t first = row + ((size_t)x * bits) / 8, last = row + ((size_t)x * bits + bits - 1) / 8;
+      int ok = 1;
+      for (size_t i = first; i <= last; i++) ok &= i < TMEM_BYTES && tmem_stamp[i] > window;
+      flags[(size_t)y * t->width + x] = (uint8_t)ok;
+      all &= ok;
+    }
+  }
+  if (all) free(flags);
+  else t->loaded = flags;
 }
 
 static Texture *decode_tile(int index) {
@@ -337,11 +385,12 @@ static Texture *decode_tile(int index) {
   if (height < 0) height = 0;
   // The image depends only on the texel bytes, the palette and the format, so equal contents share one decode across lists.
   const int ci = t->fmt == GFX_FMT_CI;
+  const uint32_t window = tile_window[index];
   const size_t palette = ci ? (size_t)(256 + (t->siz == GFX_SIZ_4 ? t->palette * 16 : 0)) * 8 : 0;
   const size_t palette_bytes = t->siz == GFX_SIZ_4 ? 32 : 512;
   TileKey key = {
     t->fmt, t->siz, width, height, row_bytes, tlut_on, ia,
-    tmem_hash((size_t)t->tmem * 8, (size_t)row_bytes * (size_t)height), ci ? tmem_hash(palette, palette_bytes) : 0, ci,
+    tmem_hash((size_t)t->tmem * 8, (size_t)row_bytes * (size_t)height, window), ci ? tmem_hash(palette, palette_bytes, 0) : 0, ci,
   };
   if (!tile_index_ready) clear_tile_cache();
   const uint64_t h = tile_key_hash(&key);
@@ -352,12 +401,13 @@ static Texture *decode_tile(int index) {
   }
   Texture *out = NULL;
   if (height > 0) {
-    out = new_texture((uint32_t)width, (uint32_t)height);
+    out = new_texture((uint32_t)width, (uint32_t)height, t->fmt, t->siz);
     GfxTextureSource src = {
       t->fmt, t->siz, width, height, row_bytes, tmem, TMEM_BYTES, (size_t)t->tmem * 8,
       tmem, TMEM_BYTES, palette, ia,
     };
     gfx_decode_texture(&src, out->rgba);
+    mark_loaded(out, (size_t)t->tmem * 8, row_bytes, window);
   }
   if (tile_cache_n >= TEXTURE_CACHE_LIMIT) {
     clear_tile_cache();
@@ -1015,7 +1065,7 @@ static void background(uint32_t op, uint32_t w1) {
     }
   }
   if (!image) {
-    image = new_texture((uint32_t)width, (uint32_t)height);
+    image = new_texture((uint32_t)width, (uint32_t)height, fmt, siz);
     GfxTextureSource s = { fmt, siz, width, height, (int32_t)row_bytes, ram, ram_len, (size_t)src, NULL, 0, 0, 0 };
     gfx_decode_texture(&s, image->rgba);
     if (bg_cache_n >= BG_CACHE_ENTRIES) clear_bg_cache();
@@ -1055,6 +1105,11 @@ static void set_tile(uint32_t w0, uint32_t w1) {
   t->cm_s = (int32_t)((w1 >> 8) & 3);
   t->mask_s = (int32_t)((w1 >> 4) & 15);
   t->shift_s = (int32_t)(w1 & 15);
+  const int index = (int)((w1 >> 24) & 7);
+  if (load_count != tile_mark[index]) {
+    tile_window[index] = tile_mark[index];
+    tile_mark[index] = load_count;
+  }
   invalidate();
 }
 
@@ -1070,13 +1125,15 @@ static void set_tile_size(uint32_t w0, uint32_t w1) {
 
 // The tile's TMEM rows are filled in stream order; a block is the contiguous bytes of the image from the first texel.
 static void load_block(uint32_t w0, uint32_t w1) {
+  load_count++;
   const GfxTile *t = &st.tiles[(w1 >> 24) & 7];
   const int64_t uls = (w0 >> 12) & 0xfff, ult = w0 & 0xfff, lrs = (w1 >> 12) & 0xfff;
   const int64_t src = (int64_t)timg.addr + row_bytes_of(ult * timg.width + uls, timg.siz);
-  store((int64_t)t->tmem * 8, src, row_bytes_of(lrs - uls + 1, timg.siz));
+  store((int64_t)t->tmem * 8, src, row_bytes_of(lrs - uls + 1, timg.siz), 1);
 }
 
 static void load_tile(uint32_t w0, uint32_t w1) {
+  load_count++;
   const GfxTile *t = &st.tiles[(w1 >> 24) & 7];
   const int64_t uls = (int64_t)((w0 >> 12) & 0xfff) >> 2, ult = (int64_t)(w0 & 0xfff) >> 2;
   const int64_t lrs = (int64_t)((w1 >> 12) & 0xfff) >> 2, lrt = (int64_t)(w1 & 0xfff) >> 2;
@@ -1084,15 +1141,16 @@ static void load_tile(uint32_t w0, uint32_t w1) {
   const int64_t bytes = row_bytes_of(lrs - uls + 1, timg.siz);
   const int64_t stride = (int64_t)t->line * (t->siz == GFX_SIZ_32 ? 16 : 8);
   for (int64_t y = 0; y <= lrt - ult; y++) {
-    store((int64_t)t->tmem * 8 + y * stride, (int64_t)timg.addr + (ult + y) * img_row + row_bytes_of(uls, timg.siz), bytes);
+    store((int64_t)t->tmem * 8 + y * stride, (int64_t)timg.addr + (ult + y) * img_row + row_bytes_of(uls, timg.siz), bytes, 1);
   }
 }
 
 // The palette is stored as 16-bit entries from the tile's TMEM address.
 static void load_tlut(uint32_t w1) {
+  load_count++;
   const GfxTile *t = &st.tiles[(w1 >> 24) & 7];
   const int64_t count = (((w1 >> 12) & 0xfff) >> 2) + 1;
-  store((int64_t)t->tmem * 8, timg.addr, count * 2);
+  store((int64_t)t->tmem * 8, timg.addr, count * 2, 0);
 }
 
 static void set_other_mode(int high, uint32_t w0, uint32_t w1) {
@@ -1260,6 +1318,10 @@ static void reset(void) {
   mvp_valid = 0;
   memset(vert_loaded, 0, sizeof vert_loaded);
   memset(tmem, 0, sizeof tmem);
+  memset(tmem_stamp, 0, sizeof tmem_stamp);
+  load_count = 0;
+  memset(tile_mark, 0, sizeof tile_mark);
+  memset(tile_window, 0, sizeof tile_window);
   tmem_epoch++;
   memset(&st, 0, sizeof st);
   for (int i = 0; i < 8; i++) st.tiles[i] = new_tile();
