@@ -3,7 +3,7 @@ import { startGame, type Game } from './game.ts';
 import { Renderer, type CullMode } from './renderer.ts';
 import { loadCartridge } from './cartridge.ts';
 import { Input, mergePads } from './input.ts';
-import { TouchControls } from './touch.ts';
+import { toggleFullscreen, TouchControls } from './touch.ts';
 import { indexedDbStore, SaveSync, serverHasSaves, serverStore } from './saves.ts';
 import { indexedDbStates, SaveStates, serverStates } from './savestate.ts';
 import { STATE_VERSION } from '../tools/runtime/snapshot.ts';
@@ -16,6 +16,11 @@ import { FramePacer, loadHz, saveHz, type Hz } from './mode.ts';
 import { AutoStart, fileSelectReached, guestRam } from '../tools/headless/load-save.ts';
 import { backToFileSelect, loadSaveFile, loadSlotIntoPlay, type SaveTarget } from './save-actions.ts';
 import { pickSaveFile } from './save-picker.ts';
+import { Bridge } from './inspect/index.ts';
+import { mountUi } from './ui/panel.ts';
+import { Store } from './ui/store.ts';
+import { isTyping } from './ui/typing.ts';
+import type { UiActions, UiState } from './ui/types.ts';
 
 const FAST_BUDGET_MS = 12;
 const SLOW_LOAD_MS = 500;
@@ -24,16 +29,6 @@ const status = document.getElementById('status')!;
 const overlay = document.getElementById('overlay') as HTMLPreElement;
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
 const notice = document.getElementById('notice')!;
-
-const debugPanel = document.getElementById('debug-panel')!;
-if (location.hash === '#debug') overlay.hidden = debugPanel.hidden = false;
-const debugToggle = document.getElementById('debug-toggle') as HTMLButtonElement;
-// Not focusable by mouse (mousedown is cancelled) so the game keeps the keyboard.
-debugToggle.addEventListener('mousedown', (e) => e.preventDefault());
-debugToggle.addEventListener('click', () => {
-  overlay.hidden = debugPanel.hidden = !overlay.hidden;
-  debugToggle.blur();
-});
 
 const SMOOTH_KEY = 'oot.smooth';
 const readSmooth = (): boolean => {
@@ -50,64 +45,59 @@ const writeSmooth = (on: boolean): void => {
     // Storage may be blocked; the choice then lasts until the page is closed.
   }
 };
-let smoothOn = readSmooth();
-const smoothToggle = document.getElementById('smooth-toggle') as HTMLButtonElement;
-smoothToggle.setAttribute('aria-pressed', String(smoothOn));
-smoothToggle.addEventListener('mousedown', (e) => e.preventDefault());
-smoothToggle.addEventListener('click', () => {
-  smoothOn = !smoothOn;
-  smoothToggle.setAttribute('aria-pressed', String(smoothOn));
-  writeSmooth(smoothOn);
-  smoothToggle.blur();
-});
 
 // Percent sliders: how much motion is shown and how fast it catches up to the current game frame.
-const tuneInput = (id: string, key: string): HTMLInputElement => {
-  const input = document.getElementById(id) as HTMLInputElement;
+const readTuning = (key: string, min: number, max: number): number => {
   try {
-    const stored = Number(localStorage.getItem(key));
-    if (localStorage.getItem(key) !== null && stored >= Number(input.min) && stored <= Number(input.max)) input.value = String(stored);
+    const raw = localStorage.getItem(key);
+    const stored = Number(raw);
+    if (raw !== null && stored >= min && stored <= max) return stored;
   } catch {
     // Storage may be blocked; the default stays.
   }
-  input.addEventListener('input', () => {
-    try {
-      localStorage.setItem(key, input.value);
-    } catch {
-      // The choice then lasts until the page is closed.
-    }
-    applyTuning();
-  });
-  // A slider that kept focus would take the arrow keys from the game.
-  input.addEventListener('change', () => input.blur());
-  return input;
+  return 100;
 };
-const strengthInput = tuneInput('smooth-strength', 'oot.smooth.strength');
-const spanInput = tuneInput('smooth-span', 'oot.smooth.span');
-function applyTuning(): void {
-  game?.tuneSmooth({ strength: Number(strengthInput.value) / 100, span: Number(spanInput.value) / 100 });
-}
+const writeTuning = (key: string, value: number): void => {
+  try {
+    localStorage.setItem(key, String(value));
+  } catch {
+    // The choice then lasts until the page is closed.
+  }
+};
+const STRENGTH_KEY = 'oot.smooth.strength';
+const SPAN_KEY = 'oot.smooth.span';
+
 // The video rate is chosen when the game boots, so the button only changes what the next page load boots.
 const bootHz: Hz = loadHz();
-let wantedHz: Hz = bootHz;
-const hzToggle = document.getElementById('hz-toggle') as HTMLButtonElement;
-const hzNote = document.getElementById('hz-note')!;
-const showHz = () => {
-  hzToggle.textContent = `60 Hz: ${wantedHz === 60 ? 'on' : 'off'}`;
-  hzNote.hidden = wantedHz === bootHz;
-};
-hzToggle.addEventListener('mousedown', (e) => e.preventDefault());
-hzToggle.addEventListener('click', () => {
-  wantedHz = wantedHz === 60 ? 50 : 60;
-  if (!saveHz(wantedHz)) showNotice('The browser did not keep the 60 Hz choice');
-  showHz();
-  hzToggle.blur();
+
+const store = new Store<UiState>({
+  smooth: readSmooth(),
+  strength: readTuning(STRENGTH_KEY, 0, 100),
+  span: readTuning(SPAN_KEY, 25, 100),
+  bootHz,
+  wantedHz: bootHz,
+  muted: false,
+  native: false,
+  cull: 'normal',
+  controlsHidden: false,
+  slot: null,
+  filled: [],
+  overlayShown: location.hash === '#debug',
+  debugText: '',
+  debugVisible: false,
+  sheetOpen: false,
 });
-showHz();
+overlay.hidden = !store.get().overlayShown;
+
+function applyTuning(): void {
+  const s = store.get();
+  game?.tuneSmooth({ strength: s.strength / 100, span: s.span / 100 });
+}
 
 const setStatus = (text: string, error = false) => {
   status.textContent = text;
   status.classList.toggle('error', error);
+  status.classList.toggle('ok', text === 'Running');
 };
 
 // Whole multiples of the 320x240 the game addresses, enough to fill the canvas as displayed.
@@ -128,15 +118,13 @@ try {
 let game: Game | null = null;
 let saves: SaveSync | null = null;
 let states: SaveStates | null = null;
-// The save state key last pressed, run between two frames: the game cannot be copied while a frame is in progress.
-let pendingState: (() => Promise<string>) | null = null;
-// A save action of the debug panel, run between two frames for the same reason.
-let pendingAction: ((target: SaveTarget) => Promise<string> | string) | null = null;
+// Save state and save file actions run between two frames: the game cannot be copied or changed while a frame is in progress.
+const bridge = new Bridge(() => game?.ram() ?? null);
 // Presses Start after the game started over, until the file select is reached.
 let autoStart: AutoStart | null = null;
 let noticeTimer = 0;
 const input = new Input();
-const touch = new TouchControls(document.getElementById('touch-layer') as HTMLElement, document.getElementById('touch-toggle') as HTMLButtonElement);
+const touch = new TouchControls(document.getElementById('touch-layer') as HTMLElement);
 const audio = new AudioOutput();
 const fastForward = new FastForward();
 // Sound is dropped while fast-forwarding: the buffers would pile up faster than they play.
@@ -166,6 +154,39 @@ const showNotice = (text: string) => {
   noticeTimer = window.setTimeout(() => (notice.hidden = true), text.length > 30 ? 5000 : 2000);
 };
 
+const markFilled = (slot: number) => {
+  const filled = [...store.get().filled];
+  filled[slot - 1] = true;
+  store.set({ filled });
+};
+
+/** Queues a save state action on the current slot. */
+function stateAction(run: (s: SaveStates) => Promise<string>): void {
+  if (!states) {
+    showNotice('Save states are not available yet');
+    return;
+  }
+  const target = states;
+  bridge.queue.push(async () => {
+    try {
+      const message = await run(target);
+      if (message.startsWith('Saved slot')) markFilled(target.slot);
+      return message;
+    } finally {
+      store.set({ slot: target.slot });
+    }
+  }, 'Save state failed');
+}
+
+/** Queues a save file action. */
+function saveAction(run: (target: SaveTarget) => Promise<string> | string): void {
+  bridge.queue.push(() => {
+    if (!game || !saves) throw new Error('the game is still starting');
+    const g = game;
+    return run({ game: g, saves, restarted: () => (autoStart = new AutoStart(() => fileSelectReached(guestRam(g.ram())))) });
+  }, 'Could not load the save');
+}
+
 // 5 saves to the current slot, 6 loads it and 7 moves to the next slot.
 const STATE_KEYS: Record<string, (s: SaveStates) => Promise<string>> = {
   '5': (s) => s.save(),
@@ -174,33 +195,36 @@ const STATE_KEYS: Record<string, (s: SaveStates) => Promise<string>> = {
 };
 addEventListener('keydown', (e) => {
   const action = STATE_KEYS[e.key];
-  if (!action || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (!action || e.ctrlKey || e.metaKey || e.altKey || isTyping(e)) return;
   e.preventDefault();
   if (e.repeat) return;
-  if (!states) {
-    showNotice('Save states are not available yet');
-    return;
-  }
-  const target = states;
-  pendingState = () => action(target);
+  stateAction(action);
 });
 
 const CULL_MODES: CullMode[] = ['normal', 'swapped', 'off'];
+function toggleNative(): void {
+  // Native 320x240, shown with hard pixels, for comparing with the console's resolution.
+  const native = renderer.resolutionScale !== 1;
+  renderer.setScale(native ? 1 : displayScale());
+  canvas.classList.toggle('native', native);
+  store.set({ native });
+}
+function cycleCull(): void {
+  renderer.cullMode = CULL_MODES[(CULL_MODES.indexOf(renderer.cullMode) + 1) % CULL_MODES.length]!;
+  store.set({ cull: renderer.cullMode });
+}
+function toggleMute(): void {
+  store.set({ muted: audio.toggleMute() });
+}
 addEventListener('keydown', (e) => {
-  if (e.key === 'n' || e.key === 'N') {
-    // Native 320x240, shown with hard pixels, for comparing with the console's resolution.
-    const native = renderer.resolutionScale !== 1;
-    renderer.setScale(native ? 1 : displayScale());
-    canvas.classList.toggle('native', native);
-  } else if (e.key === 'm' || e.key === 'M') {
-    audio.toggleMute();
-  } else if (e.key === 'c' || e.key === 'C') {
-    renderer.cullMode = CULL_MODES[(CULL_MODES.indexOf(renderer.cullMode) + 1) % CULL_MODES.length]!;
-  }
+  if (e.ctrlKey || e.metaKey || e.altKey || isTyping(e)) return;
+  if (e.key === 'n' || e.key === 'N') toggleNative();
+  else if (e.key === 'm' || e.key === 'M') toggleMute();
+  else if (e.key === 'c' || e.key === 'C') cycleCull();
 });
 
 function smoothLines(): string[] {
-  if (!smoothOn) return [];
+  if (!store.get().smooth) return [];
   if (fastForward.active) return ['smooth: off while fast-forwarding'];
   const info = game?.smoothInfo();
   if (!info) return ['smooth: on, waiting for two game frames'];
@@ -209,10 +233,11 @@ function smoothLines(): string[] {
 }
 
 function updateOverlay(): void {
-  if (overlay.hidden) return;
+  const showing = store.get().debugVisible;
+  if (overlay.hidden && !showing) return;
   const s = renderer.stats;
   const g = game?.info();
-  overlay.textContent = [
+  const text = [
     `${fps.toFixed(0)} fps (${bootHz} Hz mode)  game ${gameFps.toFixed(1)} frames/s  displayed ${shownFps.toFixed(0)} fps`,
     ...smoothLines(),
     ...timingLines(),
@@ -229,6 +254,8 @@ function updateOverlay(): void {
     g?.audioError ? `audio error: ${g.audioError}` : '',
     ...s.problems,
   ].filter(Boolean).join('\n');
+  if (!overlay.hidden) overlay.textContent = text;
+  if (showing) store.set({ debugText: text });
 }
 
 async function loop(): Promise<void> {
@@ -240,30 +267,12 @@ async function loop(): Promise<void> {
   let countStart = last;
   while (game) {
     await new Promise<void>((r) => requestAnimationFrame(() => r()));
-    if (pendingState) {
-      const run = pendingState;
-      pendingState = null;
-      try {
-        showNotice(await run());
-      } catch (err) {
-        showNotice(`Save state failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-      last = performance.now();
-    }
-    if (pendingAction) {
-      const run = pendingAction;
-      pendingAction = null;
-      try {
-        if (!game || !saves) throw new Error('the game is still starting');
-        const g = game;
-        showNotice(await run({ game: g, saves, restarted: () => (autoStart = new AutoStart(() => fileSelectReached(guestRam(g.ram())))) }));
-      } catch (err) {
-        showNotice(`Could not load the save: ${err instanceof Error ? err.message : String(err)}`);
-      }
+    if (bridge.queue.pending > 0) {
+      for (const message of await bridge.queue.drain()) showNotice(message);
       last = performance.now();
     }
     // Fast-forward runs frames back to back and has no time for in-between pictures.
-    game?.setSmooth(smoothOn && !fastForward.active);
+    game?.setSmooth(store.get().smooth && !fastForward.active);
     applyTuning();
     const now = performance.now();
     let due = pacer.advance(now - last);
@@ -275,7 +284,8 @@ async function loop(): Promise<void> {
       if (fastForward.active) pacer.reset();
       else due--;
       try {
-        const pad = mergePads(input.poll(), touch.poll());
+        bridge.applyFreezes();
+        const pad = mergePads(input.poll(), store.get().sheetOpen ? { buttons: 0, x: 0, y: 0 } : touch.poll());
         if (autoStart) {
           pad.buttons |= autoStart.buttons();
           if (!autoStart.active) autoStart = null;
@@ -340,6 +350,7 @@ async function boot(): Promise<void> {
       console.error('save states are not available:', err);
     }
     game = started;
+    store.set({ slot: states?.slot ?? null, muted: audio.isMuted });
     setStatus('Running');
     void loop();
   } catch (err) {
@@ -347,18 +358,60 @@ async function boot(): Promise<void> {
   }
 }
 
-for (const button of debugPanel.querySelectorAll('button')) button.addEventListener('mousedown', (e) => e.preventDefault());
-document.getElementById('load-save-file')!.addEventListener('click', () => {
-  pickSaveFile().then(
-    (bytes) => {
-      if (bytes) pendingAction = (target) => loadSaveFile(target, bytes);
-    },
-    (err) => showNotice(err instanceof Error ? err.message : String(err)),
-  );
+const actions: UiActions = {
+  setSmooth(on) {
+    writeSmooth(on);
+    store.set({ smooth: on });
+  },
+  setStrength(percent) {
+    writeTuning(STRENGTH_KEY, percent);
+    store.set({ strength: percent });
+  },
+  setSpan(percent) {
+    writeTuning(SPAN_KEY, percent);
+    store.set({ span: percent });
+  },
+  toggleHz() {
+    const wantedHz: Hz = store.get().wantedHz === 60 ? 50 : 60;
+    if (!saveHz(wantedHz)) showNotice('The browser did not keep the 60 Hz choice');
+    store.set({ wantedHz });
+  },
+  toggleMute,
+  toggleNative,
+  cycleCull,
+  toggleControls: () => store.set({ controlsHidden: touch.toggleHidden() }),
+  toggleFullscreen,
+  setOverlay(on) {
+    overlay.hidden = !on;
+    store.set({ overlayShown: on });
+  },
+  saveSlot: (slot) => stateAction(async (s) => {
+    await s.select(slot - s.slot);
+    return s.save();
+  }),
+  loadSlot: (slot) => stateAction(async (s) => {
+    await s.select(slot - s.slot);
+    return s.load();
+  }),
+  selectSlot: (slot) => stateAction((s) => s.select(slot - s.slot)),
+  refreshSlots() {
+    states?.filled().then((filled) => store.set({ filled }), (err) => console.error('could not list the save states:', err));
+  },
+  loadSaveFile() {
+    pickSaveFile().then(
+      (bytes) => {
+        if (bytes) saveAction((target) => loadSaveFile(target, bytes));
+      },
+      (err) => showNotice(err instanceof Error ? err.message : String(err)),
+    );
+  },
+  loadIntoPlay: (slot) => saveAction((target) => loadSlotIntoPlay(target, slot)),
+  backToFileSelect: () => saveAction((target) => backToFileSelect(target)),
+};
+// Touch input stops while the menu sheet covers the picture.
+store.subscribe(() => {
+  if (store.get().sheetOpen) touch.pad.reset();
 });
-for (const button of debugPanel.querySelectorAll<HTMLButtonElement>('.load-slot')) {
-  button.addEventListener('click', () => (pendingAction = (target) => loadSlotIntoPlay(target, Number(button.dataset.slot))));
-}
-document.getElementById('back-to-file-select')!.addEventListener('click', () => (pendingAction = (target) => backToFileSelect(target)));
+mountUi(document.getElementById('ui-root') as HTMLElement, store, actions);
 
 void boot();

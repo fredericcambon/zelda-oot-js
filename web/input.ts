@@ -1,5 +1,7 @@
 // Maps the keyboard and the Gamepad API to the state of controller 1 as the game reads it (OSContPad).
 
+import { isTyping } from './ui/typing.ts';
+
 /** Button bits of an OSContPad halfword. */
 export const Button = {
   A: 0x8000, B: 0x4000, Z: 0x2000, Start: 0x1000,
@@ -96,6 +98,8 @@ export class Input {
 
   private readonly onKey = (e: KeyboardEvent): void => {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
+    // A key already held still gets its release, so that it cannot stick.
+    if (e.type === 'keydown' && isTyping(e)) return;
     if (!(e.code in KEY_BUTTONS) && !e.code.startsWith('Arrow')) return;
     e.preventDefault();
     if (e.type === 'keydown') this.held.add(e.code);

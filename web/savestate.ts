@@ -133,6 +133,11 @@ export class SaveStates {
     return this.current;
   }
 
+  /** Whether each slot holds a state. */
+  async filled(): Promise<boolean[]> {
+    return Promise.all(Array.from({ length: SLOT_COUNT }, async (_, i) => (await this.store.get(i + 1)) !== null));
+  }
+
   /** Moves the selection by `step` slots, wrapping around; returns the notice to show. */
   async select(step: number): Promise<string> {
     this.current = ((this.current - 1 + step + SLOT_COUNT) % SLOT_COUNT) + 1;
