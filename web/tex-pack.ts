@@ -1,9 +1,9 @@
 // An optional local pack of replacement textures: `out/texpack/<variant>/<hash>.png` on the machine that built it (`npm run tex -- upscale`), served to
-// loopback clients only at `/texpack/<variant>/` and listed in its `index.json`. A decoded texture is looked up by `hashTexture`. A replacement is a
+// loopback clients only at `/texpack/<variant>/` and listed in its `index.json`. A decoded texture is looked up by `hashImage`. A replacement is a
 // whole multiple (2 or 4) of the size of the texture it stands for, and the renderer samples it with the texture's own tile settings.
-import { hashTexture } from '../tools/tex/hash.ts';
+import { hashImage, hashTexture } from '../tools/tex/hash.ts';
 
-export { hashTexture };
+export { hashImage, hashTexture };
 
 export const PACK_URL = 'texpack/';
 export const STORAGE_KEY = 'oot.texpack';
@@ -37,8 +37,6 @@ export class TexPack {
   /** Entry that each texture looked up resolved to ('' for none). */
   private readonly names = new Map<string, string>();
   private on: boolean;
-  /** Whether a texture missing from the pack is looked up by the key of its lower half too (see `lookup`). */
-  aliasKeys = true;
   /** Called when the index arrives, when a replacement arrives (with the name of its entry) and when the switch is toggled (with no name). */
   onChange: ((hash?: string) => void) | null = null;
 
@@ -107,16 +105,11 @@ export class TexPack {
 
   /**
    * The replacement for a texture, or null: not in the pack, pack off, or still on its way (it is requested, and `onChange` is called with the name of the
-   * entry when it arrives). A texture is found by its hash or, failing that, by `alias()`, the key of its lower half (`hashLowerHalf`), which names every
-   * variant of a texture whose unloaded upper rows show stale memory.
+   * entry when it arrives).
    */
-  lookup(hash: string, alias?: () => string): ImageBitmap | null {
+  lookup(hash: string): ImageBitmap | null {
     if (!this.entries) return null;
-    let name = hash;
-    if (!this.entries.has(hash)) {
-      const key = this.aliasKeys ? alias?.() : undefined;
-      name = key !== undefined && this.entries.has(key) ? key : '';
-    }
+    const name = this.entries.has(hash) ? hash : '';
     this.names.set(hash, name);
     if (!this.on || name === '') return null;
     const known = this.bitmaps.get(name);

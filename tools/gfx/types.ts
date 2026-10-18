@@ -72,6 +72,11 @@ export interface DecodedTexture extends RgbaImage {
   id: number;
   /** Index of the tile descriptor the image was decoded for. */
   tile: number;
+  /** Format and texel size of that tile. */
+  fmt?: number;
+  siz?: number;
+  /** One byte per texel, 1 where the load commands that fed the tile wrote the texel; absent or null when all of them did (runtime/gfx/gfx.h). */
+  loaded?: Uint8Array | null;
 }
 
 /** The render state a batch of primitives was drawn with. Immutable once stored in a batch. */

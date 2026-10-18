@@ -67,6 +67,14 @@ export interface PackStats {
   otherSeconds: number;
 }
 
+/** Why a dumped texture gets no replacement, or null when it does. */
+export function skipReason(r: TextureRecord): string | null {
+  if (r.volatile) return 'changes from frame to frame';
+  if (Math.max(r.width, r.height) > MAX_SIDE) return `screen-size image (${r.width}x${r.height})`;
+  if (r.frames < MIN_FRAMES) return `seen in ${r.frames} graphics task(s) only`;
+  return null;
+}
+
 export interface UpscaleResult {
   skipped: { hash: string; why: string }[];
   stats: Record<string, PackStats>;
@@ -87,9 +95,8 @@ export function upscale({ dump, out, tool, python, variants: wanted, pad, limit,
   const result: UpscaleResult = { skipped: [], stats: {}, seams: {} };
   const todo: TextureRecord[] = [];
   for (const r of Object.values(index.textures)) {
-    if (r.volatile) result.skipped.push({ hash: r.hash, why: 'changes from frame to frame' });
-    else if (Math.max(r.width, r.height) > MAX_SIDE) result.skipped.push({ hash: r.hash, why: `screen-size image (${r.width}x${r.height})` });
-    else if (r.frames < MIN_FRAMES) result.skipped.push({ hash: r.hash, why: `seen in ${r.frames} graphics task(s) only` });
+    const why = skipReason(r);
+    if (why) result.skipped.push({ hash: r.hash, why });
     else todo.push(r);
   }
   if (limit !== undefined) todo.length = Math.min(todo.length, limit);
@@ -132,30 +139,18 @@ export function upscale({ dump, out, tool, python, variants: wanted, pad, limit,
     const textures: Record<string, { width: number; height: number }> = {};
     const seams = { wrapping: 0, worse: 0 };
     let bytes = 0;
-    const bigs = new Map<string, RgbaImage>();
     for (const r of todo) {
       const original = originals.get(r.hash)!;
       const big = upscaleTexture(original, r, { pad, blend: v.blend, scale: v.scale }, raw.get(v.scale)!.get(r.hash)!);
       writeFileSync(join(dir, `${r.hash}.png`), encodePng(big.width, big.height, big.rgba));
       textures[r.hash] = { width: big.width, height: big.height };
       bytes += big.width * big.height * 4;
-      bigs.set(r.hash, big);
       for (const axis of ['x', 'y'] as const) {
         if ((axis === 'x' ? r.edgeS : r.edgeT) !== 'wrap') continue;
         seams.wrapping++;
         const reference = upscaleTexture(original, r, { pad, blend: 0, scale: v.scale }, resample(modelInput(original, r, pad), v.scale, 'linear'));
         if (seamRatio(big, axis) > seamRatio(reference, axis) * 1.5 + 0.5) seams.worse++;
       }
-    }
-    // A texture whose upper rows were never loaded has a hash per stale content; the pack also answers to the key of its lower half (the renderer asks
-    // for that key when the full hash is not listed), with the picture of the member seen in most frames.
-    const aliases: Record<string, string> = {};
-    for (const key of new Set(todo.map((r) => r.family).filter((k): k is string => typeof k === 'string'))) {
-      const rep = todo.filter((r) => r.family === key).reduce((a, b) => (b.frames > a.frames ? b : a));
-      const big = bigs.get(rep.hash)!;
-      writeFileSync(join(dir, `${key}.png`), encodePng(big.width, big.height, big.rgba));
-      textures[key] = { width: big.width, height: big.height };
-      aliases[key] = rep.hash;
     }
     const stats: PackStats = { textures: todo.length, bytes, originalBytes, modelSeconds: modelSeconds.get(v.scale)!, otherSeconds: seconds(t0) };
     result.stats[v.name] = stats;
@@ -173,7 +168,6 @@ export function upscale({ dump, out, tool, python, variants: wanted, pad, limit,
       settings: { scale: v.scale, pad, blend: v.blend, alpha: 'plain bicubic enlargement of the padded alpha, never through the model, left as a gradient', gray: 'kept gray' },
       stats,
       seams,
-      aliases,
       textures,
     }, null, 1));
     log(`${v.name} (${v.label}): ${todo.length} textures, ${(bytes / 1048576).toFixed(1)} MiB (originals ${(originalBytes / 1048576).toFixed(1)} MiB), model ${stats.modelSeconds}s + ${stats.otherSeconds}s; ${seams.worse} of ${seams.wrapping} wrapping axes with a seam worse than plain bilinear's`);

@@ -2,8 +2,8 @@
 // wrap, what their alpha holds) and to tell those whose pixels change from frame to frame.
 import type { DisplayListResult, DrawState, TileState } from '../gfx/types.ts';
 import { shiftScale } from '../../web/shader.ts';
-import { partialFamilies } from './families.ts';
-import { hashTexture } from './hash.ts';
+import { hashImage, hashTexture } from './hash.ts';
+import { texturesRead } from './used.ts';
 
 export type Edge = 'wrap' | 'mirror' | 'clamp';
 export type AlphaKind = 'opaque' | 'binary' | 'blend';
@@ -29,8 +29,10 @@ export interface TextureRecord {
   /** The tile descriptor of the first use, and the texel extent (s0, t0, s1, t1, relative to the tile's origin) the triangles drawn with it reached. */
   tile: TileState;
   reach: [number, number, number, number] | null;
-  /** Key (`hashLowerHalf`) shared with the textures that differ from this one only in their upper half, or null (see families.ts). */
-  family: string | null;
+  /** Texels of the picture saved that the loads did not write (their stale values are in the picture but not in the key). */
+  unloaded: number;
+  /** Distinct pictures (all texels, stale ones included) that this key stands for: how many names the texture had before the key left out unloaded texels. */
+  pictures: number;
   /** Short-lived pixels of a group that keeps producing new ones (see `TextureCollector.finish`): a texture the game rewrites. */
   volatile: boolean;
 }
@@ -64,6 +66,7 @@ interface Entry extends TextureRecord {
   wrapT: boolean;
   mirrorS: boolean;
   mirrorT: boolean;
+  pictureHashes: Set<string>;
   /** The frame it was last counted in, so that each frame counts once. */
   seenIn: number;
 }
@@ -84,6 +87,7 @@ export const SHORT_LIVED_FRAMES = 5;
 export class TextureCollector {
   private readonly entries = new Map<string, Entry>();
   private readonly hashOfId = new Map<number, string>();
+  private readonly pictureOfId = new Map<number, string>();
   private readonly groups = new Map<string, Group>();
   private readonly groupOf = new Map<string, string>();
   private frame = 0;
@@ -128,13 +132,15 @@ export class TextureCollector {
     const states = new Set<DrawState>();
     for (const b of result.batches) states.add(b.state);
     for (const state of states) {
-      for (const image of state.textures) {
-        if (!image) continue;
+      const read = texturesRead(state);
+      for (const [slot, image] of state.textures.entries()) {
+        if (!image || !read[slot]) continue;
         const tile = state.tiles[image.tile]!;
         let hash = this.hashOfId.get(image.id);
         if (hash === undefined) {
-          hash = hashTexture(image.width, image.height, image.rgba);
+          hash = hashImage(image);
           this.hashOfId.set(image.id, hash);
+          this.pictureOfId.set(image.id, hashTexture(image.width, image.height, image.rgba, null, image.fmt, image.siz));
         }
         const group = `${image.width}x${image.height}:${tile.fmt}.${tile.siz}`;
         let g = this.groups.get(group);
@@ -144,14 +150,15 @@ export class TextureCollector {
         if (!e) {
           e = {
             hash, width: image.width, height: image.height, fmt: tile.fmt, siz: tile.siz, edgeS: 'clamp', edgeT: 'clamp',
-            alpha: alphaKindOf(image.rgba), gray: isGray(image.rgba), frames: 0, first: this.frame, last: this.frame, scenes: [], tile: { ...tile }, reach: null, family: null, volatile: false,
-            rgba: image.rgba.slice(), wrapS: false, wrapT: false, mirrorS: false, mirrorT: false, seenIn: 0,
+            alpha: alphaKindOf(image.rgba), gray: isGray(image.rgba), frames: 0, first: this.frame, last: this.frame, scenes: [], tile: { ...tile }, reach: null, unloaded: image.loaded ? image.loaded.reduce((n, v) => n + (v === 0 ? 1 : 0), 0) : 0, pictures: 0, volatile: false,
+            rgba: image.rgba.slice(), pictureHashes: new Set(), wrapS: false, wrapT: false, mirrorS: false, mirrorT: false, seenIn: 0,
           };
           this.entries.set(hash, e);
           this.groupOf.set(hash, group);
           g.newThisFrame = true;
         }
         const s = edgeOf(tile.maskS, tile.cmS), t = edgeOf(tile.maskT, tile.cmT);
+        e.pictureHashes.add(this.pictureOfId.get(image.id)!);
         e.wrapS ||= s === 'wrap';
         e.wrapT ||= t === 'wrap';
         e.mirrorS ||= s === 'mirror';
@@ -184,14 +191,11 @@ export class TextureCollector {
       const record: TextureRecord = {
         hash, width: e.width, height: e.height, fmt: e.fmt, siz: e.siz,
         edgeS: e.wrapS ? 'wrap' : e.mirrorS ? 'mirror' : 'clamp', edgeT: e.wrapT ? 'wrap' : e.mirrorT ? 'mirror' : 'clamp',
-        alpha: e.alpha, gray: e.gray, frames: e.frames, first: e.first, last: e.last, scenes: e.scenes, tile: e.tile, reach: e.reach, family: null,
+        alpha: e.alpha, gray: e.gray, frames: e.frames, first: e.first, last: e.last, scenes: e.scenes, tile: e.tile, reach: e.reach, unloaded: e.unloaded, pictures: e.pictureHashes.size,
         volatile: churning.has(this.groupOf.get(hash)!) && e.frames <= SHORT_LIVED_FRAMES,
       };
       records.push(record);
       pixels.set(hash, e.rgba);
-    }
-    for (const [key, hashes] of partialFamilies(records.map((r) => ({ hash: r.hash, image: { width: r.width, height: r.height, rgba: pixels.get(r.hash)! } })))) {
-      for (const hash of hashes) records.find((r) => r.hash === hash)!.family = key;
     }
     return { records, pixels, churningGroups };
   }
