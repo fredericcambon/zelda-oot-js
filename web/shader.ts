@@ -32,6 +32,11 @@ export interface ShaderSpec {
   /** Textures that the draw marks (uniform `uTexC.z`) are sampled from mip levels, with anisotropic taps. */
   mip: boolean;
   alphaCompare: boolean;
+  /**
+   * With `alphaCompare`, or coverage scaled by alpha: the alpha test becomes a coverage fraction for alpha-to-coverage (the
+   * draw must go to a multisampled target, with the GL blend unit off).
+   */
+  cutout: boolean;
   /** The coverage is scaled by the pixel alpha: a pixel whose alpha rounds to no coverage is not written. */
   coverageTimesAlpha: boolean;
   /** The blender's pixel alpha is the coverage (1 for a pixel inside the triangle, the pixel alpha when scaled by it). */
@@ -72,15 +77,21 @@ function blendCycles(l: number): [BlendCycle, BlendCycle] {
 export interface SpecOptions {
   filter?: FilterMode;
   mip?: boolean;
+  /** Smooth cut-out edges; takes effect only on an alpha-compare or coverage-times-alpha draw that does not blend with the framebuffer. */
+  cutout?: boolean;
 }
 
 /** `filter` replaces what the draw asked for: `sharp` makes every texture nearest, `smooth` swaps the 3-point filter for bilinear. */
-export function specOf(state: DrawState, { filter = 'n64', mip = false }: SpecOptions = {}): ShaderSpec {
+export function specOf(state: DrawState, { filter = 'n64', mip = false, cutout = false }: SpecOptions = {}): ShaderSpec {
   const type = cycleTypeOf(state.otherModeH);
   const cycles: 1 | 2 = type === CycleType.TWO ? 2 : 1;
   const [c0, c1] = state.combine.cycles;
   const blend = blendCycles(state.otherModeL);
   const last = blend[cycles - 1]!;
+  const alphaCompare = (state.otherModeL & OtherL.ALPHA_COMPARE_MASK) === 1;
+  const coverageTimesAlpha = (state.otherModeL & OtherL.CVG_TIMES_ALPHA) !== 0;
+  const alphaFromCoverage = (state.otherModeL & OtherL.ALPHA_CVG_SELECT) !== 0;
+  const framebufferBlend = (state.otherModeL & OtherL.FORCE_BLEND) !== 0 && last.m === 1 && last.p !== 1 && !(last.a === 3 && last.b === 3);
   return {
     cycles,
     copy: type === CycleType.COPY,
@@ -90,17 +101,18 @@ export function specOf(state: DrawState, { filter = 'n64', mip = false }: SpecOp
     bilerp: type !== CycleType.COPY && ((state.otherModeH >>> 12) & 3) !== 0 && filter !== 'sharp',
     smooth: filter === 'smooth',
     mip: mip && type !== CycleType.COPY,
-    alphaCompare: (state.otherModeL & OtherL.ALPHA_COMPARE_MASK) === 1,
-    coverageTimesAlpha: (state.otherModeL & OtherL.CVG_TIMES_ALPHA) !== 0,
-    alphaFromCoverage: (state.otherModeL & OtherL.ALPHA_CVG_SELECT) !== 0,
+    alphaCompare,
+    cutout: cutout && (alphaCompare || (coverageTimesAlpha && alphaFromCoverage)) && !framebufferBlend && type !== CycleType.COPY,
+    coverageTimesAlpha,
+    alphaFromCoverage,
     blend,
-    framebufferBlend: (state.otherModeL & OtherL.FORCE_BLEND) !== 0 && last.m === 1 && last.p !== 1 && !(last.a === 3 && last.b === 3),
+    framebufferBlend,
   };
 }
 
 /** Stable text for a spec, used as the program cache key. */
 export function specKey(s: ShaderSpec): string {
-  return JSON.stringify([s.cycles, s.copy, s.cycles === 2 ? s.rgb : s.rgb[0], s.cycles === 2 ? s.alpha : s.alpha[0], s.bilerp, s.smooth, s.mip, s.alphaCompare, s.coverageTimesAlpha, s.alphaFromCoverage, s.cycles === 2 ? s.blend : s.blend[0], s.framebufferBlend]);
+  return JSON.stringify([s.cycles, s.copy, s.cycles === 2 ? s.rgb : s.rgb[0], s.cycles === 2 ? s.alpha : s.alpha[0], s.bilerp, s.smooth, s.mip, s.alphaCompare, s.cutout, s.coverageTimesAlpha, s.alphaFromCoverage, s.cycles === 2 ? s.blend : s.blend[0], s.framebufferBlend]);
 }
 
 // ---- Combiner -------------------------------------------------------------------------------------------------------
@@ -305,6 +317,7 @@ vec4 sample${index}(vec2 uv) {
       l0 = int(floor(lod));
       l1 = min(l0 + 1, top);
       t = lod - float(l0);
+      gLod = max(gLod, lod);
 #ifndef BILERP
       t = t >= 0.5 ? 1.0 : 0.0;
 #endif
@@ -326,6 +339,8 @@ vec4 sample${index}(vec2 uv) {
 }
 
 const WRAP_FUNCTION = `
+// Mip level (log2 of the shorter side of the footprint, in texels) of the coarsest mip-mapped lookup so far; 0 without mip levels.
+float gLod = 0.0;
 // Applies the tile's clamp, mirror and mask to an integer texel coordinate (relative to the tile's origin). The period is
 // the mask's size in texels, 0 without a mask.
 float wrapCoord(float v, float size, float period, float mode) {
@@ -362,6 +377,22 @@ void main() {
 }
 `;
 
+/**
+ * Distant vegetation loses alpha in the mip levels (thin leaves average toward transparent), so alpha is raised by a quarter
+ * per level, up to a factor of two, before the test. The alpha is then rescaled around the game's threshold by its screen
+ * derivative, which gives a one-pixel ramp at the edge: crisp when magnified, anti-aliased when small. The ramp is the
+ * coverage that alpha-to-coverage turns into samples.
+ */
+const EDGE_THRESHOLD = '0.5';
+
+function alphaTest(spec: ShaderSpec): string {
+  if (spec.copy) return '  if (cA < 0.5) discard;';
+  if (!spec.cutout) return spec.alphaCompare ? '  if (cA < uBlend.a) discard;' : '';
+  return `  float edgeA = ${spec.mip ? 'cA * min(1.0 + 0.25 * gLod, 2.0)' : 'cA'};
+  float cover = clamp((edgeA - ${spec.alphaCompare ? 'uBlend.a' : EDGE_THRESHOLD}) / max(fwidth(edgeA), 1e-4) + 0.5, 0.0, 1.0);
+  if (cover <= 0.0) discard;`;
+}
+
 export function fragmentSource(spec: ShaderSpec): string {
   return `#version 300 es
 precision highp float;
@@ -396,10 +427,10 @@ void main() {
   vec4 t0 = sample0(vUv);
   vec4 t1 = sample1(vUv);
 ${combinerSource(spec)}
-${spec.alphaCompare || spec.copy ? `  if (cA < ${spec.copy ? '0.5' : 'uBlend.a'}) discard;` : ''}
+${alphaTest(spec)}
 ${spec.coverageTimesAlpha && !spec.copy ? `  if (cA < ${MIN_COVERAGE_ALPHA.toFixed(6)}) discard;` : ''}
 ${blenderSource(spec)}
-  outColor = vec4(pixel, ${spec.framebufferBlend ? 'weight' : '1.0'});
+  outColor = vec4(pixel, ${spec.framebufferBlend ? 'weight' : spec.cutout ? 'cover' : '1.0'});
 }
 `;
 }

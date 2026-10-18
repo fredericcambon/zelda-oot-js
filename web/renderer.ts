@@ -69,7 +69,7 @@ interface Target {
 }
 
 /** What a renderer made without settings uses: no multisampling, no mip levels. */
-const PLAIN: GfxSettings = { filter: 'n64', msaa: false, scaleCap: 0, mipmaps: false, anisotropy: 1 };
+const PLAIN: GfxSettings = { filter: 'n64', msaa: false, scaleCap: 0, mipmaps: false, anisotropy: 1, cutout: 'hard' };
 const MSAA_SAMPLES = 4;
 
 /**
@@ -531,7 +531,8 @@ export class Renderer {
   private draw(run: DrawRun, first: number, count: number): void {
     const gl = this.gl;
     const state = run.state;
-    const spec = specOf(state, { filter: this.settings.filter, mip: this.settings.mipmaps && run.triangles });
+    const cutout = this.settings.cutout === 'smooth' && this.samples > 0 && run.triangles && (state.geometryMode & Geo.ZBUFFER) !== 0;
+    const spec = specOf(state, { filter: this.settings.filter, mip: this.settings.mipmaps && run.triangles, cutout });
     const { program, spec: used } = this.program(spec);
     gl.useProgram(program.gl);
     this.applyRaster(state, run.triangles, used);
@@ -544,7 +545,10 @@ export class Renderer {
 
   private applyRaster(state: DrawState, triangles: boolean, spec: ShaderSpec): void {
     const gl = this.gl;
-    gl.colorMask(true, true, true, true);
+    // Alpha-to-coverage takes the coverage from the shader's alpha output; the target keeps its alpha of 1.
+    gl.colorMask(true, true, true, !spec.cutout);
+    if (spec.cutout) gl.enable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+    else gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
     const sc = this.scissorRect(state);
     gl.enable(gl.SCISSOR_TEST);
     this.setScissor(sc.x, sc.y, sc.x + sc.w, sc.y + sc.h);
