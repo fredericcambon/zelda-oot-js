@@ -62,7 +62,7 @@ export function sameSnapshot(a: ActorsSnapshot, b: ActorsSnapshot): boolean {
 
 /** How far from the chosen actor, along the world x axis, Link is put. */
 export const GO_TO_OFFSET = 50;
-/** Offset in Link's record of a second copy of the world position (docs/re/actors.md); it is written with the first so that the two do not disagree for a frame. */
+/** Offset in Link's record of a second position triple that differs slightly from the first while he moves (docs/re/actors.md); it is written with the first. */
 const LINK_SECOND_POSITION = 0x38;
 
 /** Puts Link next to the actor at `addr`; call between frames. Throws a refusal that says why when it cannot. */
