@@ -47,8 +47,8 @@ const html = `<!doctype html>
   body { background: #151515; color: #ddd; font: 14px system-ui, sans-serif; margin: 16px auto; max-width: 1940px; padding: 0 12px; }
   h2 { margin: 28px 0 4px; font-size: 16px; }
   p { margin: 0 0 8px; color: #999; }
-  .swipe { position: relative; display: inline-block; line-height: 0; touch-action: pan-y; user-select: none; cursor: ew-resize; max-width: 100%; }
-  .swipe img { display: block; max-width: 100%; height: auto; }
+  .swipe { position: relative; display: inline-block; line-height: 0; touch-action: none; user-select: none; cursor: ew-resize; max-width: 100%; }
+  .swipe img { -webkit-user-drag: none; display: block; max-width: 100%; height: auto; }
   .swipe.pixel img { image-rendering: pixelated; }
   .swipe .over { position: absolute; inset: 0; overflow: hidden; clip-path: inset(0 50% 0 0); }
   .swipe .handle { position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; background: #fff; box-shadow: 0 0 4px #000; pointer-events: none; }
@@ -64,6 +64,7 @@ ${views.map((v) => section(v, v, 'Full frame.', 1)).join('')}
   for (const el of document.querySelectorAll('.swipe')) {
     const zoom = Number(el.dataset.zoom);
     const images = el.querySelectorAll('img');
+    for (const img of images) img.draggable = false;
     const size = () => {
       // Both images are drawn at the same size, so the divider reveals the hard one under the smooth one.
       const w = images[0].naturalWidth * zoom;
@@ -81,7 +82,7 @@ ${views.map((v) => section(v, v, 'Full frame.', 1)).join('')}
       el.querySelector('.over').style.clipPath = 'inset(0 ' + (1 - f) * 100 + '% 0 0)';
       el.querySelector('.handle').style.left = f * 100 + '%';
     };
-    el.addEventListener('pointerdown', (e) => { el.setPointerCapture(e.pointerId); set(e.clientX); });
+    el.addEventListener('pointerdown', (e) => { e.preventDefault(); el.setPointerCapture(e.pointerId); set(e.clientX); });
     el.addEventListener('pointermove', (e) => { if (el.hasPointerCapture(e.pointerId)) set(e.clientX); });
   }
 </script>

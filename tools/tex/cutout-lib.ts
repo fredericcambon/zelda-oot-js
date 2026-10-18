@@ -1,5 +1,5 @@
 // Shared by tools/tex/cutout-compare.ts: starts the dev server and headless Chrome and drives the page over the DevTools protocol.
-import { type ChildProcess, spawn } from 'node:child_process';
+import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -60,7 +60,7 @@ export async function start(port: number, chrome: string): Promise<Session> {
   const children: ChildProcess[] = [];
   const profile = mkdtempSync(join(tmpdir(), 'oot-chrome-'));
   const stop = () => {
-    for (const c of children) if (c.pid) spawn('taskkill', ['/pid', String(c.pid), '/t', '/f'], { stdio: 'ignore' });
+    for (const c of children) if (c.pid) spawnSync('taskkill', ['/pid', String(c.pid), '/t', '/f'], { stdio: 'ignore' });
     setTimeout(() => { try { rmSync(profile, { recursive: true, force: true }); } catch { /* Chrome still holds a file */ } }, 2000).unref();
   };
   try {
