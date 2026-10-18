@@ -1,0 +1,169 @@
+// An optional local pack of replacement textures: `out/texpack/<hash>.png` on the machine that built it (`npm run tex -- upscale`), served to
+// loopback clients only at `/texpack/` and listed in `/texpack/index.json`. A decoded texture is looked up by `hashTexture`. A replacement is
+// exactly twice the size of the texture it stands for, and the renderer samples it with the texture's own tile settings.
+import { hashTexture } from '../tools/tex/hash.ts';
+
+export { hashTexture };
+
+export const PACK_URL = 'texpack/';
+export const STORAGE_KEY = 'oot.texpack';
+/** The key that switches between the original textures and the pack. */
+export const TOGGLE_KEY = 't';
+/** A replacement is this many times the size of the texture it replaces. */
+export const PACK_SCALE = 2;
+
+export interface PackSummary {
+  /** Whether a pack is being served. */
+  available: boolean;
+  enabled: boolean;
+  /** Entries in the pack. */
+  entries: number;
+  /** Distinct textures the renderer has decoded and looked up. */
+  seen: number;
+  /** Of those, the ones that have a replacement in use. */
+  replaced: number;
+  /** Replacements requested and not yet loaded. */
+  pending: number;
+}
+
+type Listener = () => void;
+
+export class TexPack {
+  private entries: Set<string> | null = null;
+  private readonly bitmaps = new Map<string, ImageBitmap | null>();
+  private readonly requested = new Set<string>();
+  private readonly seenHashes = new Set<string>();
+  private on: boolean;
+  /** Called when the index arrives, when a replacement arrives (with its hash) and when the switch is toggled (with no hash). */
+  onChange: ((hash?: string) => void) | null = null;
+
+  constructor(private readonly base = PACK_URL, enabled = readEnabled()) {
+    this.on = enabled;
+  }
+
+  /** Fetches the index of the pack; a missing pack, or a server that answers with something else, leaves it empty. */
+  async load(fetcher: typeof fetch = fetch): Promise<void> {
+    try {
+      const response = await fetcher(`${this.base}index.json`);
+      if (!response.ok) return;
+      const index = (await response.json()) as { textures?: unknown };
+      if (!index.textures || typeof index.textures !== 'object') return;
+      this.entries = new Set(Object.keys(index.textures));
+    } catch {
+      return;
+    }
+    if (this.entries.size > 0) this.onChange?.();
+  }
+
+  get available(): boolean {
+    return this.entries !== null && this.entries.size > 0;
+  }
+
+  get enabled(): boolean {
+    return this.on;
+  }
+
+  set enabled(value: boolean) {
+    if (value === this.on) return;
+    this.on = value;
+    try {
+      localStorage.setItem(STORAGE_KEY, value ? '1' : '0');
+    } catch {
+      // The choice is kept for this page only.
+    }
+    this.onChange?.();
+  }
+
+  /**
+   * The replacement for a texture, or null: not in the pack, pack off, or still on its way (it is requested, and `onChange` is
+   * called with the hash when it arrives).
+   */
+  lookup(hash: string): ImageBitmap | null {
+    if (!this.entries) return null;
+    this.seenHashes.add(hash);
+    if (!this.on || !this.entries.has(hash)) return null;
+    const known = this.bitmaps.get(hash);
+    if (known !== undefined) return known;
+    if (!this.requested.has(hash)) {
+      this.requested.add(hash);
+      void this.fetchOne(hash);
+    }
+    return null;
+  }
+
+  private async fetchOne(hash: string): Promise<void> {
+    let bitmap: ImageBitmap | null = null;
+    try {
+      const response = await fetch(`${this.base}${hash}.png`);
+      if (response.ok) bitmap = await createImageBitmap(await response.blob(), { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
+    } catch {
+      bitmap = null;
+    }
+    this.bitmaps.set(hash, bitmap);
+    this.onChange?.(hash);
+  }
+
+  summary(): PackSummary {
+    let replaced = 0;
+    for (const hash of this.seenHashes) if (this.bitmaps.get(hash)) replaced++;
+    return {
+      available: this.available,
+      enabled: this.on,
+      entries: this.entries?.size ?? 0,
+      seen: this.seenHashes.size,
+      replaced,
+      pending: this.requested.size - this.bitmaps.size,
+    };
+  }
+}
+
+function readEnabled(): boolean {
+  try {
+    return localStorage.getItem(STORAGE_KEY) !== '0';
+  } catch {
+    return true;
+  }
+}
+
+/** Whether a replacement fits the texture it stands for (twice its size in both directions). */
+export const fits = (original: { width: number; height: number }, replacement: { width: number; height: number }): boolean =>
+  replacement.width === original.width * PACK_SCALE && replacement.height === original.height * PACK_SCALE;
+
+/** The pack of the page, or null where there is no page to serve one (the tests, a worker). */
+export function pagePack(): TexPack | null {
+  if (typeof location === 'undefined' || typeof fetch !== 'function' || typeof createImageBitmap !== 'function') return null;
+  const pack = new TexPack(new URL(PACK_URL, document.baseURI).href);
+  void pack.load();
+  return pack;
+}
+
+/** Shows `text` at the bottom of the page for a moment. */
+function toast(text: string): void {
+  let element = document.getElementById('texpack-toast');
+  if (!element) {
+    element = document.createElement('div');
+    element.id = 'texpack-toast';
+    element.style.cssText = 'position:fixed;left:50%;bottom:1.5em;transform:translateX(-50%);padding:.4em .8em;background:#000c;color:#fff;font:14px sans-serif;border-radius:4px;pointer-events:none;z-index:10';
+    document.body.append(element);
+  }
+  element.textContent = text;
+  element.style.display = 'block';
+  clearTimeout(Number(element.dataset.timer));
+  const shown = element;
+  element.dataset.timer = String(setTimeout(() => (shown.style.display = 'none'), 1500));
+}
+
+/** Binds the toggle key on `target`, with a notice on the page. Returns what unbinds it. */
+export function bindToggleKey(pack: TexPack, target: Pick<EventTarget, 'addEventListener' | 'removeEventListener'>): Listener {
+  const handler = (e: Event): void => {
+    const k = e as KeyboardEvent;
+    if (k.ctrlKey || k.metaKey || k.altKey || k.key.toLowerCase() !== TOGGLE_KEY) return;
+    const element = k.target as Element | null;
+    if (element && /^(input|textarea|select)$/i.test(element.tagName)) return;
+    if (!pack.available) return;
+    pack.enabled = !pack.enabled;
+    toast(pack.enabled ? 'Texture pack: on' : 'Texture pack: off (original textures)');
+  };
+  target.addEventListener('keydown', handler);
+  return () => target.removeEventListener('keydown', handler);
+}

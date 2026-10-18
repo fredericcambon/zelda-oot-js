@@ -6,6 +6,7 @@ import { GpuTimer } from './gpu-timer.ts';
 import { Geo } from '../tools/gfx/opcodes.ts';
 import { CycleType, cycleTypeOf, fragmentSource, OtherL, shiftScale, specKey, specOf, VERTEX_SHADER, type ShaderSpec } from './shader.ts';
 import { MAX_SCALE, type GfxSettings } from './gfx-settings.ts';
+import { bindToggleKey, fits, hashTexture, pagePack, type TexPack } from './tex-pack.ts';
 
 export const SCREEN_W = 320;
 export const SCREEN_H = 240;
@@ -48,9 +49,13 @@ const COMPLETION_STATUS_KHR = 0x91b1;
 
 interface GpuTexture {
   texture: WebGLTexture;
+  /** Size of the uploaded image; a replacement from the texture pack is `scale` times the size of the texture it stands for. */
   width: number;
   height: number;
   mipmapped: boolean;
+  scale: number;
+  /** Hash of the decoded texture, when it was looked up in the pack. */
+  hash?: string;
 }
 
 interface Target {
@@ -71,7 +76,7 @@ const MSAA_SAMPLES = 4;
  * of it, and a level made from the whole texture would blend that repeat with its neighbours.
  */
 const mipmappable = (tile: { maskS: number; maskT: number }, tex: GpuTexture): boolean =>
-  tex.mipmapped && (tile.maskS === 0 || 1 << tile.maskS === tex.width) && (tile.maskT === 0 || 1 << tile.maskT === tex.height);
+  tex.mipmapped && (tile.maskS === 0 || 1 << tile.maskS === tex.width / tex.scale) && (tile.maskT === 0 || 1 << tile.maskT === tex.height / tex.scale);
 
 const FLOATS_PER_VERTEX = 10;
 const MAX_TEXTURES = 512;
@@ -121,10 +126,13 @@ export class Renderer {
   private readonly targets = new Map<number, Target>();
   private readonly textureCache = new Map<number, GpuTexture>();
   private readonly white: GpuTexture;
+  private lastResult: DisplayListResult | null = null;
+  private lastPresented: number | null = null;
   private lastTarget: Target | null = null;
   private vertices = new Float32Array(0);
 
-  constructor(readonly canvas: HTMLCanvasElement, scale = 1, settings: GfxSettings = PLAIN) {
+  /** `texPack`: the replacement textures; by default the pack the page is served with, none where there is no page to ask (the tests). */
+  constructor(readonly canvas: HTMLCanvasElement, scale = 1, settings: GfxSettings = PLAIN, readonly texPack: TexPack | null = pagePack()) {
     const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, preserveDrawingBuffer: true });
     if (!gl) throw new Error('WebGL2 is not available in this browser');
     this.gl = gl;
@@ -146,6 +154,38 @@ export class Renderer {
     this.depth = gl.createRenderbuffer()!;
     this.setScale(scale);
     this.white = this.upload(1, 1, Uint8Array.of(255, 255, 255, 255), false);
+    if (this.texPack) {
+      this.texPack.onChange = (hash) => this.packChanged(hash);
+      if (typeof addEventListener === 'function') bindToggleKey(this.texPack, globalThis);
+      // The handle the screenshot tool (tools/tex/compare.ts) drives.
+      Object.assign(globalThis, { ootTexPack: { pack: this.texPack, redraw: () => this.redraw(), inUse: () => [...this.textureCache.values()].filter((t) => t.scale > 1).length } });
+    }
+  }
+
+  /** The pack arrived, a replacement arrived (`hash`) or the switch was toggled: the textures concerned are rebuilt when next drawn. */
+  private packChanged(hash?: string): void {
+    if (hash === undefined) this.clearTextures();
+    else for (const [id, tex] of this.textureCache) if (tex.hash === hash) this.dropTexture(id, tex);
+  }
+
+  /** Draws the last task and shows the picture it drew (not the one the video interface scans out, which is the frame before). Only valid while the game is not running: the task reads the game's memory. */
+  redraw(): void {
+    if (!this.lastResult) return;
+    // The colour and depth images still hold the picture the task drew: left in place, depth testing would reject the redraw.
+    const gl = this.gl;
+    gl.disable(gl.SCISSOR_TEST);
+    gl.colorMask(true, true, true, true);
+    gl.depthMask(true);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clearDepth(1);
+    for (const t of this.targets.values()) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, t.samples ? t.samples.framebuffer : t.framebuffer);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      t.dirty = true;
+    }
+    this.drawTask(this.lastResult);
+    const drawn = this.lastResult.batches.map((b) => b.state).filter((st) => physical(st.colorImage.addr) !== physical(st.depthImage)).at(-1);
+    this.present(drawn?.colorImage.addr ?? this.lastPresented ?? 0);
   }
 
   /** Renders at `scale` times the 320x240 the game addresses; the colour images are dropped and redrawn by the game. */
@@ -216,6 +256,7 @@ export class Renderer {
     this.collectGpu();
     this.gpuTimer.begin('task');
     s.tasks++;
+    this.lastResult = result;
     this.syncMipBudget = 1;
     s.drawCalls = 0;
     s.unmergedDrawCalls = 0;
@@ -238,6 +279,7 @@ export class Renderer {
 
   /** Shows the colour image at `address` (the one the video interface scans out), or the last one drawn when unknown. */
   present(address: number): void {
+    this.lastPresented = address;
     this.gpuTimer.begin('present');
     try {
       this.presentImage(address);
@@ -539,9 +581,11 @@ export class Renderer {
       gl.activeTexture(gl.TEXTURE0 + i);
       gl.bindTexture(gl.TEXTURE_2D, tex.texture);
       gl.uniform1i(u(`uTex${i}`), i);
-      a.set([tex.width, tex.height, tile ? tile.uls / 4 : 0, tile ? tile.ult / 4 : 0], i * 4);
-      m.set(tile ? [tile.maskS, tile.maskT, tile.cmS, tile.cmT] : [0, 0, 0, 0], i * 4);
-      c.set(tile ? [shiftScale(tile.shiftS), shiftScale(tile.shiftT), mip && mipmappable(tile, tex) ? 1 : 0, 0] : [1, 1, 0, 0], i * 4);
+      // A replacement is sampled in its own texels: the coordinates, the tile origin and the masks' periods are scaled by its size.
+      const k = tex.scale, log2k = Math.log2(k);
+      a.set([tex.width, tex.height, tile ? (tile.uls / 4) * k : 0, tile ? (tile.ult / 4) * k : 0], i * 4);
+      m.set(tile ? [tile.maskS ? tile.maskS + log2k : 0, tile.maskT ? tile.maskT + log2k : 0, tile.cmS, tile.cmT] : [0, 0, 0, 0], i * 4);
+      c.set(tile ? [shiftScale(tile.shiftS) * k, shiftScale(tile.shiftT) * k, mip && mipmappable(tile, tex) ? 1 : 0, 0] : [1, 1, 0, 0], i * 4);
     }
     gl.uniform4fv(u('uTexA'), a);
     gl.uniform4fv(u('uTexB'), m);
@@ -636,17 +680,23 @@ ${source}`);
     return loc;
   }
 
-  private upload(width: number, height: number, rgba: Uint8Array, mipmaps = this.settings.mipmaps): GpuTexture {
+  private upload(width: number, height: number, rgba: Uint8Array | ImageBitmap, mipmaps = this.settings.mipmaps, scale = 1): GpuTexture {
     const gl = this.gl;
     const texture = gl.createTexture()!;
     gl.activeTexture(gl.TEXTURE0 + UPLOAD_UNIT);
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+    if (rgba instanceof Uint8Array) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+    else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, mipmaps ? gl.NEAREST_MIPMAP_NEAREST : gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     if (mipmaps) gl.generateMipmap(gl.TEXTURE_2D);
-    return { texture, width, height, mipmapped: mipmaps };
+    return { texture, width, height, mipmapped: mipmaps, scale };
+  }
+
+  private dropTexture(id: number, tex: GpuTexture): void {
+    this.gl.deleteTexture(tex.texture);
+    this.textureCache.delete(id);
   }
 
   private clearTextures(): void {
@@ -658,7 +708,13 @@ ${source}`);
   private textureFor(image: DecodedTexture): GpuTexture {
     let tex = this.textureCache.get(image.id);
     if (!tex) {
-      tex = this.upload(image.width, image.height, image.rgba);
+      const pack = this.texPack?.available ? this.texPack : null;
+      const hash = pack ? hashTexture(image.width, image.height, image.rgba) : undefined;
+      const replacement = pack && hash ? pack.lookup(hash) : null;
+      tex = replacement && fits(image, replacement)
+        ? this.upload(replacement.width, replacement.height, replacement, this.settings.mipmaps, replacement.width / image.width)
+        : this.upload(image.width, image.height, image.rgba);
+      tex.hash = hash;
       this.textureCache.set(image.id, tex);
     }
     return tex;
