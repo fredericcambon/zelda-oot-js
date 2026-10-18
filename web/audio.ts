@@ -123,6 +123,10 @@ export class AudioOutput implements AudioSink {
     return Math.sqrt(sum / this.levels.length);
   }
 
+  get isMuted(): boolean {
+    return this.muted;
+  }
+
   toggleMute(): boolean {
     this.muted = !this.muted;
     if (this.gain) this.gain.gain.value = this.muted ? 0 : 1;

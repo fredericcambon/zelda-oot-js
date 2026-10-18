@@ -4,22 +4,27 @@ import { defineConfig, type Plugin } from 'vite';
 import { PACK_FILE } from './tools/assets/pack.ts';
 import { MODULE_URLS, serveGameFiles } from './web/game-files.ts';
 import { savesDir, savesMiddleware } from './web/saves-endpoint.ts';
+import { serveTexPack } from './tools/tex/serve.ts';
 
 const dist = resolve(import.meta.dirname, 'dist');
 const pagesDir = resolve(import.meta.dirname, 'dist-pages');
+const texPackDir = resolve(process.env.OOT_TEXPACK_DIR || join(import.meta.dirname, 'out', 'texpack'));
 
 // The recompiled game and the pack cut from the cartridge (`npm run port`) live in dist/ next to the web build. The dev and
-// preview servers serve them from there (the pack to loopback only); the build copies the game, never the pack.
+// preview servers serve them from there (the pack to loopback only); the build copies the game, never the pack. The local texture pack
+// (out/texpack/, or OOT_TEXPACK_DIR; `npm run tex -- upscale`) is served to loopback only by both servers and is in no build.
 function gameFiles(pages: boolean): Plugin {
   return {
     name: 'oot-game-files',
     configureServer(server) {
       server.middlewares.use(savesMiddleware(savesDir()));
       server.middlewares.use(serveGameFiles(dist));
+      server.middlewares.use(serveTexPack(texPackDir));
     },
     configurePreviewServer(server) {
       server.middlewares.use(savesMiddleware(savesDir()));
       server.middlewares.use(serveGameFiles(dist));
+      server.middlewares.use(serveTexPack(texPackDir));
     },
     closeBundle() {
       const out = pages ? pagesDir : join(dist, 'web');

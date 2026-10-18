@@ -20,7 +20,8 @@
     "port": "tsx tools/port/cli.ts",
     "headless": "tsx tools/headless/cli.ts",
     "sweep": "tsx tools/sweep/cli.ts",
-    "save": "tsx tools/saves/cli.ts"
+    "save": "tsx tools/saves/cli.ts",
+    "tex": "tsx tools/tex/cli.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -32,5 +33,9 @@
     "typescript-eslint": "^8.71.2",
     "vite": "^8.3.4",
     "vitest": "^5.0.4"
+  },
+  "dependencies": {
+    "htm": "^3.1.1",
+    "preact": "^11.0.1"
   }
 }

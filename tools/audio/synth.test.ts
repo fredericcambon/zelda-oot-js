@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { existsSync } from 'node:fs';
+import { loadContext } from '../analyze/context.ts';
+import { buildSpecs } from '../analyze/image.ts';
+import { RspReference } from './rsp-ref.ts';
 import { Synth } from './synth.ts';
 
 const RAM_SIZE = 0x100000;
@@ -173,6 +177,51 @@ describe('mixing', () => {
     m.s16(0x2010, [1000, 0, 0, 0, 0, 0, 0, 0]);
     m.run([load(0x400, 0x2000, 16), load(0x500, 0x2010, 16), mixCmd(-0x4000, 32, 0x500, 0x400)]);
     expect(m.dm(0x400, 1)).toEqual([500]);
+  });
+});
+
+// Command 0e (ucode+0xc5c-0xca8): the gain is w0 bits 16-23 as 4.4 fixed point.
+const gainCmd = (gain: number, bytes: number, dmem: number): [number, number] => [0x0e000000 | (gain << 16) | bytes, dmem << 16];
+
+describe('gain (command 0e)', () => {
+  it('multiplies samples in place by a 4.4 fixed-point gain and saturates', () => {
+    const m = new Machine();
+    m.s16(0x2000, [1000, -1000, 20000, -20000, 7, -7, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
+    m.run([load(0x400, 0x2000, 32), gainCmd(0x28, 32, 0x400)]);
+    expect(m.dm(0x400, 8)).toEqual([2500, -2500, 32767, -32768, 17, -18, 0, 2]);
+  });
+
+  it('processes at least one 32-byte block and rounds the count up to whole blocks', () => {
+    const m = new Machine();
+    m.s16(0x2000, Array.from({ length: 48 }, () => 100));
+    m.run([load(0x400, 0x2000, 96), gainCmd(0x20, 0, 0x400)]);
+    expect(m.dm(0x400, 17)).toEqual([...Array(16).fill(200), 100]);
+    m.run([load(0x400, 0x2000, 96), gainCmd(0x20, 33, 0x400)]);
+    expect(m.dm(0x400, 33)).toEqual([...Array(32).fill(200), 100]);
+  });
+});
+
+const romPath = process.env.OOT_ROM;
+
+describe.skipIf(!romPath || !existsSync(romPath))('gain (command 0e) against the audio microcode', () => {
+  it('writes the samples the microcode writes', () => {
+    const code = buildSpecs(loadContext(romPath!)).find((s) => s.name === 'code')!;
+    const at = (address: number, size: number) => code.bytes.subarray(address - code.base, address - code.base + size);
+    const samples = [0, 1, -1, 7, -7, 1000, -1000, 2047, -2048, 2049, 20000, -20000, 32767, -32768, 12345, -12345];
+    for (const gain of [0x01, 0x08, 0x10, 0x28, 0x5f, 0xff]) {
+      const m = new Machine();
+      m.ram.set(at(0x801120e0, 0x2e0), DATA_SEGMENT);
+      m.s16(0x2000, [...samples, ...samples.map((x) => -x - 3)]);
+      const commands = [load(0x400, 0x2000, 64), gainCmd(gain, 64, 0x400), save(0x400, 0x3000, 64)];
+      const expected = m.ram.slice();
+      commands.forEach(([w0, w1], i) => {
+        new DataView(expected.buffer).setUint32(LIST + i * 8, w0 >>> 0);
+        new DataView(expected.buffer).setUint32(LIST + i * 8 + 4, w1 >>> 0);
+      });
+      m.run(commands);
+      new RspReference(at(0x800e0f10, 0x1000)).run(expected, { dataPtr: DATA_SEGMENT, dataSize: 0x2df, listPtr: LIST, listSize: commands.length * 8 });
+      expect(m.readS16(0x3000, 32), `gain ${gain.toString(16)}`).toEqual(Array.from({ length: 32 }, (_, i) => new DataView(expected.buffer).getInt16(0x3000 + i * 2)));
+    }
   });
 });
 

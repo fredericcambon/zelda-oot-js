@@ -91,6 +91,7 @@ export class Synth {
       case 0x0b: this.dmaIn(BOOK, w1 & 0xffffff, w0 & 0xffff); break;
       case 0x0c: this.mix(w0, w1); break;
       case 0x0d: this.interleave(w0, w1); break;
+      case 0x0e: this.gainBuffer(w0, w1); break;
       case 0x0f: this.loopAddr = w1 & 0xffffff; break;
       case 0x10: this.copy(w0, w1); break;
       case 0x11: this.decimate(w0 & 0xffff, w1 >>> 16, w1 & 0xffff); break;
@@ -159,6 +160,20 @@ export class Synth {
     for (let off = 0; off < Math.ceil(count / 32) * 32; off += 2) {
       const acc = this.ld(dst + off) * 0x7fff * 2 + 0x8000 + this.ld(src + off) * gain * 2;
       this.st(dst + off, clamp16(Math.floor(acc / 65536)));
+    }
+  }
+
+  /**
+   * Multiplies `w0` low 16 bytes of samples at `w1` high 16, in place and in 32-byte steps (at least one), by the gain in
+   * `w0` bits 16-23: four integer and four fraction bits. Results saturate to 16 bits.
+   */
+  private gainBuffer(w0: number, w1: number): void {
+    const whole = (w0 >>> 20) & 0xf, fraction = (w0 >>> 16) & 0xf;
+    const addr = w1 >>> 16;
+    this.requireAligned(addr);
+    for (let off = 0; off < Math.max(32, Math.ceil((w0 & 0xffff) / 32) * 32); off += 2) {
+      const x = this.ld(addr + off);
+      this.st(addr + off, clamp16(x * whole + Math.floor((x * (fraction << 12)) / 65536)));
     }
   }
 

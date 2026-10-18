@@ -111,12 +111,18 @@ function enterLandscapeFullscreen(): void {
     .catch(() => undefined);
 }
 
+/** Leaves fullscreen when in it, otherwise enters it (landscape where the browser allows). */
+export function toggleFullscreen(): void {
+  if (document.fullscreenElement) void document.exitFullscreen();
+  else enterLandscapeFullscreen();
+}
+
 /** Builds the overlay inside `layer` and shows it on touch devices (coarse pointer, or the first touchstart). */
 export class TouchControls {
   readonly pad = new TouchPad();
   private hidden = false;
 
-  constructor(private readonly layer: HTMLElement, toggle: HTMLButtonElement) {
+  constructor(private readonly layer: HTMLElement, toggle?: HTMLButtonElement) {
     const root = document.documentElement;
     const enable = () => root.classList.add('touch');
     if (hasCoarsePointer()) enable();
@@ -124,15 +130,21 @@ export class TouchControls {
 
     this.buildStick();
     this.buildButtons();
-    toggle.addEventListener('click', () => {
-      this.hidden = !this.hidden;
-      root.classList.toggle('touch-hidden', this.hidden);
+    toggle?.addEventListener('click', () => {
+      this.toggleHidden();
       toggle.textContent = this.hidden ? 'Show controls' : 'Hide controls';
-      this.pad.reset();
-      this.drawStick();
     });
     addEventListener('blur', () => this.pad.reset());
     layer.addEventListener('pointerup', enterLandscapeFullscreen, { once: true });
+  }
+
+  /** Shows the controls when hidden and hides them when shown; returns whether they are hidden now. */
+  toggleHidden(): boolean {
+    this.hidden = !this.hidden;
+    document.documentElement.classList.toggle('touch-hidden', this.hidden);
+    this.pad.reset();
+    this.drawStick();
+    return this.hidden;
   }
 
   poll(): PadState {
