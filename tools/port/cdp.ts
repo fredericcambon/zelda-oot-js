@@ -1,4 +1,7 @@
 // A minimal Chrome DevTools Protocol client over the browser's WebSocket, shared by the page-driving scripts of this folder.
+/** Flags every Chrome launched by a tool or test carries: automated runs must make no sound. */
+export const CHROME_SILENT_FLAGS = ['--mute-audio'];
+
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export async function waitFor<T>(what: string, probe: () => Promise<T | undefined>, timeoutMs = 60_000): Promise<T> {

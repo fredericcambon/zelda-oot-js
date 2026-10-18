@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { Cdp, sleep, waitFor } from './cdp.ts';
+import { Cdp, CHROME_SILENT_FLAGS, sleep, waitFor } from './cdp.ts';
 
 const FIRST_FRAME_LIMIT_MS = 1500;
 const REPEAT_FRAME_LIMIT_MS = 1000;
@@ -72,7 +72,7 @@ try {
 
   const debugPort = port + 1;
   const chrome = spawn(values.chrome!, [
-    '--headless=new', `--remote-debugging-port=${debugPort}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check',
+    '--headless=new', ...CHROME_SILENT_FLAGS, `--remote-debugging-port=${debugPort}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check',
     '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required', 'about:blank',
   ], { stdio: 'ignore' });
   children.push(chrome);
