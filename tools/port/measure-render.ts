@@ -10,7 +10,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { Cdp, sleep, waitFor } from './cdp.ts';
+import { Cdp, CHROME_SILENT_FLAGS, sleep, waitFor } from './cdp.ts';
 
 const { values } = parseArgs({
   options: {
@@ -116,6 +116,7 @@ try {
   const debugPort = port + 1;
   const chrome = spawn(values.chrome!, [
     ...(values.headless ? ['--headless=new', '--use-angle=d3d11', '--enable-gpu'] : []),
+    ...CHROME_SILENT_FLAGS,
     `--remote-debugging-port=${debugPort}`, `--user-data-dir=${join(work, 'profile')}`, '--no-first-run', '--no-default-browser-check',
     '--ignore-gpu-blocklist', '--enable-webgl-developer-extensions', '--autoplay-policy=no-user-gesture-required',
     '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows',
