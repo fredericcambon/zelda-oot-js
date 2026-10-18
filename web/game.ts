@@ -13,6 +13,10 @@ import { mark } from './timing.ts';
 import { MODULE_URL, type WasmBuild } from './wasm.ts';
 import { loadState, saveState, type StateCore } from '../tools/runtime/snapshot.ts';
 
+interface WebCore extends StateCore {
+  _oot_reset(): void;
+}
+
 export interface Game {
   /** Sets controller 1 for the frames that follow. */
   setPad(pad: PadState): void;
@@ -20,6 +24,10 @@ export interface Game {
   saveMemory: SaveMemory;
   /** Save states of the game; capture and apply only between two frames. */
   states: StateSource;
+  /** The guest memory, big-endian, indexed by physical address; valid until the next frame. */
+  ram(): Uint8Array;
+  /** Starts the game over on the same cartridge, as the console's reset does; the save memory is kept. Call between frames. */
+  reset(): void;
   /** Runs the game for one video frame. Rejects with the game's own message when it stops. */
   frame(): Promise<void>;
   /** Address of the colour image the video interface shows. */
@@ -35,7 +43,7 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
   // The module's start-up promise never settles when the hook below fails, so the failure is raced against it.
   let failInstantiation!: (err: unknown) => void;
   const instantiationFailed = new Promise<never>((_, reject) => (failInstantiation = reject));
-  const started = startModule<StateCore>(moduleUrl, rom, {
+  const started = startModule<WebCore>(moduleUrl, rom, {
     instantiateWasm: (imports: WebAssembly.Imports, done: (instance: WebAssembly.Instance) => void) => {
       wasm.module
         .then((module) => WebAssembly.instantiate(module, imports))
@@ -71,8 +79,11 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
   const view = () => new DataView(mod.HEAPU8.buffer, mod._oot_rdram(), RDRAM_SIZE);
   const sram = () => mod.HEAPU8.subarray(mod._oot_sram(), mod._oot_sram() + mod._oot_sram_size());
   return {
+    ram: guestRam,
+    reset: () => mod._oot_reset(),
     setPad: (pad) => mod._oot_pad_set(0, pad.buttons, pad.x, pad.y),
     saveMemory: {
+      read: () => sram().slice(),
       write: (bytes) => sram().set(bytes.subarray(0, mod._oot_sram_size())),
       takeIfDirty: () => (mod._oot_sram_take_dirty() ? sram().slice() : null),
     },

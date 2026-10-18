@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -43,6 +43,19 @@ describe('saves endpoint', () => {
     expect(put.status).toBe(204);
     const got = await page('/api/saves/sram');
     expect([...new Uint8Array(await got.arrayBuffer())]).toEqual([1, 2, 3]);
+  });
+
+  it('keeps the previous save as sram.bin.bak-<time> only when asked to', async () => {
+    const names = () => readdirSync(dir).filter((f) => f.startsWith('sram.bin.bak-'));
+    await page('/api/saves/sram', { method: 'PUT', body: new Uint8Array([1, 1]) });
+    await page('/api/saves/sram', { method: 'PUT', body: new Uint8Array([2, 2]) });
+    expect(names()).toEqual([]);
+    await serverStore(page).store(new Uint8Array([3, 3]), { backup: true });
+    const [backup] = names();
+    expect(names()).toHaveLength(1);
+    expect([...readFileSync(join(dir, backup!))]).toEqual([2, 2]);
+    expect([...new Uint8Array(await (await page('/api/saves/sram')).arrayBuffer())]).toEqual([3, 3]);
+    rmSync(join(dir, backup!));
   });
 
   it('keeps a state with its format version and the time it was saved', async () => {
@@ -95,7 +108,7 @@ describe('saves endpoint', () => {
 
 describe('saves through the endpoint', () => {
   function memory(): SaveMemory & { ram: Uint8Array } {
-    const m = { ram: new Uint8Array(4), write: (b: Uint8Array) => m.ram.set(b), takeIfDirty: () => m.ram.slice() };
+    const m = { ram: new Uint8Array(4), read: () => m.ram.slice(), write: (b: Uint8Array) => m.ram.set(b), takeIfDirty: () => m.ram.slice() };
     return m;
   }
 

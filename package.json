@@ -19,7 +19,8 @@
     "recomp": "tsx tools/recomp/cli.ts",
     "port": "tsx tools/port/cli.ts",
     "headless": "tsx tools/headless/cli.ts",
-    "sweep": "tsx tools/sweep/cli.ts"
+    "sweep": "tsx tools/sweep/cli.ts",
+    "save": "tsx tools/saves/cli.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
