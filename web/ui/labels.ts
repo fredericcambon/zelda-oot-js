@@ -63,6 +63,11 @@ export class Labels {
     this.changed();
   }
 
+  /** Every label, by kind and then by id. */
+  list(): { kind: LabelKind; id: string; text: string }[] {
+    return LABEL_KINDS.flatMap((kind) => Object.entries(this.data[kind]).map(([id, text]) => ({ kind, id, text })));
+  }
+
   count(): number {
     return LABEL_KINDS.reduce((n, k) => n + Object.keys(this.data[k]).length, 0);
   }

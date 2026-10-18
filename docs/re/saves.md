@@ -142,7 +142,21 @@ A new file is the record `sram_create_file` writes: the 76, 10 and 96 bytes `sav
 | `counts8C.<i>` | `+0x8C + i` | 11 + `i` for 0-15 | A small number appears under cells 0, 1, 2, 3 and 6 only (values 11, 12, 13, 14, 17). The menu names those cells' items "Deku Stick", "Deku Nut", "Bomb", "Fairy Bow", "Fairy Slingshot". With all 24 cells holding id 3 only cell 3 showed a number (23), so a number needs both the slot and its item. Shown as the count of that item. Counts 4, 5 and 7-15 showed nothing with the items tried: left neutral. |
 | `equip0`-`equip3` | `+0x9C`, `+0x70` nibbles | `+0x9C` `0x7777`, `+0x70` `0x1111` and `0x2222` | The Equipment page has four rows of three columns: a sword blade, a shield, a tunic, boots (top to bottom; the default `+0x70` of `0x1100` showed only the tunic and boots as worn). A nibble of `+0x70` outlines the worn column (1 the first, 2 the second; 0 none); the `+0x9C` bits make the columns of that row appear coloured. Shown as **swords, shields, tunics, boots** for groups 0-3, which agrees with group 0 writing its item to `+0x68`, the B button. |
 
+| heart pieces | `+0xA4` bits 28-31 | one bit, then values 1-4 of the nibble | The big heart on the Quest Status page fills one quarter per unit: 1, 2 and 3 show one, two and three quarters; 4 and the single bits 30 and 31 draw garbage; bits 24-27 change nothing. Shown as **heart pieces** (0 to 3). |
+| upgrades | `+0xA0` 3-bit fields at bits 14, 3, 6, 9 | each field 1 to 7 in turn | The Equipment page's left column has four cells, top to bottom bits 14, 3, 6, 9; a field of `v` draws one picture there, none for 0 (pictures below). The fields at bits 0, 17 and 20 changed nothing on the page. |
+
 Not shown by any effect seen: `scene` (`+0x66`) and `name` stay as the table above gives them; no name is claimed for scenes.
+
+### Where the pause menu's pictures are
+
+*Observed*: with the same harness, every texture the pause menu drew (decoded RGBA, 32x32 and 24x24 among others) was matched byte for byte against every decompressed file of the file table (`tools/rom/extract.ts`); matches are exact unless said.
+
+| File | Layout | Holds | Evidence |
+| --- | --- | --- | --- |
+| file 7 (ROM `0x7400C0`-`0x7C9D60` stored, 564384 bytes) | 32x32 RGBA32, `0x1000` bytes each | One picture per item id: the picture drawn for id `n` is number `n`, for every id 0-80 tried, except that id 33 drew picture 45 and id 34 picture 46 (ids 45 and 46 drew dimmed pictures nearest to 33 and 34). Pictures 59-70 are the equipment of the four rows of three columns (59, 60, 61 swords; 62-64 shields; 65-67 tunics; 68-70 boots; the columns after the first draw dimmed pictures, matched by smallest difference). | Item slots set to ids 0-80 one by one: exact matches for ids 0-2, 5-9, 13-16, 19-44, 59, 62, 63, 65, 68, 71-73, 77-80; the others are drawn darkened by the game (mean difference 6-28 per byte) and nearest to the same number, except 12 (nearest 4) and 18 (nearest 12), which stay unverified. Upgrades: field at bit 14 draws picture `70 + v`, at bit 3 `76 + v`, at bit 6 `79 + v`, at bit 9 `82 + v` (exact for v of 1-4 in each, nearest for the rest). |
+| file 8 (ROM `0x7C9D60`-`0x7D5160`, 46080 bytes) | 24x24 RGBA32, `0x900` bytes each | Pictures 0-5 are the Quest Status medallions in bit order 0-5 of the quest word, 6-8 the three stones (bits 18-20), 9 and 10 the two top-left boxes (bits 21, 22), 11 the spider token (bit 23). | Each bit set alone on the Quest Status page: the new texture equals that picture exactly. |
+
+The song notes (bits 6-17) are 16x24 textures the page did not match to any file as RGBA, and the HUD's hearts, rupee and magic bar are other formats not decoded here: the page draws neutral shapes for them.
 
 ## Loading a save into the running game
 

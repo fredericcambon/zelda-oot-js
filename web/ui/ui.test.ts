@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { clampWidth, DEFAULT_WIDTH, loadPrefs, MAX_WIDTH, MIN_WIDTH, savePrefs } from './prefs.ts';
 import { Store } from './store.ts';
 import { countName, FIELD_NAMES, slotName } from './inventory-names.ts';
+import { nextItem } from './inventory-tab.ts';
 import { Labels } from './labels.ts';
 import { isTyping } from './typing.ts';
 
@@ -77,6 +78,7 @@ describe('user labels', () => {
     expect(new Labels(store).get('field', 'count34')).toBe('Money');
     first.set('scene', 5, '');
     expect(new Labels(store).get('scene', 5)).toBeUndefined();
+    expect(first.list()).toEqual([{ kind: 'field', id: 'count34', text: 'Money' }]);
   });
 
   it('export and import round-trip, and import merges', () => {
@@ -123,5 +125,16 @@ describe('inventory names', () => {
     }
     expect(countName(1).name).toBe('Deku Nut count');
     expect(countName(9).observed).toBe(false);
+  });
+});
+
+describe('item slot clicks', () => {
+  it('cycle through the empty slot and the items that belong to it, then back', () => {
+    expect(nextItem(0, 0xff)).toBe(0);
+    expect(nextItem(0, 0)).toBe(0xff);
+    expect(nextItem(7, 0xff)).toBe(7);
+    expect(nextItem(7, 7)).toBe(8);
+    expect(nextItem(7, 8)).toBe(0xff);
+    expect(nextItem(0, 99)).toBe(0xff);
   });
 });
