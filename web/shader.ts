@@ -2,6 +2,7 @@
 // shaders. A shader depends only on the `ShaderSpec` derived from the draw state; colours, tile sizes and the like are
 // uniforms, so a handful of programs cover a whole scene.
 import type { DrawState } from '../tools/gfx/types.ts';
+import type { FilterMode } from './gfx-settings.ts';
 
 /** Cycle type, bits 20-21 of the high half of the other modes. */
 export const CycleType = { ONE: 0, TWO: 1, COPY: 2, FILL: 3 } as const;
@@ -24,8 +25,12 @@ export interface ShaderSpec {
   copy: boolean;
   rgb: [[number, number, number, number], [number, number, number, number]];
   alpha: [[number, number, number, number], [number, number, number, number]];
-  /** Bilinear (3-point) texture filtering instead of nearest. */
+  /** Bilinear texture filtering instead of nearest. */
   bilerp: boolean;
+  /** With `bilerp`: standard four-texel bilinear instead of the console's 3-point filter. */
+  smooth: boolean;
+  /** Textures that the draw marks (uniform `uTexC.z`) are sampled from mip levels, with anisotropic taps. */
+  mip: boolean;
   alphaCompare: boolean;
   /** The coverage is scaled by the pixel alpha: a pixel whose alpha rounds to no coverage is not written. */
   coverageTimesAlpha: boolean;
@@ -64,7 +69,13 @@ function blendCycles(l: number): [BlendCycle, BlendCycle] {
   ];
 }
 
-export function specOf(state: DrawState): ShaderSpec {
+export interface SpecOptions {
+  filter?: FilterMode;
+  mip?: boolean;
+}
+
+/** `filter` replaces what the draw asked for: `sharp` makes every texture nearest, `smooth` swaps the 3-point filter for bilinear. */
+export function specOf(state: DrawState, { filter = 'n64', mip = false }: SpecOptions = {}): ShaderSpec {
   const type = cycleTypeOf(state.otherModeH);
   const cycles: 1 | 2 = type === CycleType.TWO ? 2 : 1;
   const [c0, c1] = state.combine.cycles;
@@ -76,7 +87,9 @@ export function specOf(state: DrawState): ShaderSpec {
     rgb: [c0.rgb, c1.rgb],
     alpha: [c0.alpha, c1.alpha],
     // A copy-mode rectangle takes the texel under each pixel, whatever the filter field says.
-    bilerp: type !== CycleType.COPY && ((state.otherModeH >>> 12) & 3) !== 0,
+    bilerp: type !== CycleType.COPY && ((state.otherModeH >>> 12) & 3) !== 0 && filter !== 'sharp',
+    smooth: filter === 'smooth',
+    mip: mip && type !== CycleType.COPY,
     alphaCompare: (state.otherModeL & OtherL.ALPHA_COMPARE_MASK) === 1,
     coverageTimesAlpha: (state.otherModeL & OtherL.CVG_TIMES_ALPHA) !== 0,
     alphaFromCoverage: (state.otherModeL & OtherL.ALPHA_CVG_SELECT) !== 0,
@@ -87,7 +100,7 @@ export function specOf(state: DrawState): ShaderSpec {
 
 /** Stable text for a spec, used as the program cache key. */
 export function specKey(s: ShaderSpec): string {
-  return JSON.stringify([s.cycles, s.copy, s.cycles === 2 ? s.rgb : s.rgb[0], s.cycles === 2 ? s.alpha : s.alpha[0], s.bilerp, s.alphaCompare, s.coverageTimesAlpha, s.alphaFromCoverage, s.cycles === 2 ? s.blend : s.blend[0], s.framebufferBlend]);
+  return JSON.stringify([s.cycles, s.copy, s.cycles === 2 ? s.rgb : s.rgb[0], s.cycles === 2 ? s.alpha : s.alpha[0], s.bilerp, s.smooth, s.mip, s.alphaCompare, s.coverageTimesAlpha, s.alphaFromCoverage, s.cycles === 2 ? s.blend : s.blend[0], s.framebufferBlend]);
 }
 
 // ---- Combiner -------------------------------------------------------------------------------------------------------
@@ -237,38 +250,87 @@ function blenderSource(spec: ShaderSpec): string {
 
 function textureFunction(index: number): string {
   return `
-vec4 fetch${index}(ivec2 p) {
-  vec4 a = uTexA[${index}]; vec4 m = uTexB[${index}];
-  float x = float(p.x); float y = float(p.y);
-  x = wrapCoord(x, a.x, m.x, m.z);
-  y = wrapCoord(y, a.y, m.y, m.w);
-  return texelFetch(uTex${index}, ivec2(int(x), int(y)), 0);
+vec4 fetch${index}(ivec2 p, int lvl) {
+  vec4 m = uTexB[${index}];
+  vec2 size = vec2(textureSize(uTex${index}, lvl));
+  float shrink = exp2(-float(lvl));
+  float x = wrapCoord(float(p.x), size.x, m.x > 0.0 ? max(exp2(m.x) * shrink, 1.0) : 0.0, m.z);
+  float y = wrapCoord(float(p.y), size.y, m.y > 0.0 ? max(exp2(m.y) * shrink, 1.0) : 0.0, m.w);
+  return texelFetch(uTex${index}, ivec2(int(x), int(y)), lvl);
 }
-vec4 sample${index}(vec2 uv) {
-  vec4 a = uTexA[${index}]; vec4 sh = uTexC[${index}];
-  vec2 st = uv * sh.xy - a.zw;
+// st is in texels of level 0.
+vec4 filter${index}(vec2 st, int lvl) {
+  st *= exp2(-float(lvl));
 #ifdef BILERP
   st -= 0.5;
   vec2 f = fract(st);
   ivec2 b = ivec2(floor(st));
-  vec4 c00 = fetch${index}(b);
-  vec4 c11 = fetch${index}(b + ivec2(1, 1));
-  if (f.x + f.y <= 1.0) {
-    return c00 + f.x * (fetch${index}(b + ivec2(1, 0)) - c00) + f.y * (fetch${index}(b + ivec2(0, 1)) - c00);
-  }
-  return c11 + (1.0 - f.x) * (fetch${index}(b + ivec2(0, 1)) - c11) + (1.0 - f.y) * (fetch${index}(b + ivec2(1, 0)) - c11);
+  // The console's filter blends the three texels of the triangle that holds the point (the corner at (0,0) or at (1,1), and
+  // the two others); smooth bilinear blends the four around it.
+  vec4 c10 = fetch${index}(b + ivec2(1, 0), lvl);
+  vec4 c01 = fetch${index}(b + ivec2(0, 1), lvl);
+#ifdef SMOOTH
+  vec4 c00 = fetch${index}(b, lvl);
+  vec4 c11 = fetch${index}(b + ivec2(1, 1), lvl);
+  return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
 #else
-  return fetch${index}(ivec2(floor(st)));
+  bool upper = f.x + f.y > 1.0;
+  vec4 corner = fetch${index}(upper ? b + ivec2(1, 1) : b, lvl);
+  return upper ? corner * (f.x + f.y - 1.0) + c01 * (1.0 - f.x) + c10 * (1.0 - f.y)
+               : corner * (1.0 - f.x - f.y) + c10 * f.x + c01 * f.y;
+#endif
+#else
+  return fetch${index}(ivec2(floor(st)), lvl);
+#endif
+}
+vec4 sample${index}(vec2 uv) {
+  vec4 a = uTexA[${index}]; vec4 sh = uTexC[${index}];
+  vec2 st = uv * sh.xy - a.zw;
+#ifdef MIP
+  // The footprint of the pixel in texels, taken as an ellipse with the longer screen derivative as its major axis: the level
+  // is picked from the shorter side and the taps are spread along the longer one. One loop with a single filter call
+  // covers the taps and the two levels, which keeps the program small enough to compile quickly.
+  vec2 axis = vec2(0.0);
+  float taps = 1.0; float t = 0.0; int l0 = 0; int l1 = 0;
+  if (sh.z > 0.5) {
+    vec2 dx = dFdx(st); vec2 dy = dFdy(st);
+    float lx = dot(dx, dx); float ly = dot(dy, dy);
+    float longSide = sqrt(max(lx, ly));
+    if (longSide > 1.0) {
+      axis = lx >= ly ? dx : dy;
+      float shortSide = max(sqrt(min(lx, ly)), 1.0);
+      taps = clamp(ceil(longSide / shortSide), 1.0, uAniso);
+      int top = int(floor(log2(max(a.x, a.y))));
+      float lod = clamp(log2(longSide / taps), 0.0, float(top));
+      l0 = int(floor(lod));
+      l1 = min(l0 + 1, top);
+      t = lod - float(l0);
+#ifndef BILERP
+      t = t >= 0.5 ? 1.0 : 0.0;
+#endif
+    }
+  }
+  vec4 sum = vec4(0.0);
+  int steps = 2 * int(taps);
+  for (int k = 0; k < steps; k++) {
+    bool far = (k & 1) == 1;
+    float w = far ? t : 1.0 - t;
+    if (w <= 0.0) continue;
+    sum += w * filter${index}(st + axis * ((float(k >> 1) + 0.5) / taps - 0.5), far ? l1 : l0);
+  }
+  return sum / taps;
+#else
+  return filter${index}(st, 0);
 #endif
 }`;
 }
 
 const WRAP_FUNCTION = `
-// Applies the tile's clamp, mirror and mask to an integer texel coordinate (relative to the tile's origin).
-float wrapCoord(float v, float size, float mask, float mode) {
+// Applies the tile's clamp, mirror and mask to an integer texel coordinate (relative to the tile's origin). The period is
+// the mask's size in texels, 0 without a mask.
+float wrapCoord(float v, float size, float period, float mode) {
   if (mode >= 2.0) v = clamp(v, 0.0, size - 1.0);
-  if (mask > 0.0) {
-    float period = exp2(mask);
+  if (period > 0.0) {
     if (mod(mode, 2.0) >= 1.0) {
       float m = mod(v, 2.0 * period);
       v = m >= period ? 2.0 * period - 1.0 - m : m;
@@ -305,6 +367,8 @@ export function fragmentSource(spec: ShaderSpec): string {
 precision highp float;
 precision highp int;
 ${spec.bilerp ? '#define BILERP 1' : ''}
+${spec.bilerp && spec.smooth ? '#define SMOOTH 1' : ''}
+${spec.mip ? '#define MIP 1' : ''}
 in vec4 vColor;
 in vec2 vUv;
 out vec4 outColor;
@@ -319,8 +383,10 @@ uniform sampler2D uTex1;
 uniform vec4 uTexA[2];
 // maskS, maskT, modeS, modeT (mode: bit 0 mirror, bit 1 clamp)
 uniform vec4 uTexB[2];
-// scale to apply to the coordinates (from the tile's shift), in .xy
+// scale to apply to the coordinates (from the tile's shift) in .xy; .z is 1 for a texture sampled from mip levels
 uniform vec4 uTexC[2];
+// most taps along the long axis of a footprint
+uniform float uAniso;
 ${WRAP_FUNCTION}
 ${textureFunction(0)}
 ${textureFunction(1)}

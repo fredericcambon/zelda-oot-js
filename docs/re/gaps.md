@@ -73,6 +73,44 @@ The same scripted new game with the display lists run by the interpreter in the 
 
 The target was at least 700 game frames per second. Reading the result through `tools/gfx/c-dl.ts` costs 0.25 ms per game frame (it builds one object per state and per batch); a consumer that reads the arrays directly pays less.
 
+## Texture filtering and sharpness
+
+What the WebGL renderer did before this work (read from `web/renderer.ts`, `web/shader.ts`, `web/main.ts`; the game side from `docs/re/display-lists.md`):
+
+- **Resolution.** The 3D image was a whole multiple of 320x240, `ceil(canvas CSS width x devicePixelRatio / 320)` capped at 4 (1280x960 at most). A 960 px canvas on a 2x display got 1280x960 stretched to 1920x1440 by the browser; a phone got the same cap.
+- **Sampling.** Every texture is a `NEAREST` GL texture read with `texelFetch`; tile origin, shift, clamp, mirror and mask are applied in the shader (`wrapCoord`). The RDP filter field (other modes bits 13-12) was honoured: 0 samples the nearest texel, any other value (bilinear 2 and average 3) runs the 3-point filter; copy-mode rectangles take the texel under the pixel. The game sets bilinear on every draw (`docs/re/display-lists.md`), so every textured draw used the 3-point filter.
+- **Not present:** mip levels (distant tiling textures shimmered), multisampling, any choice of filter.
+
+What it does now (`web/gfx-settings.ts`, key toggles in `web/main.ts`):
+
+- **Resolution.** The 3D image is `canvas CSS width x min(devicePixelRatio, scaleCap)` pixels wide, 4:3, at most 8x320. `scaleCap` defaults to 2 on a coarse pointer and to no cap elsewhere. Scissor, viewport and rectangle edges are rounded to device pixels, so rectangles (HUD, text, copy-mode pictures) meet without seams at a fractional scale; their texture coordinates are not changed.
+- **Filter** (`filter`, key F): `n64` (default) is the console's 3-point filter, now three fetches blended with weights; `smooth` is four-texel bilinear; `sharp` makes every draw nearest. A draw that asks for point sampling stays point in `n64` and `smooth`.
+- **Mip levels and anisotropy** (`mipmaps`, `anisotropy`, key H): in the shader, since the wrap and mirror rules need `texelFetch`. The level comes from the screen derivatives of the texel coordinate; taps (at most `anisotropy`, 4 on desktop, 2 on a coarse pointer) are spread along the long side of the footprint, each filtered with the chosen filter at two levels and blended. Only triangle draws, and only a tile whose mask is zero or equals the texture size (a smaller mask repeats part of a texture, and a level of the whole texture would blend the repeat with its neighbours). Rectangles, the HUD and copy mode never use mip levels. Nothing changes where a texel is magnified.
+- **MSAA x4** (`msaa`, key G): the colour images and the depth buffer are multisampled renderbuffers, resolved into the textures the video interface presents at the end of each task; 0 samples when the browser offers none.
+- **Settings** are stored as JSON in `localStorage['oot.gfx']` (`filter`, `msaa`, `scaleCap`, `mipmaps`, `anisotropy`); a missing, unreadable or invalid field takes its default. The overlay shows the 3D size, filter, samples and shader build time.
+
+Measured with `npx tsx tools/gfx/browser-bench.ts` (`tools/gfx/browser-bench.ts`): headless Chrome on this machine (RTX 4060 Ti, ANGLE/D3D11), 60 Hz mode, the scene of save state 1 (Kokiri Forest, Link in front of the Kokiri house), 8 one-second overlay samples after 4 s. "Before" is the old resolution rule with `msaa`, `mipmaps` off. Mobile is an emulated 844x390 viewport at devicePixelRatio 3 with touch emulation, on the same desktop GPU: it checks the resolution cap and the frame rate, not a phone GPU. Pictures are in `out/tex-filter/` (ROM-derived, not committed).
+
+| Screen | Settings | 3D image | fps | submit ms | GPU ms |
+|---|---|---|---|---|---|
+| desktop, ratio 1 | before | 960x720 | 59.9 | 1.13 | 2.78 |
+| | default (n64, msaa, mips) | 960x720 | 60.1 | 1.14 | 3.69 |
+| | smooth / sharp / no msaa / no mips | 960x720 | 60.0-60.1 | 0.94-1.16 | 2.96-3.56 |
+| desktop, ratio 2 | before | 1280x960 | 60.0 | 0.67 | 2.12 |
+| | default | 1920x1440 | 60.1 | 0.68 | 2.96 |
+| | smooth / sharp / no msaa / no mips | 1920x1440 | 60.1 | 0.81-0.89 | 3.01-3.36 |
+| phone (emulated), ratio 3 | before | 1231x924 | 60.0 | 0.84 | 2.67 |
+| | default (cap 2) | 1624x1218 | 60.1 | 0.84 | 3.16 |
+| | smooth / sharp / no msaa / no mips | 1624x1218 | 60.0-60.1 | 0.66-0.82 | 2.61-3.10 |
+
+**Shader build time** (the overlay's `programs ... ms to build`, which counts the time the page's thread spends compiling and linking; a fresh Chrome profile, so nothing cached, one configuration per run, desktop ratio 1, `--configs before` and `--configs after-default`): 624 ms before, 681 ms with the new default. A first version that built the mip-level programs at first use took 2.2 s. Now a program with mip levels is started in the background (KHR_parallel_shader_compile when the browser has it; otherwise one per task) and the draws use the same program without mip levels until it is ready, so the first frames cost what the old renderer cost and the mip levels appear a few frames later. A mip program that fails to build leaves its draws on the program without mip levels (logged). A table row after the first in a run reuses the profile's program cache, so build times in later rows (40-100 ms) say nothing about a cold start. The scene's display-list time (about 1 ms) and draw calls (146-147) do not change.
+
+- On this GPU nothing reaches the frame budget (GPU 4.5 ms against 16.7 ms), so the numbers say the cost is small here, not that it is small on a phone. A real phone is not measured; `scaleCap`, `anisotropy` and `msaa` are the levers if one is too slow.
+- The tap and level loop has a single filter call to keep the build time down (a version with separate calls per level and tap built far slower: over 1 s of submit time per frame in its window).
+- Until a mip program is ready, distant tiling textures shimmer as before; on a browser without parallel compilation this lasts one task per program.
+- Mip levels are averages of non-premultiplied RGBA, so a cut-out texture (leaves, grates) can lose or darken its edge with distance; not seen in the forest scene, not checked elsewhere.
+- Not checked: other scenes, a real touch device, any effect that reads a colour image back as a texture.
+
 ## Interpolated rendering ("Smooth")
 
 The game produces one picture per game frame: one graphics task every third retrace (a 20 ms video frame at 50 Hz, so 16.7 game frames per second; the 117 tasks of the walking run below were spaced 3 video frames apart every time). (In the 60 Hz mode the video frame is 1/60 s and a game frame still takes three of them, 20 per second; times below are counted in video frames, so the mapping is the same.) With the "Smooth" toggle on, the page draws a picture on every display refresh between the last two game frames. It interpolates the matrices the display lists load, never pixels, and draws with the interpreter's own pipeline (lighting, culling, clipping, textures), so everything that is not a matrix is exactly the current game frame's.
