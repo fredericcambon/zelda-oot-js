@@ -22,6 +22,12 @@
       #smooth-toggle[aria-pressed="true"] { background: #264; border-color: #4a8; }
       label { font-size: 12px; }
       input[type="range"] { vertical-align: middle; width: 80px; }
+      #debug-toggle, #hz-toggle, #touch-toggle, #smooth-toggle { font: inherit; font-size: 12px; padding: 0 8px; background: #222; color: #ddd; border: 1px solid #444; border-radius: 3px; cursor: pointer; }
+      #smooth-toggle[aria-pressed="true"] { background: #264; border-color: #4a8; }
+      label { font-size: 12px; }
+      input[type="range"] { vertical-align: middle; width: 80px; }
+      #debug-panel button { font: inherit; font-size: 12px; padding: 0 8px; background: #222; color: #ddd; border: 1px solid #444; border-radius: 3px; cursor: pointer; }
+      #debug-panel[hidden] { display: none; }
       #hz-note { font-size: 12px; color: #fc8; }
       #hz-note[hidden] { display: none; }
       #tools { display: inline; }
@@ -64,6 +70,13 @@
       <label title="How much of the motion between game frames is shown (less: nearer the game's own frames)">strength <input id="smooth-strength" type="range" min="0" max="100" step="5" value="100" tabindex="-1" /></label>
       <label title="How much of a game frame the motion takes to catch up (less: less delay)">catch-up <input id="smooth-span" type="range" min="25" max="100" step="5" value="100" tabindex="-1" /></label>
       <button id="hz-toggle" type="button" tabindex="-1" title="Run the game at 60 Hz (20 game frames per second) instead of the PAL 50 Hz (16.7)">60 Hz: on</button> <button id="touch-toggle" type="button" tabindex="-1">Hide controls</button> <span id="hz-note" hidden>applies the next time the page loads</span></div>
+    <div id="debug-panel" hidden>
+      <button id="load-save-file" type="button" tabindex="-1">Load save file…</button>
+      <button class="load-slot" data-slot="0" type="button" tabindex="-1">Load slot 1 into play</button>
+      <button class="load-slot" data-slot="1" type="button" tabindex="-1">Load slot 2 into play</button>
+      <button class="load-slot" data-slot="2" type="button" tabindex="-1">Load slot 3 into play</button>
+      <button id="back-to-file-select" type="button" tabindex="-1">Back to file select</button>
+    </div>
     <div id="touch-layer"></div>
     <script type="module" src="./main.ts"></script>
   </body>

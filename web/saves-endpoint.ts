@@ -1,12 +1,12 @@
 // The dev and preview servers keep the player's saves on disk, in a folder shared by every checkout and build, so a
 // save made in one running copy of the page is found by the next. Only this machine may use it.
 //
-//   GET|PUT /api/saves/sram          the cartridge's save memory
+//   GET|PUT /api/saves/sram          the cartridge's save memory; a PUT with X-Backup: 1 first copies the stored one to sram.bin.bak-<time>
 //   GET|PUT /api/saves/state/<1-4>   a save state; the version of its format travels in the X-State-Format header, its video rate in X-Hz
 //
 // A state is state-<n>.bin with state-<n>.bin.format beside it (version, saved-at time and video rate, one per line).
 // States kept before the portable format have state-<n>.bin.build instead; they are served as format 0 and never deleted.
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -100,6 +100,9 @@ export function savesMiddleware(dir: string) {
           write(meta, `${Number(format)}
 ${Number(req.headers['x-saved-at']) || Date.now()}
 ${req.headers['x-hz'] === '60' ? 60 : 50}`);
+        }
+        if (name === 'sram' && req.headers['x-backup'] === '1' && existsSync(file)) {
+          copyFileSync(file, `${file}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}`);
         }
         write(file, body);
         reply(res, 204);

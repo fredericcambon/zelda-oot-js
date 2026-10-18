@@ -13,6 +13,7 @@ const TH_ID = 0x14;
 const TH_ENTRY = 0x11c;
 
 interface OotModule extends StateCore, GfxGameCore {
+  _oot_reset(): void;
   _oot_jpeg_tasks(): number;
   _oot_ai_gaps(): number;
   _oot_rd32(addr: number): number;
@@ -114,6 +115,8 @@ export interface Game {
   setPad(buttons: number, x?: number, y?: number): void;
   /** Reads a word of guest memory. */
   rd32(addr: number): number;
+  /** Starts the game over on the same cartridge, as the console's reset does; the save memory is kept. Call between frames. */
+  reset(): void;
   /** The guest memory, big-endian, indexed by physical address; a view that stays valid only until the next frame. */
   ram(): Uint8Array;
   /** A copy of the save memory. */
@@ -195,6 +198,10 @@ export async function bootGame(moduleUrl: string, rom: Uint8Array, options: Boot
     framebuffer: () => shownFramebuffer(rd32),
     setPad: (buttons, x = 0, y = 0) => mod._oot_pad_set(0, buttons, x, y),
     rd32,
+    reset: () => {
+      mod._oot_reset();
+      seen.clear();
+    },
     ram: () => mod.HEAPU8.subarray(mod._oot_rdram(), mod._oot_rdram() + RDRAM_SIZE),
     readSave: () => mod.HEAPU8.slice(mod._oot_sram(), mod._oot_sram() + mod._oot_sram_size()),
     writeSave: (bytes) => mod.HEAPU8.set(bytes.subarray(0, mod._oot_sram_size()), mod._oot_sram()),

@@ -3,7 +3,8 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 // The page gets the game's data only from the files `npm run port` wrote beside the wasm; it must never ask the user
-// for a ROM file or name one in a request.
+// for a ROM file or name one in a request. The one file chooser, in save-picker.ts, is for save memory images.
+const PICKER = 'save-picker.ts';
 const sources = readdirSync(__dirname)
   .filter((f) => /\.(ts|html)$/.test(f) && !f.endsWith('.test.ts'))
   .map((f) => ({ name: f, text: readFileSync(join(__dirname, f), 'utf8') }));
@@ -17,8 +18,19 @@ describe('web shell', () => {
     ['a ROM file name or extension', /\.(z64|n64|v64)\b/i],
     ['a file input', /type\s*=\s*["']?file/i],
     ['the file-reading APIs', /FileReader|showOpenFilePicker|\bFile\b|\.files\b|dataTransfer/],
-  ])('never uses %s', (_what, pattern) => {
-    for (const s of sources) expect(s.text, s.name).not.toMatch(pattern);
+  ])('never uses %s', (what, pattern) => {
+    for (const s of sources) {
+      if (s.name === PICKER && !what.includes('ROM')) continue;
+      expect(s.text, s.name).not.toMatch(pattern);
+    }
+  });
+
+  it('asks only for save images, in one place', () => {
+    const picker = sources.find((s) => s.name === PICKER)!;
+    expect(picker.text).toMatch(/input\.accept = '[^']*'/);
+    expect(picker.text).not.toMatch(/z64|n64|v64/i);
+    const others = sources.filter((s) => s.name !== PICKER);
+    for (const s of others) expect(s.text, s.name).not.toMatch(/type\s*=\s*["']?file|\.files\b|FileReader/);
   });
 
   it('fetches only through a URL parameter that names the pack or the wasm', () => {

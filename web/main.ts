@@ -13,6 +13,9 @@ import { formatBreakdown } from '../tools/gfx/profile.ts';
 import { fetchWasm, preloadModule } from './wasm.ts';
 import { mark, timingLines } from './timing.ts';
 import { FramePacer, loadHz, saveHz, type Hz } from './mode.ts';
+import { AutoStart, fileSelectReached, guestRam } from '../tools/headless/load-save.ts';
+import { backToFileSelect, loadSaveFile, loadSlotIntoPlay, type SaveTarget } from './save-actions.ts';
+import { pickSaveFile } from './save-picker.ts';
 
 const FAST_BUDGET_MS = 12;
 const SLOW_LOAD_MS = 500;
@@ -22,12 +25,13 @@ const overlay = document.getElementById('overlay') as HTMLPreElement;
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
 const notice = document.getElementById('notice')!;
 
-if (location.hash === '#debug') overlay.hidden = false;
+const debugPanel = document.getElementById('debug-panel')!;
+if (location.hash === '#debug') overlay.hidden = debugPanel.hidden = false;
 const debugToggle = document.getElementById('debug-toggle') as HTMLButtonElement;
 // Not focusable by mouse (mousedown is cancelled) so the game keeps the keyboard.
 debugToggle.addEventListener('mousedown', (e) => e.preventDefault());
 debugToggle.addEventListener('click', () => {
-  overlay.hidden = !overlay.hidden;
+  overlay.hidden = debugPanel.hidden = !overlay.hidden;
   debugToggle.blur();
 });
 
@@ -126,6 +130,10 @@ let saves: SaveSync | null = null;
 let states: SaveStates | null = null;
 // The save state key last pressed, run between two frames: the game cannot be copied while a frame is in progress.
 let pendingState: (() => Promise<string>) | null = null;
+// A save action of the debug panel, run between two frames for the same reason.
+let pendingAction: ((target: SaveTarget) => Promise<string> | string) | null = null;
+// Presses Start after the game started over, until the file select is reached.
+let autoStart: AutoStart | null = null;
 let noticeTimer = 0;
 const input = new Input();
 const touch = new TouchControls(document.getElementById('touch-layer') as HTMLElement, document.getElementById('touch-toggle') as HTMLButtonElement);
@@ -242,6 +250,18 @@ async function loop(): Promise<void> {
       }
       last = performance.now();
     }
+    if (pendingAction) {
+      const run = pendingAction;
+      pendingAction = null;
+      try {
+        if (!game || !saves) throw new Error('the game is still starting');
+        const g = game;
+        showNotice(await run({ game: g, saves, restarted: () => (autoStart = new AutoStart(() => fileSelectReached(guestRam(g.ram())))) }));
+      } catch (err) {
+        showNotice(`Could not load the save: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      last = performance.now();
+    }
     // Fast-forward runs frames back to back and has no time for in-between pictures.
     game?.setSmooth(smoothOn && !fastForward.active);
     applyTuning();
@@ -255,7 +275,12 @@ async function loop(): Promise<void> {
       if (fastForward.active) pacer.reset();
       else due--;
       try {
-        game.setPad(mergePads(input.poll(), touch.poll()));
+        const pad = mergePads(input.poll(), touch.poll());
+        if (autoStart) {
+          pad.buttons |= autoStart.buttons();
+          if (!autoStart.active) autoStart = null;
+        }
+        game.setPad(pad);
         await game.frame();
         saves?.flush().catch((err) => setStatus(`Could not store the save: ${err instanceof Error ? err.message : String(err)}`, true));
       } catch (err) {
@@ -321,5 +346,19 @@ async function boot(): Promise<void> {
     setStatus(err instanceof Error ? err.message : String(err), true);
   }
 }
+
+for (const button of debugPanel.querySelectorAll('button')) button.addEventListener('mousedown', (e) => e.preventDefault());
+document.getElementById('load-save-file')!.addEventListener('click', () => {
+  pickSaveFile().then(
+    (bytes) => {
+      if (bytes) pendingAction = (target) => loadSaveFile(target, bytes);
+    },
+    (err) => showNotice(err instanceof Error ? err.message : String(err)),
+  );
+});
+for (const button of debugPanel.querySelectorAll<HTMLButtonElement>('.load-slot')) {
+  button.addEventListener('click', () => (pendingAction = (target) => loadSlotIntoPlay(target, Number(button.dataset.slot))));
+}
+document.getElementById('back-to-file-select')!.addEventListener('click', () => (pendingAction = (target) => backToFileSelect(target)));
 
 void boot();
