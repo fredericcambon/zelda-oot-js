@@ -10,10 +10,17 @@ import { encodePng } from '../gfx/png.ts';
 import type { RgbaImage } from '../gfx/types.ts';
 import { savesDir } from '../../web/saves-endpoint.ts';
 import { decodePng } from './png-read.ts';
+import type { TextureRecord } from './collect.ts';
+import { partialFamilies } from './families.ts';
+import { VARIANTS, type PackStats } from './upscale.ts';
 
 export interface CompareOptions {
   out: string;
   pack: string;
+  /** The dump the pack was made from (`out/texdump`): its facts pick the textures the close-ups are centred on. */
+  dump?: string;
+  /** Variants of the pack to capture (default: all that exist). */
+  variants?: string[];
   chrome: string;
   port: number;
   log?: (line: string) => void;
@@ -104,20 +111,35 @@ export function cropImage(img: RgbaImage, x: number, y: number, w: number, h: nu
   return { width: w, height: h, rgba };
 }
 
-interface Shot {
+interface Crop {
   name: string;
-  original: string;
-  pack: string;
-  crop: { original: string; pack: string; x: number; y: number };
-  summary: { available: boolean; entries: number; seen: number; replaced: number; pending: number };
-  /** Drawing the original textures again after the pack gave the picture it gave before. */
-  roundTrip: boolean;
-  /** Share of pixels where the two pictures differ by more than 8 in some channel. */
-  changed: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
 }
 
-export async function compare({ out, pack, chrome, port, log = console.log }: CompareOptions): Promise<void> {
-  if (!existsSync(join(pack, 'index.json'))) throw new Error(`no texture pack at ${pack}: run npm run tex -- dump, then npm run tex -- upscale`);
+interface Shot {
+  name: string;
+  crops: Crop[];
+  /** Per variant: share of pixels where its picture differs from the original's by more than 8 in some channel, and how many textures it replaced. */
+  changed: Record<string, number>;
+  replaced: Record<string, { replaced: number; seen: number }>;
+  /** Drawing the original textures again after the packs gave the picture it gave before. */
+  roundTrip: boolean;
+}
+
+interface VariantInfo {
+  name: string;
+  label: string;
+  stats: PackStats;
+  seams: { wrapping: number; worse: number };
+}
+
+export async function compare({ out, pack, dump = 'out/texdump', variants: wanted, chrome, port, log = console.log }: CompareOptions): Promise<void> {
+  const variants = VARIANTS.filter((v) => (!wanted || wanted.includes(v.name)) && existsSync(join(pack, v.name, 'index.json'))).map((v) => v.name);
+  if (variants.length === 0) throw new Error(`no texture pack at ${pack}: run npm run tex -- dump, then npm run tex -- upscale`);
+  const info: VariantInfo[] = variants.map((name) => ({ name, ...(JSON.parse(readFileSync(join(pack, name, 'index.json'), 'utf8')) as Omit<VariantInfo, 'name'>) }));
   const saves = mkdtempSync(join(tmpdir(), 'oot-saves-'));
   if (existsSync(savesDir())) cpSync(savesDir(), saves, { recursive: true });
   if (!existsSync(join(saves, 'state-1.bin'))) throw new Error('save state 1 (Kokiri Forest) is missing from the saves folder');
@@ -126,6 +148,15 @@ export async function compare({ out, pack, chrome, port, log = console.log }: Co
   const outDir = resolve(out);
   mkdirSync(outDir, { recursive: true });
   const shots: Shot[] = [];
+  // Close-ups are centred on the largest on-screen surface drawn with a texture of the kind. Bush: the plants' leaves, 32x32 cut-outs (alpha 0 or 255)
+  // that clamp, leaving out the family of textures that differ only in their upper half (families.ts: the ground's, whose stale rows are never sampled).
+  // Wall: the forest's cliff face (two textures) and a tree trunk, picked by looking at each texture's largest surface in the first view.
+  const facts = Object.values((JSON.parse(readFileSync(join(dump, 'index.json'), 'utf8')) as { textures: Record<string, TextureRecord> }).textures);
+  const family = new Set(partialFamilies(facts.filter((t) => t.alpha === 'binary').map((t) => ({ hash: t.hash, image: decodePng(readFileSync(join(dump, `${t.hash}.png`))) }))).flat());
+  const closeUps: Record<string, string[]> = {
+    bush: facts.filter((t) => t.alpha === 'binary' && t.width === 32 && t.height === 32 && t.edgeS === 'clamp' && t.edgeT === 'clamp' && t.frames > 20 && !family.has(t.hash)).map((t) => t.hash),
+    wall: ['602f8db5413d3717', 'c838eddb39e420dc', '017df837a7884a23'],
+  };
   try {
     const vite = spawn('npx', ['vite', '--config', 'vite.config.ts', '--port', String(port), '--strictPort'], { stdio: 'ignore', shell: true, env: { ...process.env, OOT_SAVES_DIR: saves, OOT_TEXPACK_DIR: resolve(pack) } });
     children.push(vite);
@@ -167,8 +198,8 @@ export async function compare({ out, pack, chrome, port, log = console.log }: Co
       if ((await evaluate("document.getElementById('status')?.className")) === 'error') throw new Error(String(await evaluate("document.getElementById('status').textContent")));
       return undefined;
     });
+    await evaluate(`globalThis.ootTexPack.pack.setVariant('${variants[0]}')`);
     await waitFor('the texture pack', async () => ((await evaluate('globalThis.ootTexPack?.pack.available === true')) ? true : undefined));
-    log(`pack: ${JSON.stringify(await evaluate('globalThis.ootTexPack.pack.summary()'))}`);
     await tap('KeyM', 'm');
     await tap('Digit6', '6');
     await sleep(4000);
@@ -188,44 +219,50 @@ export async function compare({ out, pack, chrome, port, log = console.log }: Co
       await waitFor('the replacements', async () => (((await evaluate('globalThis.ootTexPack.pack.summary().pending')) as number) === 0 ? true : undefined));
       await evaluate('window.ootHold(true)');
       await sleep(400);
-      const draw = async (enabled: boolean): Promise<RgbaImage> => {
-        await evaluate(`globalThis.ootTexPack.pack.enabled = ${enabled}`);
+      const draw = async (variant: string | null): Promise<RgbaImage> => {
+        if (variant) await evaluate(`globalThis.ootTexPack.pack.setVariant('${variant}')`);
+        await evaluate(`globalThis.ootTexPack.pack.enabled = ${variant !== null}`);
         // Switching clears the textures; the replacements are fetched when the frame is drawn, and the frame is drawn again once they are in.
         await evaluate('globalThis.ootTexPack.redraw()');
         await waitFor('the replacements', async () => (((await evaluate('globalThis.ootTexPack.pack.summary().pending')) as number) === 0 ? true : undefined));
         await evaluate('globalThis.ootTexPack.redraw()');
         return screenshot();
       };
-      const before = await draw(false);
-      const packed = await draw(true);
-      const summary = (await evaluate('globalThis.ootTexPack.pack.summary()')) as Shot['summary'];
-      log(`replacements in use by the last draw: ${await evaluate('globalThis.ootTexPack.inUse()')}`);
-      const again = await draw(false);
-      await evaluate('globalThis.ootTexPack.pack.enabled = true; window.ootHold(false)');
       const id = `view-${n + 1}-${view.name}`;
-      const window_ = mostChangedWindow(before, packed);
-      const files = {
-        original: `${id}-original.png`, pack: `${id}-pack.png`,
-        crop: { original: `${id}-crop-original.png`, pack: `${id}-crop-pack.png`, x: window_.x, y: window_.y },
-      };
-      writeFileSync(join(outDir, files.original), encodePng(before.width, before.height, before.rgba));
-      writeFileSync(join(outDir, files.pack), encodePng(packed.width, packed.height, packed.rgba));
-      for (const [img, file] of [[before, files.crop.original], [packed, files.crop.pack]] as const) {
-        const c = cropImage(img, window_.x, window_.y, Math.min(CROP_W, img.width), Math.min(CROP_H, img.height));
-        writeFileSync(join(outDir, file), encodePng(c.width, c.height, c.rgba));
+      const original = await draw(null);
+      const save = (img: RgbaImage, file: string): void => writeFileSync(join(outDir, file), encodePng(img.width, img.height, img.rgba));
+      save(original, `${id}-original.png`);
+      const crops: Crop[] = [];
+      for (const [name, hashes] of Object.entries(closeUps)) {
+        const box = (await evaluate(`globalThis.ootTexPack.boundsOf(${JSON.stringify(hashes)})`)) as { x: number; y: number; w: number; h: number } | null;
+        if (!box) continue;
+        const w = Math.min(CROP_W, original.width), h = Math.min(CROP_H, original.height);
+        crops.push({ name, w, h, x: Math.round(Math.min(original.width - w, Math.max(0, box.x + box.w / 2 - w / 2))), y: Math.round(Math.min(original.height - h, Math.max(0, box.y + box.h / 2 - h / 2))) });
       }
-      const roundTrip = Buffer.compare(Buffer.from(before.rgba), Buffer.from(again.rgba)) === 0;
-      let differing = 0;
-      for (let i = 0; i < before.rgba.length; i += 4) {
-        if (Math.max(Math.abs(before.rgba[i]! - packed.rgba[i]!), Math.abs(before.rgba[i + 1]! - packed.rgba[i + 1]!), Math.abs(before.rgba[i + 2]! - packed.rgba[i + 2]!)) > 8) differing++;
+      for (const c of crops) save(cropImage(original, c.x, c.y, c.w, c.h), `${id}-${c.name}-original.png`);
+      const changed: Shot['changed'] = {};
+      const replaced: Shot['replaced'] = {};
+      for (const v of variants) {
+        const picture = await draw(v);
+        const summary = (await evaluate('globalThis.ootTexPack.pack.summary()')) as { replaced: number; seen: number };
+        save(picture, `${id}-${v}.png`);
+        for (const c of crops) save(cropImage(picture, c.x, c.y, c.w, c.h), `${id}-${c.name}-${v}.png`);
+        let differing = 0;
+        for (let i = 0; i < original.rgba.length; i += 4) {
+          if (Math.max(Math.abs(original.rgba[i]! - picture.rgba[i]!), Math.abs(original.rgba[i + 1]! - picture.rgba[i + 1]!), Math.abs(original.rgba[i + 2]! - picture.rgba[i + 2]!)) > 8) differing++;
+        }
+        changed[v] = differing / (original.rgba.length / 4);
+        replaced[v] = summary;
+        log(`${id} ${v}: ${(changed[v]! * 100).toFixed(1)}% of pixels differ by more than 8; replaced ${summary.replaced} of ${summary.seen} textures seen so far`);
       }
-      const changed = differing / (before.rgba.length / 4);
-      shots.push({ name: view.name, ...files, summary, roundTrip, changed });
-      log(`${id}: ${(changed * 100).toFixed(1)}% of pixels differ by more than 8; ${before.width}x${before.height}, replaced ${summary.replaced} of ${summary.seen} textures seen so far, original again identical: ${roundTrip}`);
+      const again = await draw(null);
+      await evaluate('globalThis.ootTexPack.pack.enabled = true; window.ootHold(false)');
+      const roundTrip = Buffer.compare(Buffer.from(original.rgba), Buffer.from(again.rgba)) === 0;
+      shots.push({ name: view.name, crops, changed, replaced, roundTrip });
+      log(`${id}: original again identical: ${roundTrip}`);
     }
     cdp.close();
-    const index = JSON.parse(readFileSync(join(pack, 'index.json'), 'utf8')) as { model: string; settings: { blend: number; pad: number }; release: string };
-    writeFileSync(join(outDir, 'index.html'), page(shots, index));
+    writeFileSync(join(outDir, 'index.html'), page(shots, info));
     log(`written to ${outDir}${'/'}index.html`);
   } finally {
     for (const c of children) if (c.pid) spawn('taskkill', ['/pid', String(c.pid), '/t', '/f'], { stdio: 'ignore' });
@@ -241,40 +278,56 @@ export async function compare({ out, pack, chrome, port, log = console.log }: Co
   }
 }
 
-function page(shots: Shot[], index: { model: string; settings: { blend: number; pad: number }; release: string }): string {
-  const rows = shots.map((s) => `
+function page(shots: Shot[], info: VariantInfo[]): string {
+  const mib = (n: number): string => (n / 1048576).toFixed(1);
+  const rows = info.map((v) => `<tr><td>${v.name}</td><td>${v.label}</td><td>${v.stats.textures}</td><td>${mib(v.stats.bytes)}</td><td>${mib((v.stats.bytes * 4) / 3)}</td><td>${(v.stats.bytes / v.stats.originalBytes).toFixed(1)}x</td><td>${v.stats.modelSeconds}</td><td>${v.stats.otherSeconds}</td><td>${(v.stats.modelSeconds + v.stats.otherSeconds).toFixed(1)}</td><td>${v.seams.worse} of ${v.seams.wrapping}</td></tr>`).join('\n');
+  const options = ['original', ...info.map((v) => v.name)].map((n) => `<option value="${n}">${n === 'original' ? 'original' : `${n}: ${info.find((v) => v.name === n)!.label}`}</option>`).join('');
+  const swipe = (base: string, crop = false): string => `<div class="swipe${crop ? ' crop' : ''}" data-base="${base}"><img class="under"><img class="top"><div class="bar"></div><span class="l"></span><span class="r"></span></div>`;
+  const sections = shots.map((s) => `
 <section>
   <h2>${s.name}</h2>
-  <p>pack: ${s.summary.replaced} of ${s.summary.seen} distinct textures seen so far replaced. ${(s.changed * 100).toFixed(1)}% of the pixels differ by more than 8/255. Original drawn again after the pack: ${s.roundTrip ? 'identical' : 'DIFFERENT'}.</p>
-  <div class="swipe" data-pos="50"><img src="${s.pack}"><img class="top" src="${s.original}"><div class="bar"></div><span class="l">original</span><span class="r">pack (x2)</span></div>
-  <div class="pair"><figure><figcaption>original</figcaption><img src="${s.original}"></figure><figure><figcaption>pack (x2)</figcaption><img src="${s.pack}"></figure></div>
-  <p>The most changed area at 1:1 (from ${s.crop.x}, ${s.crop.y}):</p>
-  <div class="pair"><figure><figcaption>original</figcaption><img class="crop" src="${s.crop.original}"></figure><figure><figcaption>pack (x2)</figcaption><img class="crop" src="${s.crop.pack}"></figure></div>
+  <p>${info.map((v) => `${v.name}: ${(s.changed[v.name]! * 100).toFixed(1)}% of pixels differ by more than 8/255, ${s.replaced[v.name]!.replaced} of ${s.replaced[v.name]!.seen} distinct textures seen so far replaced`).join('; ')}. Original drawn again after the packs: ${s.roundTrip ? 'identical' : 'DIFFERENT'}.</p>
+  ${swipe(`view-${shots.indexOf(s) + 1}-${s.name}`)}
+  ${s.crops.map((c) => `<h3>${c.name} close-up (${c.w}x${c.h} at 1:1 of the ${s.name} picture)</h3>${swipe(`view-${shots.indexOf(s) + 1}-${s.name}-${c.name}`, true)}`).join('\n')}
 </section>`).join('\n');
   return `<!doctype html>
 <meta charset="utf-8">
-<title>Kokiri Forest: original textures against the x2 pack</title>
+<title>Kokiri Forest: original textures against four pack variants</title>
 <style>
   body { background: #181818; color: #ddd; font: 15px sans-serif; margin: 1.5em; }
-  .pair { display: flex; gap: 1em; align-items: flex-start; }
-  figure { margin: 0; flex: 1 1 0; min-width: 0; }
-  img { width: 100%; display: block; }
-  img.crop { width: auto; max-width: 100%; image-rendering: pixelated; }
-  figcaption { padding: .2em 0; color: #9c9; }
+  h3 { color: #9c9; font-weight: normal; }
   section { margin-bottom: 3em; }
-  .swipe { position: relative; touch-action: none; cursor: ew-resize; user-select: none; margin-bottom: 1em; }
-  .swipe img { width: 100%; display: block; }
+  table { border-collapse: collapse; } td, th { border: 1px solid #444; padding: .2em .6em; text-align: right; } td:nth-child(2) { text-align: left; }
+  .bar2 { position: sticky; top: 0; background: #181818ee; padding: .5em 0; z-index: 5; }
+  select { font-size: 15px; }
+  .swipe { position: relative; touch-action: none; cursor: ew-resize; user-select: none; margin-bottom: 1em; max-width: 1920px; }
+  .swipe img { width: 100%; display: block; image-rendering: auto; }
+  .swipe.crop img { image-rendering: pixelated; }
   .swipe img.top { position: absolute; inset: 0; clip-path: inset(0 50% 0 0); }
   .swipe .bar { position: absolute; top: 0; bottom: 0; left: 50%; width: 3px; margin-left: -1px; background: #fff; box-shadow: 0 0 4px #000; }
   .swipe span { position: absolute; top: .4em; padding: .1em .5em; background: #000a; color: #fff; }
   .swipe .l { left: .4em; } .swipe .r { right: .4em; }
 </style>
-<h1>Kokiri Forest: original textures against the x2 pack</h1>
-<p>Model ${index.model} (${index.release}), colour mixed ${Math.round(index.settings.blend * 100)}% model with ${Math.round((1 - index.settings.blend) * 100)}% plain bilinear x2, padding ${index.settings.pad}. Each pair is the same game frame, drawn twice by the page's renderer with its default filter settings. Click a picture to open it at full size.</p>
+<h1>Kokiri Forest: original textures against four pack variants</h1>
+<p>Each picture is one game frame drawn by the page's renderer (default filter settings) once per texture set. Drag the divider: the left side shows the first selection, the right side the second. Alpha of every variant is a plain bicubic enlargement of the original's, never touched by the model. Close-ups are 1:1 crops of the same frames, zoomed by your browser with hard pixels.</p>
+<table>
+<tr><th>variant</th><th>what</th><th>textures</th><th>MiB RGBA8</th><th>MiB with mips</th><th>vs originals</th><th>model s</th><th>other s</th><th>total s</th><th>wrap seams worse than bilinear</th></tr>
 ${rows}
+</table>
+<p>Memory is for the ${info[0]!.stats.textures} replaced textures only (originals: ${mib(info[0]!.stats.originalBytes)} MiB RGBA8). Model time is shared by variants of the same factor (a and b share the x2 run, c and d the x4 run); other = padding, blending, alpha, seam check and PNG writing.</p>
+<div class="bar2">left: <select id="left">${options}</select> right: <select id="right">${options.replace('<option value="a">', '<option value="a" selected>')}</select></div>
+${sections}
 <script>
-for (const i of document.querySelectorAll('.pair img')) i.onclick = () => open(i.src);
-for (const box of document.querySelectorAll('.swipe')) {
+const boxes = [...document.querySelectorAll('.swipe')];
+const left = document.getElementById('left'), right = document.getElementById('right');
+const show = () => { for (const box of boxes) {
+  const [a, b] = [left.value, right.value];
+  box.querySelector('.top').src = box.dataset.base + '-' + a + '.png';
+  box.querySelector('.under').src = box.dataset.base + '-' + b + '.png';
+  box.querySelector('.l').textContent = a; box.querySelector('.r').textContent = b;
+} };
+left.onchange = right.onchange = show; show();
+for (const box of boxes) {
   const set = (x) => {
     const r = box.getBoundingClientRect(), f = Math.min(1, Math.max(0, (x - r.left) / r.width)) * 100;
     box.querySelector('.top').style.clipPath = 'inset(0 ' + (100 - f) + '% 0 0)';

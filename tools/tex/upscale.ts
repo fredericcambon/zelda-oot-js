@@ -1,7 +1,8 @@
-// `npm run tex -- upscale [--dump out/texdump] [--out out/texpack] [--tool <dir>] [--python <exe>] [--blend 1] [--pad 16] [--limit N]`: doubles every
+// `npm run tex -- upscale [--dump out/texdump] [--out out/texpack] [--tool <dir>] [--python <exe>] [--variants a,b,c,d] [--pad 16] [--limit N]`: enlarges every
 // texture of the dump that is not volatile with a third-party model run locally (a Real-ESRGAN model of its official release, run by tools/tex/model_run.py
-// with numpy, see docs/texture-pack.md), and writes `<out>/<hash>.png` plus `index.json`, which lists the pack and the settings it was made with. The model and
-// the runtime are not part of the repository: they are fetched by hand into `--tool` and `--python`'s environment, and their output stays under `out/`.
+// with numpy, see docs/texture-pack.md) and writes one pack per variant, `<out>/<variant>/<hash>.png` plus an `index.json` that lists the pack, the settings
+// it was made with, its texture memory and its build time. The models and the runtime are not part of the repository: they are fetched by hand into `--tool`
+// and `--python`'s environment, and their output stays under `out/`.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -9,19 +10,36 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { encodePng } from '../gfx/png.ts';
+import type { RgbaImage } from '../gfx/types.ts';
 import type { TextureRecord } from './collect.ts';
-import { bilinear2x, modelInput, seamRatio, upscaleTexture } from './image-ops.ts';
+import { modelInput, resample, seamRatio, upscaleTexture } from './image-ops.ts';
 import { decodePng } from './png-read.ts';
 
-export const MODEL = 'realesr-animevideov3-x2';
 export const RELEASE = { repo: 'xinntao/Real-ESRGAN', tag: 'v0.2.5.0', asset: 'realesrgan-ncnn-vulkan-20220424-windows.zip' };
+/** The model of each factor: the release's x2 model is its x4 network followed by a bicubic halving. */
+export const MODELS: Record<number, string> = { 2: 'realesr-animevideov3-x2', 4: 'realesr-animevideov3-x4' };
+
+export interface Variant {
+  name: string;
+  label: string;
+  scale: number;
+  /** Share of the model in the colour; the rest is plain bilinear. */
+  blend: number;
+}
+
+export const VARIANTS: readonly Variant[] = [
+  { name: 'a', label: 'x2, 50% model + 50% bilinear', scale: 2, blend: 0.5 },
+  { name: 'b', label: 'x2, model only', scale: 2, blend: 1 },
+  { name: 'c', label: 'x4, model only', scale: 4, blend: 1 },
+  { name: 'd', label: 'x4, 75% model + 25% bilinear', scale: 4, blend: 0.75 },
+];
 
 export interface UpscaleArgs {
   dump: string;
   out: string;
   tool: string;
   python: string;
-  blend: number;
+  variants?: string[];
   pad: number;
   limit?: number;
   log?: (line: string) => void;
@@ -32,32 +50,43 @@ export const defaultToolDir = (): string => join(toolsRoot(), 'realesrgan-ncnn-2
 export const defaultPython = (): string => join(toolsRoot(), 'venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
 
 const sha256 = (file: string): string => createHash('sha256').update(readFileSync(file)).digest('hex');
+const seconds = (since: number): number => Math.round((performance.now() - since) / 10) / 100;
 
 /** Larger images are screen-size pictures (backgrounds), not tiles of a surface: they are left alone. */
 export const MAX_SIDE = 128;
 /** A texture drawn in no more graphics tasks than this may be caught half loaded (noise in part of it): left alone. */
 export const MIN_FRAMES = 3;
 
-export interface UpscaleResult {
-  made: string[];
-  /**
-   * Axes along which a texture wraps, and those where the replacement's seam ratio (`seamRatio`) is more than 1.5 times (plus 0.5) that of the plain
-   * bilinear x2 of the same texture, which has no seam of its own, with the worst such pair (`original` there is that reference).
-   */
-  seams: { wrapping: number; worse: number; worst: { hash: string; original: number; upscaled: number } | null };
-  skipped: { hash: string; why: string }[];
+export interface PackStats {
+  textures: number;
+  /** RGBA8 bytes of the textures of the pack, and of the originals they replace; with a full mip chain the sizes are 4/3 of these. */
+  bytes: number;
+  originalBytes: number;
+  /** Seconds the model took for this pack's factor (shared by the variants of that factor), and for the rest of this variant's work. */
+  modelSeconds: number;
+  otherSeconds: number;
 }
 
-export function upscale({ dump, out, tool, python, blend, pad, limit, log = console.log }: UpscaleArgs): UpscaleResult {
+export interface UpscaleResult {
+  skipped: { hash: string; why: string }[];
+  stats: Record<string, PackStats>;
+  /**
+   * Per variant: axes along which a texture wraps, and those where the replacement's seam ratio (`seamRatio`) is more than 1.5 times (plus 0.5) that of the
+   * plain bilinear enlargement of the same texture, which has no seam of its own.
+   */
+  seams: Record<string, { wrapping: number; worse: number }>;
+}
+
+export function upscale({ dump, out, tool, python, variants: wanted, pad, limit, log = console.log }: UpscaleArgs): UpscaleResult {
   const models = join(tool, 'models');
-  if (!existsSync(python) || !existsSync(join(models, `${MODEL}.param`))) {
+  const variants = VARIANTS.filter((v) => !wanted || wanted.includes(v.name));
+  if (!existsSync(python) || [...new Set(variants.map((v) => v.scale))].some((s) => !existsSync(join(models, `${MODELS[s]}.param`)))) {
     throw new Error(`the upscaler is not set up (${python}, ${models}): see docs/texture-pack.md`);
   }
   const index = JSON.parse(readFileSync(join(dump, 'index.json'), 'utf8')) as { textures: Record<string, TextureRecord> };
-  const all = Object.values(index.textures);
-  const result: UpscaleResult = { made: [], seams: { wrapping: 0, worse: 0, worst: null }, skipped: [] };
+  const result: UpscaleResult = { skipped: [], stats: {}, seams: {} };
   const todo: TextureRecord[] = [];
-  for (const r of all) {
+  for (const r of Object.values(index.textures)) {
     if (r.volatile) result.skipped.push({ hash: r.hash, why: 'changes from frame to frame' });
     else if (Math.max(r.width, r.height) > MAX_SIDE) result.skipped.push({ hash: r.hash, why: `screen-size image (${r.width}x${r.height})` });
     else if (r.frames < MIN_FRAMES) result.skipped.push({ hash: r.hash, why: `seen in ${r.frames} graphics task(s) only` });
@@ -68,59 +97,75 @@ export function upscale({ dump, out, tool, python, blend, pad, limit, log = cons
   const work = resolve(out, '..', 'texpack-work');
   rmSync(work, { recursive: true, force: true });
   mkdirSync(join(work, 'in'), { recursive: true });
-  mkdirSync(join(work, 'out'), { recursive: true });
-  const originals = new Map<string, { width: number; height: number; rgba: Uint8Array }>();
+  const originals = new Map<string, RgbaImage>();
   for (const r of todo) {
     const img = decodePng(readFileSync(join(dump, `${r.hash}.png`)));
     originals.set(r.hash, img);
     const input = modelInput(img, r, pad);
     writeFileSync(join(work, 'in', `${r.hash}.png`), encodePng(input.width, input.height, input.rgba));
   }
-  log(`running ${MODEL} on ${todo.length} textures`);
+  const originalBytes = todo.reduce((n, r) => n + r.width * r.height * 4, 0);
+
   const script = fileURLToPath(new URL('./model_run.py', import.meta.url));
-  const run = spawnSync(python, ['-I', script, join(models, `${MODEL}.param`), join(models, `${MODEL}.bin`), join(work, 'in'), join(work, 'out')], { cwd: work, stdio: ['ignore', 'ignore', 'pipe'], encoding: 'utf8' });
-  if (run.status !== 0) throw new Error(`the upscaler failed (${run.status}): ${run.stderr.slice(-500)}`);
+  const raw = new Map<number, Map<string, RgbaImage>>();
+  const modelSeconds = new Map<number, number>();
+  for (const scale of new Set(variants.map((v) => v.scale))) {
+    const dir = join(work, `out${scale}`);
+    mkdirSync(dir, { recursive: true });
+    log(`running ${MODELS[scale]} on ${todo.length} textures`);
+    const t0 = performance.now();
+    const run = spawnSync(python, ['-I', script, join(models, `${MODELS[scale]}.param`), join(models, `${MODELS[scale]}.bin`), join(work, 'in'), dir], { cwd: work, stdio: ['ignore', 'ignore', 'pipe'], encoding: 'utf8' });
+    if (run.status !== 0) throw new Error(`the upscaler failed (${run.status}): ${run.stderr.slice(-500)}`);
+    modelSeconds.set(scale, seconds(t0));
+    raw.set(scale, new Map(todo.map((r) => [r.hash, decodePng(readFileSync(join(dir, `${r.hash}.png`)))])));
+  }
   const libs = spawnSync(python, ['-I', '-c', 'import numpy, PIL, sys; print(f"Python {sys.version.split()[0]}, numpy {numpy.__version__}, Pillow {PIL.__version__}")'], { encoding: 'utf8' }).stdout.trim();
+  const files = Object.fromEntries(
+    [...new Set(variants.map((v) => MODELS[v.scale]!))].flatMap((m) => readdirSync(models).filter((f) => f.startsWith(`${m}.`)).sort().map((f) => [f, sha256(join(models, f))])),
+  );
 
   rmSync(out, { recursive: true, force: true });
-  mkdirSync(out, { recursive: true });
-  const textures: Record<string, { width: number; height: number }> = {};
-  for (const r of todo) {
-    const file = join(work, 'out', `${r.hash}.png`);
-    if (!existsSync(file)) {
-      result.skipped.push({ hash: r.hash, why: 'the upscaler wrote nothing' });
-      continue;
+  for (const v of variants) {
+    const t0 = performance.now();
+    const dir = join(out, v.name);
+    mkdirSync(dir, { recursive: true });
+    const textures: Record<string, { width: number; height: number }> = {};
+    const seams = { wrapping: 0, worse: 0 };
+    let bytes = 0;
+    for (const r of todo) {
+      const original = originals.get(r.hash)!;
+      const big = upscaleTexture(original, r, { pad, blend: v.blend, scale: v.scale }, raw.get(v.scale)!.get(r.hash)!);
+      writeFileSync(join(dir, `${r.hash}.png`), encodePng(big.width, big.height, big.rgba));
+      textures[r.hash] = { width: big.width, height: big.height };
+      bytes += big.width * big.height * 4;
+      for (const axis of ['x', 'y'] as const) {
+        if ((axis === 'x' ? r.edgeS : r.edgeT) !== 'wrap') continue;
+        seams.wrapping++;
+        const reference = upscaleTexture(original, r, { pad, blend: 0, scale: v.scale }, resample(modelInput(original, r, pad), v.scale, 'linear'));
+        if (seamRatio(big, axis) > seamRatio(reference, axis) * 1.5 + 0.5) seams.worse++;
+      }
     }
-    const big = upscaleTexture(originals.get(r.hash)!, r, { pad, blend }, decodePng(readFileSync(file)));
-    writeFileSync(join(out, `${r.hash}.png`), encodePng(big.width, big.height, big.rgba));
-    textures[r.hash] = { width: big.width, height: big.height };
-    for (const axis of ['x', 'y'] as const) {
-      if ((axis === 'x' ? r.edgeS : r.edgeT) !== 'wrap') continue;
-      result.seams.wrapping++;
-      const reference = upscaleTexture(originals.get(r.hash)!, r, { pad, blend: 0 }, bilinear2x(modelInput(originals.get(r.hash)!, r, pad)));
-      const original = seamRatio(reference, axis), upscaled = seamRatio(big, axis);
-      if (upscaled <= original * 1.5 + 0.5) continue;
-      result.seams.worse++;
-      const worst = result.seams.worst;
-      if (!worst || upscaled - original > worst.upscaled - worst.original) result.seams.worst = { hash: r.hash, original, upscaled };
-    }
-    result.made.push(r.hash);
+    const stats: PackStats = { textures: todo.length, bytes, originalBytes, modelSeconds: modelSeconds.get(v.scale)!, otherSeconds: seconds(t0) };
+    result.stats[v.name] = stats;
+    result.seams[v.name] = seams;
+    writeFileSync(join(dir, 'index.json'), JSON.stringify({
+      variant: v.name,
+      label: v.label,
+      scale: v.scale,
+      model: MODELS[v.scale],
+      release: `https://github.com/${RELEASE.repo}/releases/tag/${RELEASE.tag}`,
+      asset: RELEASE.asset,
+      runtime: `tools/tex/model_run.py on ${libs}, CPU`,
+      note: 'the x2 model of the release is its x4 network followed by a bicubic halving (end of its param file)',
+      files,
+      settings: { scale: v.scale, pad, blend: v.blend, alpha: 'plain bicubic enlargement of the padded alpha, never through the model, left as a gradient', gray: 'kept gray' },
+      stats,
+      seams,
+      textures,
+    }, null, 1));
+    log(`${v.name} (${v.label}): ${todo.length} textures, ${(bytes / 1048576).toFixed(1)} MiB (originals ${(originalBytes / 1048576).toFixed(1)} MiB), model ${stats.modelSeconds}s + ${stats.otherSeconds}s; ${seams.worse} of ${seams.wrapping} wrapping axes with a seam worse than plain bilinear's`);
   }
-  const models_ = readdirSync(models).filter((f) => f.startsWith(MODEL)).sort();
-  writeFileSync(join(out, 'index.json'), JSON.stringify({
-    scale: 2,
-    model: MODEL,
-    release: `https://github.com/${RELEASE.repo}/releases/tag/${RELEASE.tag}`,
-    asset: RELEASE.asset,
-    runtime: `tools/tex/model_run.py on ${libs}, CPU`,
-    note: 'the x2 model of the release is its x4 network followed by a bicubic halving (see the end of its param file)',
-    files: Object.fromEntries(models_.map((f) => [f, sha256(join(models, f))])),
-    settings: { scale: 2, pad, blend, alpha: 'bilinear x2 of the padded alpha, cut at 128 when the texture has only alpha 0 and 255', gray: 'kept gray' },
-    seams: result.seams,
-    textures,
-  }, null, 1));
-  const sm = result.seams;
-  log(`${result.made.length} textures in ${out}; ${result.skipped.length} left original; wrap-around seam ratio over ${sm.wrapping} wrapping axes: ${sm.worse} where the replacement's seam is clearly worse than plain bilinear's${sm.worst ? ` (worst ${sm.worst.hash}: ${sm.worst.original.toFixed(2)} -> ${sm.worst.upscaled.toFixed(2)})` : ''}`);
+  log(`${result.skipped.length} textures left original`);
   rmSync(work, { recursive: true, force: true });
   return result;
 }

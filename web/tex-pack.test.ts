@@ -28,6 +28,19 @@ describe('TexPack', () => {
     expect(pack.summary()).toMatchObject({ entries: 1, seen: 1, replaced: 0, pending: 0 });
   });
 
+  it('asks the server for the selected variant and forgets the old one when it changes', async () => {
+    const pack = new TexPack('/texpack/', true, 'a');
+    const urls: string[] = [];
+    const fetcher = async (url: RequestInfo | URL) => (urls.push(String(url)), indexOf([String(url).includes('/b/') ? 'bbbbbbbbbbbbbbbb' : 'aaaaaaaaaaaaaaaa']));
+    await pack.load(fetcher);
+    pack.lookup('aaaaaaaaaaaaaaaa');
+    await pack.setVariant('b', fetcher);
+    expect(urls).toEqual(['/texpack/a/index.json', '/texpack/b/index.json']);
+    expect(pack.summary()).toMatchObject({ entries: 1, seen: 0 });
+    expect(pack.lookup('aaaaaaaaaaaaaaaa')).toBeNull();
+    expect(pack.summary().pending).toBe(0);
+  });
+
   it('does not request anything while switched off', async () => {
     const pack = new TexPack('/texpack/', false);
     const fetcher = vi.fn(async () => indexOf(['aaaaaaaaaaaaaaaa']));
@@ -88,6 +101,15 @@ describe('Renderer with a texture pack', () => {
     expect(a.slice(0, 4)).toEqual([8, 4, 4, 2]);
     expect(b.slice(0, 2)).toEqual([3, 2]);
     expect(c.slice(0, 2)).toEqual([2, 2]);
+  });
+
+  it('takes a replacement four times the size', async () => {
+    const { renderer, log } = await make({ width: 16, height: 8 });
+    draw(renderer);
+    const a = log.uniforms.get('uTexA')!, b = log.uniforms.get('uTexB')!, c = log.uniforms.get('uTexC')!;
+    expect(a.slice(0, 4)).toEqual([16, 8, 8, 4]);
+    expect(b.slice(0, 2)).toEqual([4, 3]);
+    expect(c.slice(0, 2)).toEqual([4, 4]);
   });
 
   it('draws the original when the replacement is not twice the size', async () => {

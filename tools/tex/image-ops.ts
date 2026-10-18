@@ -60,30 +60,53 @@ export function bleedColour(img: RgbaImage, transparent: (alpha: number) => bool
   return { width, height, rgba };
 }
 
-/** Bilinear x2 of every channel, texel centres aligned (output texel 2i reads input i - 0.25, 2i + 1 reads i + 0.25), edges clamped. */
-export function bilinear2x(img: RgbaImage): RgbaImage {
-  const { width, height } = img;
-  const out = new Uint8Array(width * 2 * height * 2 * 4);
-  const at = (x: number, y: number, c: number): number => img.rgba[(Math.min(height - 1, Math.max(0, y)) * width + Math.min(width - 1, Math.max(0, x))) * 4 + c]!;
-  for (let y = 0; y < height * 2; y++) {
-    const fy = (y + 0.5) / 2 - 0.5, y0 = Math.floor(fy), ty = fy - y0;
-    for (let x = 0; x < width * 2; x++) {
-      const fx = (x + 0.5) / 2 - 0.5, x0 = Math.floor(fx), tx = fx - x0;
-      for (let c = 0; c < 4; c++) {
-        const top = at(x0, y0, c) * (1 - tx) + at(x0 + 1, y0, c) * tx;
-        const bottom = at(x0, y0 + 1, c) * (1 - tx) + at(x0 + 1, y0 + 1, c) * tx;
-        out[(y * width * 2 + x) * 4 + c] = Math.round(top * (1 - ty) + bottom * ty);
+/** Weights of the four taps (at -1, 0, 1, 2 from the floor of the source position) of a Catmull-Rom cubic for a fractional offset `t`. */
+const cubicWeights = (t: number): number[] => [
+  ((-0.5 * t + 1) * t - 0.5) * t,
+  (1.5 * t - 2.5) * t * t + 1,
+  ((-1.5 * t + 2) * t + 0.5) * t,
+  (0.5 * t - 0.5) * t * t,
+];
+
+/**
+ * Plain x`scale` of every channel by separable bilinear or bicubic (Catmull-Rom) filtering, texel centres aligned (output texel o reads the input
+ * at (o + 0.5) / scale - 0.5), edges clamped.
+ */
+export function resample(img: RgbaImage, scale: number, kernel: 'linear' | 'cubic'): RgbaImage {
+  const taps = kernel === 'linear' ? 2 : 4, first = kernel === 'linear' ? 0 : -1;
+  const pass = (src: Float32Array, w: number, h: number, horizontal: boolean): Float32Array => {
+    const n = horizontal ? w : h, outN = n * scale;
+    const out = new Float32Array(horizontal ? outN * h * 4 : w * outN * 4);
+    for (let o = 0; o < outN; o++) {
+      const f = (o + 0.5) / scale - 0.5, base = Math.floor(f), t = f - base;
+      const weights = kernel === 'linear' ? [1 - t, t] : cubicWeights(t);
+      for (let k = 0; k < (horizontal ? h : w); k++) {
+        for (let c = 0; c < 4; c++) {
+          let sum = 0;
+          for (let m = 0; m < taps; m++) {
+            const at = Math.min(n - 1, Math.max(0, base + first + m));
+            sum += weights[m]! * src[((horizontal ? k * w + at : at * w + k)) * 4 + c]!;
+          }
+          out[(horizontal ? k * outN + o : o * w + k) * 4 + c] = sum;
+        }
       }
     }
-  }
-  return { width: width * 2, height: height * 2, rgba: out };
+    return out;
+  };
+  const wide = pass(Float32Array.from(img.rgba), img.width, img.height, true);
+  const full = pass(wide, img.width * scale, img.height, false);
+  const rgba = new Uint8Array(full.length);
+  for (let i = 0; i < full.length; i++) rgba[i] = Math.min(255, Math.max(0, Math.round(full[i]!)));
+  return { width: img.width * scale, height: img.height * scale, rgba };
 }
 
 export interface UpscaleOptions {
   /** Texels of continuation added on every side before the model sees the picture (more than its reach, so the border is not a seam). */
   pad: number;
-  /** Share of the model's output in the colour; the rest is plain bilinear x2. 1 is the model alone. */
+  /** Share of the model's output in the colour; the rest is plain bilinear. 1 is the model alone. */
   blend: number;
+  /** Size of the result relative to the texture (the model's own factor). */
+  scale: number;
 }
 
 export interface TextureFacts {
@@ -102,21 +125,20 @@ export function modelInput(img: RgbaImage, facts: TextureFacts, pad: number): Rg
 }
 
 /**
- * x2 of a texture. Colour comes from `modelOutput` (the model's doubling of `modelInput(img, facts, pad)`) mixed with bilinear x2 of the same
- * picture, cropped back to the texture's own area. Alpha is bilinear x2 of the padded alpha, cut at one half when the texture's alpha is
- * all 0 or 255, so a cut-out stays a cut-out with a smoothed outline. Texels left transparent take the colour of their nearest visible
- * neighbour, so that no halo comes from them.
+ * The texture enlarged by `options.scale`. Colour comes from `modelOutput` (the model's enlargement of `modelInput(img, facts, pad)`) mixed with
+ * plain bilinear enlargement of the same picture, cropped back to the texture's own area. Alpha never goes through the model: it is the padded
+ * alpha enlarged by plain bicubic filtering and left as a gradient, so the game's alpha test (and the filter at the edge) meets the same
+ * kind of ramp as with the original texture and a cut-out keeps its silhouette. Texels left transparent take the colour of their nearest
+ * visible neighbour, so that no halo comes from them.
  */
 export function upscaleTexture(img: RgbaImage, facts: TextureFacts, options: UpscaleOptions, modelOutput: RgbaImage): RgbaImage {
-  const { pad, blend } = options;
+  const { pad, blend, scale } = options;
   const input = modelInput(img, facts, pad);
-  if (modelOutput.width !== input.width * 2 || modelOutput.height !== input.height * 2) throw new Error('the model output is not twice the input');
-  const flat = bilinear2x(input);
-  const w = img.width * 2, h = img.height * 2;
-  const model = crop(modelOutput, pad * 2, pad * 2, w, h);
-  const plain = crop(flat, pad * 2, pad * 2, w, h);
-  const alphaPlane = bilinear2x(padImage(img, pad, facts.edgeS, facts.edgeT));
-  const alpha = crop(alphaPlane, pad * 2, pad * 2, w, h);
+  if (modelOutput.width !== input.width * scale || modelOutput.height !== input.height * scale) throw new Error('the model output is not the input times the scale');
+  const w = img.width * scale, h = img.height * scale;
+  const model = crop(modelOutput, pad * scale, pad * scale, w, h);
+  const plain = crop(resample(input, scale, 'linear'), pad * scale, pad * scale, w, h);
+  const alpha = crop(resample(padImage(img, pad, facts.edgeS, facts.edgeT), scale, 'cubic'), pad * scale, pad * scale, w, h);
   const rgba = new Uint8Array(w * h * 4);
   for (let i = 0; i < w * h; i++) {
     const o = i * 4;
@@ -126,8 +148,7 @@ export function upscaleTexture(img: RgbaImage, facts: TextureFacts, options: Ups
     rgba[o] = r;
     rgba[o + 1] = g;
     rgba[o + 2] = b;
-    const a = alpha.rgba[o + 3]!;
-    rgba[o + 3] = facts.alpha === 'binary' ? (a >= 128 ? 255 : 0) : a;
+    rgba[o + 3] = alpha.rgba[o + 3]!;
   }
   return bleedColour({ width: w, height: h, rgba });
 }

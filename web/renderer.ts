@@ -6,7 +6,7 @@ import { GpuTimer } from './gpu-timer.ts';
 import { Geo } from '../tools/gfx/opcodes.ts';
 import { CycleType, cycleTypeOf, fragmentSource, OtherL, shiftScale, specKey, specOf, VERTEX_SHADER, type ShaderSpec } from './shader.ts';
 import { MAX_SCALE, type GfxSettings } from './gfx-settings.ts';
-import { bindToggleKey, fits, hashTexture, pagePack, type TexPack } from './tex-pack.ts';
+import { bindToggleKey, scaleOf, hashTexture, pagePack, type TexPack } from './tex-pack.ts';
 
 export const SCREEN_W = 320;
 export const SCREEN_H = 240;
@@ -158,7 +158,7 @@ export class Renderer {
       this.texPack.onChange = (hash) => this.packChanged(hash);
       if (typeof addEventListener === 'function') bindToggleKey(this.texPack, globalThis);
       // The handle the screenshot tool (tools/tex/compare.ts) drives.
-      Object.assign(globalThis, { ootTexPack: { pack: this.texPack, redraw: () => this.redraw(), inUse: () => [...this.textureCache.values()].filter((t) => t.scale > 1).length } });
+      Object.assign(globalThis, { ootTexPack: { pack: this.texPack, redraw: () => this.redraw(), boundsOf: (hashes: string[]) => this.boundsOf(new Set(hashes)), inUse: () => [...this.textureCache.values()].filter((t) => t.scale > 1).length } });
     }
   }
 
@@ -186,6 +186,28 @@ export class Renderer {
     this.drawTask(this.lastResult);
     const drawn = this.lastResult.batches.map((b) => b.state).filter((st) => physical(st.colorImage.addr) !== physical(st.depthImage)).at(-1);
     this.present(drawn?.colorImage.addr ?? this.lastPresented ?? 0);
+  }
+
+  /**
+   * The box, in canvas pixels, of the largest triangle batch of the last task that samples a texture whose hash is in `hashes` (for picking close-ups);
+   * null when there is none. Vertices behind the eye are ignored.
+   */
+  private boundsOf(hashes: ReadonlySet<string>): { x: number; y: number; w: number; h: number } | null {
+    let best: { x: number; y: number; w: number; h: number } | null = null;
+    const { width, height } = this.canvas;
+    for (const b of this.lastResult?.batches ?? []) {
+      if (b.kind !== 'triangles' || !b.state.textures.some((t) => t && hashes.has(hashTexture(t.width, t.height, t.rgba)))) continue;
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (let i = 0; i < b.positions.length; i += 4) {
+        const w = b.positions[i + 3]!;
+        if (w <= 0) continue;
+        const x = ((b.positions[i]! * 0.5) / w * 0.5 + 0.5) * width, y = (0.5 - (b.positions[i + 1]! * 0.5) / w * 0.5) * height;
+        x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+      }
+      x0 = Math.max(0, x0); y0 = Math.max(0, y0); x1 = Math.min(width, x1); y1 = Math.min(height, y1);
+      if (x1 > x0 && y1 > y0 && (!best || (x1 - x0) * (y1 - y0) > best.w * best.h)) best = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+    }
+    return best;
   }
 
   /** Renders at `scale` times the 320x240 the game addresses; the colour images are dropped and redrawn by the game. */
@@ -711,8 +733,9 @@ ${source}`);
       const pack = this.texPack?.available ? this.texPack : null;
       const hash = pack ? hashTexture(image.width, image.height, image.rgba) : undefined;
       const replacement = pack && hash ? pack.lookup(hash) : null;
-      tex = replacement && fits(image, replacement)
-        ? this.upload(replacement.width, replacement.height, replacement, this.settings.mipmaps, replacement.width / image.width)
+      const k = replacement ? scaleOf(image, replacement) : 0;
+      tex = replacement && k > 0
+        ? this.upload(replacement.width, replacement.height, replacement, this.settings.mipmaps, k)
         : this.upload(image.width, image.height, image.rgba);
       tex.hash = hash;
       this.textureCache.set(image.id, tex);

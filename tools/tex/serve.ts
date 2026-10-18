@@ -1,12 +1,12 @@
-// Serves the local texture pack (`out/texpack/`) at `/texpack/` to this machine only: the textures are derived from the cartridge and are
-// never published. Only `index.json` and `<16 hex digits>.png` are mapped to a path.
+// Serves the local texture packs (`out/texpack/<variant>/`) at `/texpack/<variant>/` to this machine only: the textures are derived from the
+// cartridge and are never published. Only `index.json` and `<16 hex digits>.png` in a variant folder are mapped to a path.
 import { readFileSync, statSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { LOOPBACK } from '../../web/saves-endpoint.ts';
 
 export const PACK_ROUTE = '/texpack/';
-const NAME = /^(index\.json|[0-9a-f]{16}\.png)$/;
+const NAME = /^[a-z0-9-]+\/(index\.json|[0-9a-f]{16}\.png)$/;
 
 export function serveTexPack(dir: string) {
   return (req: IncomingMessage, res: ServerResponse, next: () => void): void => {

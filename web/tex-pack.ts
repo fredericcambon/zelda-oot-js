@@ -1,16 +1,18 @@
-// An optional local pack of replacement textures: `out/texpack/<hash>.png` on the machine that built it (`npm run tex -- upscale`), served to
-// loopback clients only at `/texpack/` and listed in `/texpack/index.json`. A decoded texture is looked up by `hashTexture`. A replacement is
-// exactly twice the size of the texture it stands for, and the renderer samples it with the texture's own tile settings.
+// An optional local pack of replacement textures: `out/texpack/<variant>/<hash>.png` on the machine that built it (`npm run tex -- upscale`), served to
+// loopback clients only at `/texpack/<variant>/` and listed in its `index.json`. A decoded texture is looked up by `hashTexture`. A replacement is a
+// whole multiple (2 or 4) of the size of the texture it stands for, and the renderer samples it with the texture's own tile settings.
 import { hashTexture } from '../tools/tex/hash.ts';
 
 export { hashTexture };
 
 export const PACK_URL = 'texpack/';
 export const STORAGE_KEY = 'oot.texpack';
+export const VARIANT_KEY = 'oot.texpack.variant';
+export const DEFAULT_VARIANT = 'a';
 /** The key that switches between the original textures and the pack. */
 export const TOGGLE_KEY = 't';
-/** A replacement is this many times the size of the texture it replaces. */
-export const PACK_SCALE = 2;
+/** The factors a replacement may have. */
+export const PACK_SCALES = [2, 4];
 
 export interface PackSummary {
   /** Whether a pack is being served. */
@@ -37,14 +39,30 @@ export class TexPack {
   /** Called when the index arrives, when a replacement arrives (with its hash) and when the switch is toggled (with no hash). */
   onChange: ((hash?: string) => void) | null = null;
 
-  constructor(private readonly base = PACK_URL, enabled = readEnabled()) {
+  constructor(private base = PACK_URL, enabled = readEnabled(), public variant = readVariant()) {
     this.on = enabled;
+  }
+
+  /** Switches to another variant of the pack: its index is fetched, the replacements of the old one are forgotten and `onChange` is called. */
+  async setVariant(variant: string, fetcher: typeof fetch = fetch): Promise<void> {
+    this.variant = variant;
+    try {
+      localStorage.setItem(VARIANT_KEY, variant);
+    } catch {
+      // The choice is kept for this page only.
+    }
+    this.entries = null;
+    this.bitmaps.clear();
+    this.requested.clear();
+    this.seenHashes.clear();
+    await this.load(fetcher);
+    this.onChange?.();
   }
 
   /** Fetches the index of the pack; a missing pack, or a server that answers with something else, leaves it empty. */
   async load(fetcher: typeof fetch = fetch): Promise<void> {
     try {
-      const response = await fetcher(`${this.base}index.json`);
+      const response = await fetcher(`${this.base}${this.variant}/index.json`);
       if (!response.ok) return;
       const index = (await response.json()) as { textures?: unknown };
       if (!index.textures || typeof index.textures !== 'object') return;
@@ -92,13 +110,16 @@ export class TexPack {
   }
 
   private async fetchOne(hash: string): Promise<void> {
+    const variant = this.variant;
     let bitmap: ImageBitmap | null = null;
     try {
-      const response = await fetch(`${this.base}${hash}.png`);
+      const response = await fetch(`${this.base}${variant}/${hash}.png`);
       if (response.ok) bitmap = await createImageBitmap(await response.blob(), { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
     } catch {
       bitmap = null;
     }
+    // The answer to a request for a variant that has been switched away from is dropped.
+    if (variant !== this.variant) return;
     this.bitmaps.set(hash, bitmap);
     this.onChange?.(hash);
   }
@@ -125,9 +146,19 @@ function readEnabled(): boolean {
   }
 }
 
-/** Whether a replacement fits the texture it stands for (twice its size in both directions). */
-export const fits = (original: { width: number; height: number }, replacement: { width: number; height: number }): boolean =>
-  replacement.width === original.width * PACK_SCALE && replacement.height === original.height * PACK_SCALE;
+function readVariant(): string {
+  try {
+    return localStorage.getItem(VARIANT_KEY) || DEFAULT_VARIANT;
+  } catch {
+    return DEFAULT_VARIANT;
+  }
+}
+
+/** The factor by which a replacement is larger than the texture it stands for in both directions (one of `PACK_SCALES`), or 0 when it does not fit. */
+export function scaleOf(original: { width: number; height: number }, replacement: { width: number; height: number }): number {
+  const k = replacement.width / original.width;
+  return PACK_SCALES.includes(k) && replacement.height === original.height * k ? k : 0;
+}
 
 /** The pack of the page, or null where there is no page to serve one (the tests, a worker). */
 export function pagePack(): TexPack | null {

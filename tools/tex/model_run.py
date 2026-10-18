@@ -1,9 +1,9 @@
-"""Runs the realesr-animevideov3 x2 model over every PNG of a folder with numpy, reading the ncnn files of its official release.
+"""Runs a realesr-animevideov3 model (x4, or the release's x2) over every PNG of a folder with numpy, reading the ncnn files of its official release.
 
 usage: python -I model_run.py <model.param> <model.bin> <in dir> <out dir>
 
 The network is the one its param file lists (Real-ESRGAN's compact SRVGG): a 3x3 convolution with 64 channels and a PReLU, repeated, then a 3x3
-convolution to 48 channels, a pixel shuffle by 4, the sum with the nearest-neighbour x4 of the input, and a bicubic halving. The param file is
+convolution to 48 channels, a pixel shuffle by 4, the sum with the nearest-neighbour x4 of the input and, in the x2 model only, a bicubic halving. The param file is
 checked against that shape, and the weights are read from the bin file in the order ncnn stores them (a 4-byte type tag before each convolution's
 half-float weights, then float bias; PReLU slopes). Written because the ncnn Python package gave different, partly garbage output on every run of this model.
 """
@@ -48,8 +48,9 @@ def load(param_path, bin_path):
             layers.append((kind,))
     assert at == len(data), "the bin file has data the param file does not account for"
     kinds = [l[0] for l in layers]
-    assert kinds[:2] == ["Input", "Split"] and kinds[-4:] == ["PixelShuffle", "Interp", "BinaryOp", "Interp"], kinds
-    return [l for l in layers if l[0] in ("conv", "prelu")]
+    halve = kinds[-1] == "Interp"
+    assert kinds[:2] == ["Input", "Split"] and kinds[-3 - halve:] == ["PixelShuffle", "Interp", "BinaryOp"] + (["Interp"] if halve else []), kinds
+    return [l for l in layers if l[0] in ("conv", "prelu")], halve
 
 
 def conv(x, w, b):
@@ -81,7 +82,7 @@ def halve_bicubic(x):
     return x
 
 
-def run(layers, image):
+def run(layers, halve, image):
     x = image.astype(np.float32) / 255.0
     y = x
     convs = [l for l in layers if l[0] == "conv"]
@@ -93,16 +94,16 @@ def run(layers, image):
     h, w_, _ = y.shape
     shuffled = y.reshape(h, w_, 3, 4, 4).transpose(0, 3, 1, 4, 2).reshape(h * 4, w_ * 4, 3)
     full = shuffled + np.repeat(np.repeat(x, 4, axis=0), 4, axis=1)
-    return np.clip(halve_bicubic(full) * 255.0 + 0.5, 0, 255).astype(np.uint8)
+    return np.clip((halve_bicubic(full) if halve else full) * 255.0 + 0.5, 0, 255).astype(np.uint8)
 
 
 def main():
     param, weights, src, dst = sys.argv[1:5]
-    layers = load(param, weights)
+    layers, halve = load(param, weights)
     for name in sorted(os.listdir(src)):
         if name.endswith(".png"):
             rgb = np.asarray(Image.open(os.path.join(src, name)).convert("RGB"))
-            Image.fromarray(run(layers, rgb), "RGB").save(os.path.join(dst, name))
+            Image.fromarray(run(layers, halve, rgb), "RGB").save(os.path.join(dst, name))
     return 0
 
 

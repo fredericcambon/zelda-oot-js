@@ -4,8 +4,8 @@ import { dump } from './dump.ts';
 import { defaultPython, defaultToolDir, upscale } from './upscale.ts';
 
 const USAGE = `usage: tex dump [--dist dist] [--out out/texdump]
-       tex upscale [--dump out/texdump] [--out out/texpack] [--tool <dir>] [--python <exe>] [--blend 1] [--pad 16] [--limit N]
-       tex compare [--out out/tex-compare] [--pack out/texpack] [--chrome <path>]`;
+       tex upscale [--dump out/texdump] [--out out/texpack] [--tool <dir>] [--python <exe>] [--variants a,b,c,d] [--pad 16] [--limit N]
+       tex compare [--out out/tex-compare] [--pack out/texpack] [--variants a,b,c,d] [--chrome <path>]`;
 
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
@@ -17,7 +17,7 @@ async function main(argv: string[]): Promise<number> {
       dump: { type: 'string', default: 'out/texdump' },
       tool: { type: 'string', default: defaultToolDir() },
       python: { type: 'string', default: defaultPython() },
-      blend: { type: 'string', default: '1' },
+      variants: { type: 'string' },
       pad: { type: 'string', default: '16' },
       limit: { type: 'string' },
       pack: { type: 'string', default: 'out/texpack' },
@@ -30,12 +30,12 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
   if (command === 'upscale') {
-    upscale({ dump: values.dump!, out: values.out ?? 'out/texpack', tool: values.tool!, python: values.python!, blend: Number(values.blend), pad: Number(values.pad), limit: values.limit === undefined ? undefined : Number(values.limit) });
+    upscale({ dump: values.dump!, out: values.out ?? 'out/texpack', tool: values.tool!, python: values.python!, variants: values.variants?.split(','), pad: Number(values.pad), limit: values.limit === undefined ? undefined : Number(values.limit) });
     return 0;
   }
   if (command === 'compare') {
     const { compare } = await import('./compare.ts');
-    await compare({ out: values.out ?? 'out/tex-compare', pack: values.pack!, chrome: values.chrome!, port: Number(values.port) });
+    await compare({ out: values.out ?? 'out/tex-compare', pack: values.pack!, dump: values.dump!, variants: values.variants?.split(','), chrome: values.chrome!, port: Number(values.port) });
     return 0;
   }
   console.error(USAGE);
