@@ -5,11 +5,11 @@ describe('graphics settings', () => {
   it('falls back to the defaults for missing, broken or invalid stored values', () => {
     expect(parseSettings(null, false)).toEqual(defaultSettings(false));
     expect(parseSettings('{not json', false)).toEqual(defaultSettings(false));
-    expect(parseSettings('{"filter":"blurry","msaa":3,"scaleCap":-1,"anisotropy":99}', false)).toEqual(defaultSettings(false));
+    expect(parseSettings('{"filter":"blurry","cutout":"soft","msaa":3,"scaleCap":-1,"anisotropy":99}', false)).toEqual(defaultSettings(false));
   });
 
   it('keeps valid stored values', () => {
-    const stored = { filter: 'sharp', msaa: false, scaleCap: 1.5, mipmaps: false, anisotropy: 8 };
+    const stored = { filter: 'sharp', msaa: false, scaleCap: 1.5, mipmaps: false, anisotropy: 8, cutout: 'hard' };
     expect(parseSettings(JSON.stringify(stored), false)).toEqual(stored);
   });
 

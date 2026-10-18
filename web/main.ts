@@ -190,7 +190,7 @@ addEventListener('keydown', (e) => {
 
 const CULL_MODES: CullMode[] = ['normal', 'swapped', 'off'];
 
-// F cycles the texture filter, G switches multisampling and H the mip levels with anisotropic taps.
+// F cycles the texture filter, G switches multisampling, H the mip levels with anisotropic taps and V the cut-out edges.
 function changeGfx(change: Partial<GfxSettings>, text: string): void {
   gfx = { ...gfx, ...change };
   renderer.setSettings(gfx);
@@ -204,6 +204,9 @@ addEventListener('keydown', (e) => {
     changeGfx({ filter }, `Texture filter: ${filter}`);
   } else if (e.key === 'g' || e.key === 'G') {
     changeGfx({ msaa: !gfx.msaa }, `Multisampling: ${gfx.msaa ? 'off' : 'on'}`);
+  } else if (e.key === 'v' || e.key === 'V') {
+    const cutout = gfx.cutout === 'smooth' ? 'hard' : 'smooth';
+    changeGfx({ cutout }, `Cut-out edges: ${cutout}${cutout === 'smooth' && !gfx.msaa ? ' (needs multisampling)' : ''}`);
   } else if (e.key === 'h' || e.key === 'H') {
     changeGfx({ mipmaps: !gfx.mipmaps }, `Mip levels: ${gfx.mipmaps ? 'off' : 'on'}`);
   }
@@ -251,7 +254,7 @@ function updateOverlay(): void {
     `unknown commands ${s.unknown}  problems ${s.problems.length}`,
     `programs ${s.programs} (${s.compileMs.toFixed(0)} ms to build)  textures ${s.textures}  colour images ${s.targets}`,
     game ? `video framebuffer 0x${game.framebuffer().toString(16)}` : '',
-    `culling ${renderer.cullMode}  resolution ${renderer.resolutionScale.toFixed(2)}x (${canvas.width}x${canvas.height})  filter ${gfx.filter}  msaa ${renderer.msaaSamples || 'off'}  mips ${gfx.mipmaps ? `on, ${gfx.anisotropy} taps` : 'off'}`,
+    `culling ${renderer.cullMode}  resolution ${renderer.resolutionScale.toFixed(2)}x (${canvas.width}x${canvas.height})  filter ${gfx.filter}  msaa ${renderer.msaaSamples || 'off'}  mips ${gfx.mipmaps ? `on, ${gfx.anisotropy} taps` : 'off'}  cutout ${renderer.msaaSamples ? gfx.cutout : 'hard'}`,
     g ? `audio tasks ${g.audioTasks}  sound ${audio.state === 'running' ? `on, level ${audio.level().toFixed(3)}` : 'off: press a key'}` : '',
     ...audio.status(),
     g?.renderError ? `render error: ${g.renderError}` : '',

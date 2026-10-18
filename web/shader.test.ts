@@ -135,6 +135,24 @@ describe('shader generation', () => {
     expect(specKey(edge)).not.toBe(specKey(plain));
   });
 
+  it('turns the alpha test into coverage for cut-outs that do not blend with the framebuffer', () => {
+    const test = 1;
+    const blendL = ((0 << 30) | (0 << 26) | (1 << 22) | (0 << 18) | (1 << 14) | test) >>> 0;
+    const hard = specOf(state({ otherModeL: test }));
+    const smooth = specOf(state({ otherModeL: test }), { cutout: true });
+    expect(hard.cutout).toBe(false);
+    expect(smooth.cutout).toBe(true);
+    expect(fragmentSource(hard)).toContain('if (cA < uBlend.a) discard;');
+    expect(fragmentSource(smooth)).not.toContain('if (cA < uBlend.a) discard;');
+    expect(fragmentSource(smooth)).toContain('fwidth(edgeA)');
+    expect(fragmentSource(smooth)).toContain('outColor = vec4(pixel, cover);');
+    expect(fragmentSource(specOf(state({ otherModeL: test }), { cutout: true, mip: true }))).toContain('gLod');
+    expect(specKey(smooth)).not.toBe(specKey(hard));
+    expect(specOf(state({ otherModeL: blendL }), { cutout: true }).cutout).toBe(false);
+    expect(specOf(state(), { cutout: true }).cutout).toBe(false);
+    expect(specOf(state({ otherModeH: CycleType.COPY << 20, otherModeL: test }), { cutout: true }).cutout).toBe(false);
+  });
+
   it('copies the texel in copy mode, and never filters it', () => {
     const s = specOf(state({ otherModeH: (CycleType.COPY << 20) | (2 << 12) }));
     expect(s.copy).toBe(true);
