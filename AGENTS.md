@@ -24,3 +24,7 @@ The ROM file never enters the repo, a commit or an upload. Only the build reads 
 - `docs/re/` reverse-engineering notes with evidence.
 - TypeScript, Vite, Vitest, ESLint. Scripts: `npm run build|test|lint|dev`, `npm run rom:extract`.
 - Emscripten is fetched into `.tools/emsdk` by the build script when missing.
+
+## Silent runs
+
+Automated runs must be silent: browsers launched by tools or tests use `--mute-audio`; when a worker opens the game in a browser to check something, mute it (M key) first.
