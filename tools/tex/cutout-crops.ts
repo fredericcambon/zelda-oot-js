@@ -51,7 +51,6 @@ const html = `<!doctype html>
   .swipe img { display: block; max-width: 100%; height: auto; }
   .swipe.pixel img { image-rendering: pixelated; }
   .swipe .over { position: absolute; inset: 0; overflow: hidden; clip-path: inset(0 50% 0 0); }
-  .swipe .over img { width: 100%; }
   .swipe .handle { position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; background: #fff; box-shadow: 0 0 4px #000; pointer-events: none; }
   .swipe .handle span { position: absolute; top: 50%; left: -13px; width: 28px; height: 28px; margin-top: -14px; border-radius: 50%; background: #fff; opacity: .8; }
   .swipe b { position: absolute; top: 6px; padding: 2px 6px; background: #000a; color: #fff; font-size: 12px; line-height: 1.2; pointer-events: none; }
@@ -64,11 +63,17 @@ ${views.map((v) => section(v, v, 'Full frame.', 1)).join('')}
 <script>
   for (const el of document.querySelectorAll('.swipe')) {
     const zoom = Number(el.dataset.zoom);
+    const images = el.querySelectorAll('img');
+    const size = () => {
+      // Both images are drawn at the same size, so the divider reveals the hard one under the smooth one.
+      const w = images[0].naturalWidth * zoom;
+      if (w === 0) return;
+      el.style.width = w + 'px';
+      for (const img of images) { img.style.width = w + 'px'; img.style.maxWidth = 'none'; }
+    };
     if (zoom > 1) {
       el.classList.add('pixel');
-      for (const img of el.querySelectorAll('img')) img.style.width = img.closest('.over') ? '100%' : '';
-      el.querySelector('.under').style.width = '';
-      el.querySelector('.under').addEventListener('load', (e) => { el.style.width = e.target.naturalWidth * zoom + 'px'; });
+      for (const img of images) img.complete ? size() : img.addEventListener('load', size);
     }
     const set = (clientX) => {
       const r = el.getBoundingClientRect();
