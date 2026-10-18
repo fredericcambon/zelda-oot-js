@@ -70,7 +70,7 @@ describe.skipIf(!rom || !existsSync(rom))('gap sweep', () => {
     expect(s.graphics.table.filter((r) => r.status === 'implemented').length).toBeGreaterThan(30);
     expect(s.graphics.table.find((r) => r.op === 0xdf)?.status).toBe('implemented');
     expect(s.audio.table).toHaveLength(24);
-    expect(s.audio.table.filter((r) => r.status === 'missing').map((r) => r.op)).toEqual([0x00, 0x03, 0x04, 0x06, 0x0e, 0x17]);
+    expect(s.audio.table.filter((r) => r.status === 'missing').map((r) => r.op)).toEqual([0x00, 0x03, 0x04, 0x06, 0x17]);
     expect(s.os.entries.length).toBeGreaterThan(100);
     expect(s.os.entries.filter((e) => e.disposition === 'replaced').length).toBeGreaterThan(50);
     expect(s.os.mmio.length).toBeGreaterThan(0);

@@ -333,7 +333,7 @@ export function audioOpcodes(specs: Map<string, ImageSpec>): { table: OpcodeRow[
   const table: OpcodeRow[] = [];
   const names: Record<number, string> = {
     1: 'ADPCM decode', 2: 'clear', 5: 'resample', 7: 'FIR filter', 8: 'set buffers', 9: 'repeat block', 0xa: 'DMEM copy', 0xb: 'load codebook', 0xc: 'mix',
-    0xd: 'interleave', 0xf: 'set loop', 0x10: 'copy runs', 0x11: 'take every other sample', 0x12: 'envelope rates', 0x13: 'envelope mix', 0x14: 'load buffer',
+    0xd: 'interleave', 0xe: 'gain', 0xf: 'set loop', 0x10: 'copy runs', 0x11: 'take every other sample', 0x12: 'envelope rates', 0x13: 'envelope mix', 0x14: 'load buffer',
     0x15: 'save buffer', 0x16: 'envelope volumes',
   };
   for (let op = 0; op < 128; op++) {
