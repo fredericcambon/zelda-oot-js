@@ -18,6 +18,8 @@ import { backToFileSelect, loadSaveFile, loadSlotIntoPlay, type SaveTarget } fro
 import { pickSaveFile } from './save-picker.ts';
 import { EMPTY_INVENTORY, editContext, inventorySnapshot, sameInventory, toggleFreeze } from './inspect/inventory.ts';
 import { Bridge, readEntrances, sameSnapshot, snapshot, warpTo } from './inspect/index.ts';
+import { applyCheats, loadCheats, parseCode, saveCheats, type Cheat } from './inspect/cheats.ts';
+import { EMPTY_MEMORY, MemoryModel, parseAddress } from './inspect/memory.ts';
 import { mountUi } from './ui/panel.ts';
 import { Store } from './ui/store.ts';
 import { isTyping } from './ui/typing.ts';
@@ -90,6 +92,9 @@ const store = new Store<UiState>({
   warp: { live: null, refusal: 'no game is running' },
   inventoryVisible: false,
   inventory: EMPTY_INVENTORY,
+  memoryVisible: false,
+  memory: EMPTY_MEMORY,
+  cheats: loadCheats(),
   sheetOpen: false,
 });
 overlay.hidden = !store.get().overlayShown;
@@ -125,6 +130,8 @@ let saves: SaveSync | null = null;
 let states: SaveStates | null = null;
 // Save state and save file actions run between two frames: the game cannot be copied or changed while a frame is in progress.
 const bridge = new Bridge(() => game?.ram() ?? null);
+const memoryModel = new MemoryModel();
+applyCheats(bridge.freezes, store.get().cheats);
 // Presses Start after the game started over, until the file select is reached.
 let autoStart: AutoStart | null = null;
 let noticeTimer = 0;
@@ -251,9 +258,20 @@ function updateInventory(): void {
   if (!sameInventory(s.inventory, next)) store.set({ inventory: next });
 }
 
+const MEMORY_REFRESH_MS = 100;
+let memoryAt = 0;
+
+// The Memory tab is read about ten times a second, so changed bytes stay visible long enough to see.
+function updateMemory(now = performance.now(), force = false): void {
+  if (!store.get().memoryVisible || (!force && now - memoryAt < MEMORY_REFRESH_MS)) return;
+  memoryAt = now;
+  store.set({ memory: memoryModel.tick(bridge) });
+}
+
 function updateOverlay(): void {
   updateWarp();
   updateInventory();
+  updateMemory();
   const showing = store.get().debugVisible;
   if (overlay.hidden && !showing) return;
   const s = renderer.stats;
@@ -379,6 +397,12 @@ async function boot(): Promise<void> {
   }
 }
 
+function setCheats(cheats: Cheat[]): void {
+  store.set({ cheats });
+  saveCheats(cheats);
+  applyCheats(bridge.freezes, cheats);
+}
+
 const actions: UiActions = {
   setSmooth(on) {
     writeSmooth(on);
@@ -435,6 +459,46 @@ const actions: UiActions = {
   warp: (entry) => bridge.queue.push(() => warpTo(bridge, entry), 'Warp failed'),
   editSave: (edits) => bridge.queue.push(() => editContext(bridge, edits), 'Edit failed'),
   toggleFreeze: (key) => bridge.queue.push(() => toggleFreeze(bridge, key), 'Hold failed'),
+  gotoMemory(text) {
+    try {
+      memoryModel.setStart(parseAddress(text));
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+    updateMemory(performance.now(), true);
+  },
+  pageMemory(bytes) {
+    memoryModel.setStart(memoryModel.windowStart + bytes);
+    updateMemory(performance.now(), true);
+  },
+  writeMemory: (addr, type, text) => bridge.queue.push(() => memoryModel.write(bridge, addr, type, text), 'Write failed'),
+  addWatch(addr, type) {
+    try {
+      memoryModel.addWatch(parseAddress(addr), type);
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+    updateMemory(performance.now(), true);
+  },
+  removeWatch(id) {
+    memoryModel.removeWatch(bridge, id);
+    updateMemory(performance.now(), true);
+  },
+  holdWatch: (id) => bridge.queue.push(() => memoryModel.toggleHold(bridge, id), 'Hold failed'),
+  writeWatch: (id, text) => bridge.queue.push(() => memoryModel.writeWatch(bridge, id, text), 'Write failed'),
+  searchStart: (type) => bridge.queue.push(() => memoryModel.startSearch(bridge, type), 'Search failed'),
+  searchNarrow: (kind, value) => bridge.queue.push(() => memoryModel.narrow(bridge, kind, value), 'Search failed'),
+  searchEnd() {
+    memoryModel.endSearch();
+    updateMemory(performance.now(), true);
+  },
+  addCheat(name, code) {
+    const parsed = parseCode(code);
+    if ('error' in parsed) return parsed.error;
+    setCheats([...store.get().cheats, { id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, name: name.trim(), code: code.trim(), enabled: true }]);
+  },
+  toggleCheat: (id) => setCheats(store.get().cheats.map((c) => (c.id === id ? { ...c, enabled: !c.enabled } : c))),
+  removeCheat: (id) => setCheats(store.get().cheats.filter((c) => c.id !== id)),
 };
 // Touch input stops while the menu sheet covers the picture.
 store.subscribe(() => {

@@ -53,7 +53,7 @@ function heldKeys(fields: Fields): string[] {
 }
 
 function freezeFor(freezes: readonly Freeze[], span: Span): Freeze | undefined {
-  return freezes.find((f) => f.addr === SAVE_CONTEXT + span.at && f.size === span.size);
+  return freezes.find((f) => !f.owner && f.addr === SAVE_CONTEXT + span.at && f.size === span.size);
 }
 
 /** A field is held when every byte range it covers is. */

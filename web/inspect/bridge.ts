@@ -17,6 +17,11 @@ export class Bridge {
     return bytes ? guestRam(bytes) : null;
   }
 
+  /** The raw RDRAM bytes, or null while no game runs. The view is valid until the next frame. */
+  bytes(): Uint8Array | null {
+    return this.ramOf();
+  }
+
   /** Why the game must not be changed now, or undefined when it may be. */
   unsafeReason(): string | undefined {
     const mem = this.ram();

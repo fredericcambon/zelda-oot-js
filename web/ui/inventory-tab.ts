@@ -1,30 +1,8 @@
 import { html } from 'htm/preact';
 import type { VNode } from 'preact';
-import { useState } from 'preact/hooks';
 import type { Fields } from '../inspect/inventory.ts';
 import type { TabProps } from './types.ts';
-import { Button } from './widgets.ts';
-
-// A number field takes keys while it has the focus; Enter applies it and gives the focus back to the game.
-function NumberEdit(p: { id: string; value: string; width?: number; onApply: (value: string) => void }): VNode {
-  const [text, setText] = useState<string | null>(null);
-  const apply = (el: HTMLInputElement) => {
-    if (text !== null) p.onApply(text);
-    setText(null);
-    el.blur();
-  };
-  return html`<input id=${p.id} class="num" type="text" inputmode="numeric" autocomplete="off" spellcheck=${false}
-    style=${p.width ? `width:${p.width}px` : ''} value=${text ?? p.value}
-    onInput=${(e: Event) => setText((e.currentTarget as HTMLInputElement).value)}
-    onKeyDown=${(e: KeyboardEvent) => {
-      if (e.key === 'Enter') apply(e.currentTarget as HTMLInputElement);
-      else if (e.key === 'Escape') {
-        setText(null);
-        (e.currentTarget as HTMLInputElement).blur();
-      }
-    }}
-    onBlur=${() => setText(null)} />` as VNode;
-}
+import { Button, NumberEdit } from './widgets.ts';
 
 const hex = (n: number) => `0x${n.toString(16).toUpperCase().padStart(2, '0')}`;
 const itemText = (id: number) => (id === 0xff ? 'none' : String(id));
