@@ -20,7 +20,7 @@ Evidence from the PAL 1.0 ROM (SHA-1 `328A1F1BEBA30CE5E178F031662019EB32C5F3B5`)
 | `0x120` | previous record in the list (`sw a1, 288(v1)`, 0x800255F8) | observed: the first record's is 0, and every other's is the record before it |
 | `0x124` | next record in the list (`sw v1, 292(a1)`, 0x80025600) | the update walk follows it (`lw s0, 292(s0)`, 0x80025438 and others); a list ends at 0 |
 
-Other offsets of the record (home position at `0x08`, a second position triple at `0x38`, scale at `0x50`) were seen in memory but are not used here, except that Link's second triple at `0x38` differs slightly from `0x24` while he moves (observed); "Go to" writes both.
+Other offsets of the record are not used here and have no proven meaning. Three triples of floats were seen in memory at `0x08`, `0x38` and `0x50`. Link's triple at `0x38` differs slightly from the one at `0x24` while he moves (observed), and "Go to" writes both.
 
 ## Insert, remove, walk
 

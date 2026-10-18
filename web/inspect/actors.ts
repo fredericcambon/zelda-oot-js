@@ -63,7 +63,7 @@ export function sameSnapshot(a: ActorsSnapshot, b: ActorsSnapshot): boolean {
 /** How far from the chosen actor, along the world x axis, Link is put. */
 export const GO_TO_OFFSET = 50;
 /** Offset in Link's record of a second copy of the world position (docs/re/actors.md); it is written with the first so that the two do not disagree for a frame. */
-const LINK_PREVIOUS_POSITION = 0x38;
+const LINK_SECOND_POSITION = 0x38;
 
 /** Puts Link next to the actor at `addr`; call between frames. Throws a refusal that says why when it cannot. */
 export function goToActor(bridge: Bridge, addr: number): string {
@@ -81,7 +81,7 @@ export function goToActor(bridge: Bridge, addr: number): string {
   const view = new DataView(new ArrayBuffer(4));
   const word = (n: number) => { view.setFloat32(0, n); return view.getUint32(0); };
   const spot = { x: target.position.x + GO_TO_OFFSET, y: target.position.y, z: target.position.z };
-  for (const base of [ACTOR_POSITION, LINK_PREVIOUS_POSITION]) {
+  for (const base of [ACTOR_POSITION, LINK_SECOND_POSITION]) {
     mem.write32(link.addr + base, word(spot.x));
     mem.write32(link.addr + base + 4, word(spot.y));
     mem.write32(link.addr + base + 8, word(spot.z));
