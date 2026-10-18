@@ -5,6 +5,11 @@ export type FilterMode = 'n64' | 'smooth' | 'sharp';
 
 export const FILTER_MODES: readonly FilterMode[] = ['n64', 'smooth', 'sharp'];
 
+/** hard: the game's alpha test; smooth: alpha-to-coverage edges on cut-outs (needs multisampling). */
+export type CutoutMode = 'hard' | 'smooth';
+
+export const CUTOUT_MODES: readonly CutoutMode[] = ['hard', 'smooth'];
+
 export interface GfxSettings {
   filter: FilterMode;
   /** 4x multisampling of the 3D framebuffer where the browser offers it. */
@@ -15,6 +20,8 @@ export interface GfxSettings {
   mipmaps: boolean;
   /** Taps along the long axis of a texture's footprint on surfaces seen at a grazing angle (1 off, up to 8). */
   anisotropy: number;
+  /** Edges of cut-out textures (foliage, fences) in 3D scenes. */
+  cutout: CutoutMode;
 }
 
 export const STORAGE_KEY = 'oot.gfx';
@@ -28,6 +35,7 @@ export const defaultSettings = (mobile: boolean): GfxSettings => ({
   scaleCap: mobile ? MOBILE_SCALE_CAP : 0,
   mipmaps: true,
   anisotropy: mobile ? 2 : 4,
+  cutout: 'smooth',
 });
 
 export const isMobile = (): boolean => typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
@@ -43,6 +51,7 @@ export function parseSettings(text: string | null, mobile: boolean): GfxSettings
     // Unreadable text: the defaults stay.
   }
   if (FILTER_MODES.includes(raw.filter as FilterMode)) settings.filter = raw.filter as FilterMode;
+  if (CUTOUT_MODES.includes(raw.cutout as CutoutMode)) settings.cutout = raw.cutout as CutoutMode;
   if (typeof raw.msaa === 'boolean') settings.msaa = raw.msaa;
   if (typeof raw.mipmaps === 'boolean') settings.mipmaps = raw.mipmaps;
   if (typeof raw.scaleCap === 'number' && Number.isFinite(raw.scaleCap) && raw.scaleCap >= 0) settings.scaleCap = raw.scaleCap;

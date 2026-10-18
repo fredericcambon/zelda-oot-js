@@ -151,6 +151,20 @@ const sound = { push: (bytes: Uint8Array, hz: number) => { if (!fastForward.acti
 addEventListener('keydown', (e) => fastForward.keydown(e));
 addEventListener('keyup', (e) => fastForward.keyup(e));
 addEventListener('blur', () => fastForward.reset());
+// `?capture` hands the game's pace to `globalThis.ootStep(frames, x, y)`, which runs exactly that many frames with the stick held
+// and then shows the last picture, so that two renders of the same scene (tools/tex/cutout-compare.ts) match frame for frame.
+const captureMode = location.search.includes('capture');
+if (captureMode) {
+  (globalThis as { ootStep?: unknown }).ootStep = async (frames: number, x: number, y: number): Promise<void> => {
+    if (!game) throw new Error('no game');
+    const tasks = game.info().gfxTasks;
+    for (let i = 0; i < frames || (game.info().gfxTasks === tasks && i < frames + 8); i++) {
+      game.setPad({ buttons: 0, x, y });
+      await game.frame();
+    }
+    renderer.present(game.framebuffer());
+  };
+}
 let fps = 0;
 let shownFps = 0;
 let gameFps = 0;
@@ -236,7 +250,7 @@ function toggleMute(): void {
   store.set({ muted: audio.toggleMute() });
 }
 
-// F cycles the texture filter, G switches multisampling and H the mip levels with anisotropic taps.
+// F cycles the texture filter, G switches multisampling, H the mip levels with anisotropic taps and V the cut-out edges.
 function changeGfx(change: Partial<GfxSettings>, text: string): void {
   gfx = { ...gfx, ...change };
   renderer.setSettings(gfx);
@@ -250,6 +264,9 @@ addEventListener('keydown', (e) => {
     changeGfx({ filter }, `Texture filter: ${filter}`);
   } else if (e.key === 'g' || e.key === 'G') {
     changeGfx({ msaa: !gfx.msaa }, `Multisampling: ${gfx.msaa ? 'off' : 'on'}`);
+  } else if (e.key === 'v' || e.key === 'V') {
+    const cutout = gfx.cutout === 'smooth' ? 'hard' : 'smooth';
+    changeGfx({ cutout }, `Cut-out edges: ${cutout}${cutout === 'smooth' && !gfx.msaa ? ' (needs multisampling)' : ''}`);
   } else if (e.key === 'h' || e.key === 'H') {
     changeGfx({ mipmaps: !gfx.mipmaps }, `Mip levels: ${gfx.mipmaps ? 'off' : 'on'}`);
   }
@@ -330,7 +347,7 @@ function updateOverlay(): void {
     `unknown commands ${s.unknown}  problems ${s.problems.length}`,
     `programs ${s.programs} (${s.compileMs.toFixed(0)} ms to build)  textures ${s.textures}  colour images ${s.targets}`,
     game ? `video framebuffer 0x${game.framebuffer().toString(16)}` : '',
-    `culling ${renderer.cullMode}  resolution ${renderer.resolutionScale.toFixed(2)}x (${canvas.width}x${canvas.height})  filter ${gfx.filter}  msaa ${renderer.msaaSamples || 'off'}  mips ${gfx.mipmaps ? `on, ${gfx.anisotropy} taps` : 'off'}`,
+    `culling ${renderer.cullMode}  resolution ${renderer.resolutionScale.toFixed(2)}x (${canvas.width}x${canvas.height})  filter ${gfx.filter}  msaa ${renderer.msaaSamples || 'off'}  mips ${gfx.mipmaps ? `on, ${gfx.anisotropy} taps` : 'off'}  cutout ${renderer.msaaSamples ? gfx.cutout : 'hard'}`,
     g ? `audio tasks ${g.audioTasks}  sound ${audio.state === 'running' ? `on, level ${audio.level().toFixed(3)}` : 'off: press a key'}` : '',
     ...audio.status(),
     g?.renderError ? `render error: ${g.renderError}` : '',
@@ -357,7 +374,7 @@ async function loop(): Promise<void> {
     // Fast-forward runs frames back to back and has no time for in-between pictures.
     game?.setSmooth(store.get().smooth && !fastForward.active);
     const now = performance.now();
-    let due = pacer.advance(now - last);
+    let due = captureMode ? 0 : pacer.advance(now - last);
     last = now;
     let stepped = false;
     // Fast-forward: frames back to back for most of the display interval.
@@ -383,7 +400,7 @@ async function loop(): Promise<void> {
       counted++;
       stepped = true;
     }
-    if (game) {
+    if (game && !captureMode) {
       const smooth = game.drawSmooth(pacer.fraction());
       if (smooth !== null || stepped) {
         renderer.present(smooth ?? game.framebuffer());
