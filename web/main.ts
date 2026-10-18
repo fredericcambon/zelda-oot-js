@@ -147,6 +147,20 @@ const sound = { push: (bytes: Uint8Array, hz: number) => { if (!fastForward.acti
 addEventListener('keydown', (e) => fastForward.keydown(e));
 addEventListener('keyup', (e) => fastForward.keyup(e));
 addEventListener('blur', () => fastForward.reset());
+// `?capture` hands the game's pace to `globalThis.ootStep(frames, x, y)`, which runs exactly that many frames with the stick held
+// and then shows the last picture, so that two renders of the same scene (tools/tex/cutout-compare.ts) match frame for frame.
+const captureMode = location.search.includes('capture');
+if (captureMode) {
+  (globalThis as { ootStep?: unknown }).ootStep = async (frames: number, x: number, y: number): Promise<void> => {
+    if (!game) throw new Error('no game');
+    const tasks = game.info().gfxTasks;
+    for (let i = 0; i < frames || (game.info().gfxTasks === tasks && i < frames + 8); i++) {
+      game.setPad({ buttons: 0, x, y });
+      await game.frame();
+    }
+    renderer.present(game.framebuffer());
+  };
+}
 let fps = 0;
 let shownFps = 0;
 let gameFps = 0;
@@ -297,7 +311,7 @@ async function loop(): Promise<void> {
     // Fast-forward runs frames back to back and has no time for in-between pictures.
     game?.setSmooth(smoothOn && !fastForward.active);
     const now = performance.now();
-    let due = pacer.advance(now - last);
+    let due = captureMode ? 0 : pacer.advance(now - last);
     last = now;
     let stepped = false;
     // Fast-forward: frames back to back for most of the display interval.
@@ -322,7 +336,7 @@ async function loop(): Promise<void> {
       counted++;
       stepped = true;
     }
-    if (game) {
+    if (game && !captureMode) {
       const smooth = game.drawSmooth(pacer.fraction());
       if (smooth !== null || stepped) {
         renderer.present(smooth ?? game.framebuffer());

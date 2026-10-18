@@ -33,8 +33,8 @@ export interface ShaderSpec {
   mip: boolean;
   alphaCompare: boolean;
   /**
-   * With `alphaCompare`: the alpha test becomes a coverage fraction for alpha-to-coverage (the draw must go to a
-   * multisampled target, with the GL blend unit off).
+   * With `alphaCompare`, or coverage scaled by alpha: the alpha test becomes a coverage fraction for alpha-to-coverage (the
+   * draw must go to a multisampled target, with the GL blend unit off).
    */
   cutout: boolean;
   /** The coverage is scaled by the pixel alpha: a pixel whose alpha rounds to no coverage is not written. */
@@ -77,7 +77,7 @@ function blendCycles(l: number): [BlendCycle, BlendCycle] {
 export interface SpecOptions {
   filter?: FilterMode;
   mip?: boolean;
-  /** Smooth cut-out edges; takes effect only on an alpha-compare draw that does not blend with the framebuffer. */
+  /** Smooth cut-out edges; takes effect only on an alpha-compare or coverage-times-alpha draw that does not blend with the framebuffer. */
   cutout?: boolean;
 }
 
@@ -89,6 +89,8 @@ export function specOf(state: DrawState, { filter = 'n64', mip = false, cutout =
   const blend = blendCycles(state.otherModeL);
   const last = blend[cycles - 1]!;
   const alphaCompare = (state.otherModeL & OtherL.ALPHA_COMPARE_MASK) === 1;
+  const coverageTimesAlpha = (state.otherModeL & OtherL.CVG_TIMES_ALPHA) !== 0;
+  const alphaFromCoverage = (state.otherModeL & OtherL.ALPHA_CVG_SELECT) !== 0;
   const framebufferBlend = (state.otherModeL & OtherL.FORCE_BLEND) !== 0 && last.m === 1 && last.p !== 1 && !(last.a === 3 && last.b === 3);
   return {
     cycles,
@@ -100,9 +102,9 @@ export function specOf(state: DrawState, { filter = 'n64', mip = false, cutout =
     smooth: filter === 'smooth',
     mip: mip && type !== CycleType.COPY,
     alphaCompare,
-    cutout: cutout && alphaCompare && !framebufferBlend && type !== CycleType.COPY,
-    coverageTimesAlpha: (state.otherModeL & OtherL.CVG_TIMES_ALPHA) !== 0,
-    alphaFromCoverage: (state.otherModeL & OtherL.ALPHA_CVG_SELECT) !== 0,
+    cutout: cutout && (alphaCompare || (coverageTimesAlpha && alphaFromCoverage)) && !framebufferBlend && type !== CycleType.COPY,
+    coverageTimesAlpha,
+    alphaFromCoverage,
     blend,
     framebufferBlend,
   };
@@ -381,12 +383,13 @@ void main() {
  * derivative, which gives a one-pixel ramp at the edge: crisp when magnified, anti-aliased when small. The ramp is the
  * coverage that alpha-to-coverage turns into samples.
  */
+const EDGE_THRESHOLD = '0.5';
+
 function alphaTest(spec: ShaderSpec): string {
   if (spec.copy) return '  if (cA < 0.5) discard;';
-  if (!spec.alphaCompare) return '';
-  if (!spec.cutout) return '  if (cA < uBlend.a) discard;';
+  if (!spec.cutout) return spec.alphaCompare ? '  if (cA < uBlend.a) discard;' : '';
   return `  float edgeA = ${spec.mip ? 'cA * min(1.0 + 0.25 * gLod, 2.0)' : 'cA'};
-  float cover = clamp((edgeA - uBlend.a) / max(fwidth(edgeA), 1e-4) + 0.5, 0.0, 1.0);
+  float cover = clamp((edgeA - ${spec.alphaCompare ? 'uBlend.a' : EDGE_THRESHOLD}) / max(fwidth(edgeA), 1e-4) + 0.5, 0.0, 1.0);
   if (cover <= 0.0) discard;`;
 }
 
