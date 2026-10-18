@@ -38,9 +38,10 @@ const notice = document.getElementById('notice')!;
 const SMOOTH_KEY = 'oot.smooth';
 const readSmooth = (): boolean => {
   try {
-    return localStorage.getItem(SMOOTH_KEY) === '1';
+    const raw = localStorage.getItem(SMOOTH_KEY);
+    return raw === null ? true : raw === '1';
   } catch {
-    return false;
+    return true;
   }
 };
 const writeSmooth = (on: boolean): void => {
@@ -52,7 +53,7 @@ const writeSmooth = (on: boolean): void => {
 };
 
 // Percent sliders: how much motion is shown and how fast it catches up to the current game frame.
-const readTuning = (key: string, min: number, max: number): number => {
+const readTuning = (key: string, min: number, max: number, fallback: number): number => {
   try {
     const raw = localStorage.getItem(key);
     const stored = Number(raw);
@@ -60,7 +61,7 @@ const readTuning = (key: string, min: number, max: number): number => {
   } catch {
     // Storage may be blocked; the default stays.
   }
-  return 100;
+  return fallback;
 };
 const writeTuning = (key: string, value: number): void => {
   try {
@@ -77,8 +78,8 @@ const bootHz: Hz = loadHz();
 
 const store = new Store<UiState>({
   smooth: readSmooth(),
-  strength: readTuning(STRENGTH_KEY, 0, 100),
-  span: readTuning(SPAN_KEY, 25, 100),
+  strength: readTuning(STRENGTH_KEY, 0, 100, 50),
+  span: readTuning(SPAN_KEY, 25, 100, 50),
   bootHz,
   wantedHz: bootHz,
   muted: false,
