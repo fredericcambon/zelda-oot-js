@@ -1,5 +1,6 @@
 import type { CullMode } from '../renderer.ts';
 import type { Hz } from '../mode.ts';
+import type { InventorySnapshot } from '../inspect/inventory.ts';
 import type { Entrance, WarpSnapshot } from '../inspect/warp.ts';
 
 /** What the panels show; the game loop and the controls write it. */
@@ -27,6 +28,10 @@ export interface UiState {
   warpVisible: boolean;
   /** The scene, entrance and position of the running game; kept current only while `warpVisible`. */
   warp: WarpSnapshot;
+  /** The Inventory tab is on screen. */
+  inventoryVisible: boolean;
+  /** The save context of the running game; kept current only while `inventoryVisible`. */
+  inventory: InventorySnapshot;
   /** Mobile: the menu sheet is open, and touch input is ignored. */
   sheetOpen: boolean;
 }
@@ -53,6 +58,10 @@ export interface UiActions {
   entrances(): Entrance[] | null;
   /** Queues a warp to table entry `entry`; the game refuses it with a message in an unsafe state. */
   warp(entry: number): void;
+  /** Queues `key=value` edits of the save context (the keys of `editRecord`); refused in an unsafe state. */
+  editSave(edits: readonly (readonly [string, string])[]): void;
+  /** Queues holding a numeric save field at its current value, or releasing it. */
+  toggleFreeze(key: string): void;
 }
 
 export interface TabProps {

@@ -16,6 +16,7 @@ import { FramePacer, loadHz, saveHz, type Hz } from './mode.ts';
 import { AutoStart, fileSelectReached, guestRam } from '../tools/headless/load-save.ts';
 import { backToFileSelect, loadSaveFile, loadSlotIntoPlay, type SaveTarget } from './save-actions.ts';
 import { pickSaveFile } from './save-picker.ts';
+import { EMPTY_INVENTORY, editContext, inventorySnapshot, sameInventory, toggleFreeze } from './inspect/inventory.ts';
 import { Bridge, readEntrances, sameSnapshot, snapshot, warpTo } from './inspect/index.ts';
 import { mountUi } from './ui/panel.ts';
 import { Store } from './ui/store.ts';
@@ -87,6 +88,8 @@ const store = new Store<UiState>({
   debugVisible: false,
   warpVisible: false,
   warp: { live: null, refusal: 'no game is running' },
+  inventoryVisible: false,
+  inventory: EMPTY_INVENTORY,
   sheetOpen: false,
 });
 overlay.hidden = !store.get().overlayShown;
@@ -241,8 +244,16 @@ function updateWarp(): void {
   if (!sameSnapshot(s.warp, next)) store.set({ warp: next });
 }
 
+function updateInventory(): void {
+  const s = store.get();
+  if (!s.inventoryVisible) return;
+  const next = inventorySnapshot(bridge);
+  if (!sameInventory(s.inventory, next)) store.set({ inventory: next });
+}
+
 function updateOverlay(): void {
   updateWarp();
+  updateInventory();
   const showing = store.get().debugVisible;
   if (overlay.hidden && !showing) return;
   const s = renderer.stats;
@@ -422,6 +433,8 @@ const actions: UiActions = {
     return mem ? readEntrances(mem) : null;
   },
   warp: (entry) => bridge.queue.push(() => warpTo(bridge, entry), 'Warp failed'),
+  editSave: (edits) => bridge.queue.push(() => editContext(bridge, edits), 'Edit failed'),
+  toggleFreeze: (key) => bridge.queue.push(() => toggleFreeze(bridge, key), 'Hold failed'),
 };
 // Touch input stops while the menu sheet covers the picture.
 store.subscribe(() => {
