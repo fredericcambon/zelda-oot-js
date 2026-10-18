@@ -1,6 +1,15 @@
 // The name of a decoded texture: a 64-bit hash of its size and its RGBA texels, after the interpreter has applied the tile's format and palette.
 // The renderer and the tools share it, so a pack file `<hash>.png` is found by whoever decoded the same pixels.
 
+/**
+ * The key of a texture by its lower half alone (the rows from `height - height / 2` down), for textures whose upper rows were never loaded and show stale
+ * texture memory: the full hash then changes with whatever was there, this one does not.
+ */
+export function hashLowerHalf(width: number, height: number, rgba: Uint8Array): string {
+  const half = height >> 1;
+  return hashTexture(width, half, rgba.subarray((height - half) * width * 4));
+}
+
 /** Sixteen hex digits from two independent 32-bit lanes (FNV-1a and a multiply-xorshift mix) over the size and the texels. */
 export function hashTexture(width: number, height: number, rgba: Uint8Array): string {
   let a = 0x811c9dc5;

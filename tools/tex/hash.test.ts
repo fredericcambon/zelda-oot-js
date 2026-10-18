@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hashTexture } from './hash.ts';
+import { hashLowerHalf, hashTexture } from './hash.ts';
 
 describe('hashTexture', () => {
   const texels = Uint8Array.from({ length: 64 }, (_, i) => (i * 7) & 255);
@@ -23,5 +23,13 @@ describe('hashTexture', () => {
       changed[i] = changed[i]! ^ 1;
       expect(hashTexture(4, 4, changed)).not.toBe(base);
     }
+  });
+});
+
+describe('hashLowerHalf', () => {
+  const rows = (upper: number, lower: number) => Uint8Array.from({ length: 4 * 4 * 4 }, (_, i) => (i < 32 ? upper : lower));
+  it('ignores the upper half and follows the lower', () => {
+    expect(hashLowerHalf(4, 4, rows(1, 9))).toBe(hashLowerHalf(4, 4, rows(2, 9)));
+    expect(hashLowerHalf(4, 4, rows(1, 9))).not.toBe(hashLowerHalf(4, 4, rows(1, 8)));
   });
 });

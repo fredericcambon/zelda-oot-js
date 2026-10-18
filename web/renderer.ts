@@ -6,6 +6,7 @@ import { GpuTimer } from './gpu-timer.ts';
 import { Geo } from '../tools/gfx/opcodes.ts';
 import { CycleType, cycleTypeOf, fragmentSource, OtherL, shiftScale, specKey, specOf, VERTEX_SHADER, type ShaderSpec } from './shader.ts';
 import { MAX_SCALE, type GfxSettings } from './gfx-settings.ts';
+import { hashLowerHalf } from '../tools/tex/hash.ts';
 import { bindToggleKey, scaleOf, hashTexture, pagePack, type TexPack } from './tex-pack.ts';
 
 export const SCREEN_W = 320;
@@ -163,9 +164,9 @@ export class Renderer {
   }
 
   /** The pack arrived, a replacement arrived (`hash`) or the switch was toggled: the textures concerned are rebuilt when next drawn. */
-  private packChanged(hash?: string): void {
-    if (hash === undefined) this.clearTextures();
-    else for (const [id, tex] of this.textureCache) if (tex.hash === hash) this.dropTexture(id, tex);
+  private packChanged(name?: string): void {
+    if (name === undefined) this.clearTextures();
+    else for (const [id, tex] of this.textureCache) if (tex.hash !== undefined && this.texPack?.nameOf(tex.hash) === name) this.dropTexture(id, tex);
   }
 
   /** Draws the last task and shows the picture it drew (not the one the video interface scans out, which is the frame before). Only valid while the game is not running: the task reads the game's memory. */
@@ -189,25 +190,31 @@ export class Renderer {
   }
 
   /**
-   * The box, in canvas pixels, of the largest triangle batch of the last task that samples a texture whose hash is in `hashes` (for picking close-ups);
-   * null when there is none. Vertices behind the eye are ignored.
+   * The point, in canvas pixels, at the centre of the on-screen area covered by the triangles of the last task that sample a texture whose hash is in
+   * `hashes` (for centring close-ups, as a box of no size); null when there is none. 3D draws only (the HUD is drawn without the depth buffer), vertices behind the eye are ignored, and so are triangles
+   * centred in the corner where the minimap sits.
    */
   private boundsOf(hashes: ReadonlySet<string>): { x: number; y: number; w: number; h: number } | null {
-    let best: { x: number; y: number; w: number; h: number } | null = null;
+    let sx = 0, sy = 0, total = 0;
     const { width, height } = this.canvas;
     for (const b of this.lastResult?.batches ?? []) {
-      if (b.kind !== 'triangles' || !b.state.textures.some((t) => t && hashes.has(hashTexture(t.width, t.height, t.rgba)))) continue;
-      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-      for (let i = 0; i < b.positions.length; i += 4) {
-        const w = b.positions[i + 3]!;
-        if (w <= 0) continue;
-        const x = ((b.positions[i]! * 0.5) / w * 0.5 + 0.5) * width, y = (0.5 - (b.positions[i + 1]! * 0.5) / w * 0.5) * height;
-        x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+      if (b.kind !== 'triangles' || (b.state.geometryMode & Geo.ZBUFFER) === 0 || !b.state.textures.some((t) => t && hashes.has(hashTexture(t.width, t.height, t.rgba)))) continue;
+      for (let i = 0; i + 12 <= b.positions.length; i += 12) {
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, behind = false;
+        for (let k = 0; k < 3; k++) {
+          const w = b.positions[i + k * 4 + 3]!;
+          if (w <= 0) behind = true;
+          const x = ((b.positions[i + k * 4]! * 0.5) / w * 0.5 + 0.5) * width, y = (0.5 - (b.positions[i + k * 4 + 1]! * 0.5) / w * 0.5) * height;
+          x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+        }
+        x0 = Math.max(0, x0); y0 = Math.max(0, y0); x1 = Math.min(width, x1); y1 = Math.min(height, y1);
+        const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+        if (behind || x1 <= x0 || y1 <= y0 || (cx > 0.62 * width && cy > 0.66 * height)) continue;
+        const area = (x1 - x0) * (y1 - y0);
+        sx += cx * area; sy += cy * area; total += area;
       }
-      x0 = Math.max(0, x0); y0 = Math.max(0, y0); x1 = Math.min(width, x1); y1 = Math.min(height, y1);
-      if (x1 > x0 && y1 > y0 && (!best || (x1 - x0) * (y1 - y0) > best.w * best.h)) best = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
     }
-    return best;
+    return total > 0 ? { x: sx / total, y: sy / total, w: 0, h: 0 } : null;
   }
 
   /** Renders at `scale` times the 320x240 the game addresses; the colour images are dropped and redrawn by the game. */
@@ -732,7 +739,7 @@ ${source}`);
     if (!tex) {
       const pack = this.texPack?.available ? this.texPack : null;
       const hash = pack ? hashTexture(image.width, image.height, image.rgba) : undefined;
-      const replacement = pack && hash ? pack.lookup(hash) : null;
+      const replacement = pack && hash ? pack.lookup(hash, () => hashLowerHalf(image.width, image.height, image.rgba)) : null;
       const k = replacement ? scaleOf(image, replacement) : 0;
       tex = replacement && k > 0
         ? this.upload(replacement.width, replacement.height, replacement, this.settings.mipmaps, k)

@@ -41,6 +41,17 @@ describe('TexPack', () => {
     expect(pack.summary().pending).toBe(0);
   });
 
+  it('finds a texture by the key of its lower half when its own hash is not listed, if asked to', async () => {
+    const pack = new TexPack('/texpack/', true, 'a');
+    await pack.load(async () => indexOf(['bbbbbbbbbbbbbbbb']));
+    expect(pack.lookup('aaaaaaaaaaaaaaaa', () => 'bbbbbbbbbbbbbbbb')).toBeNull();
+    expect(pack.nameOf('aaaaaaaaaaaaaaaa')).toBe('bbbbbbbbbbbbbbbb');
+    expect(pack.summary().pending).toBe(1);
+    pack.aliasKeys = false;
+    pack.lookup('cccccccccccccccc', () => 'bbbbbbbbbbbbbbbb');
+    expect(pack.unresolved()).toEqual(['cccccccccccccccc']);
+  });
+
   it('does not request anything while switched off', async () => {
     const pack = new TexPack('/texpack/', false);
     const fetcher = vi.fn(async () => indexOf(['aaaaaaaaaaaaaaaa']));

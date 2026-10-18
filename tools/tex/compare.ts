@@ -11,13 +11,12 @@ import type { RgbaImage } from '../gfx/types.ts';
 import { savesDir } from '../../web/saves-endpoint.ts';
 import { decodePng } from './png-read.ts';
 import type { TextureRecord } from './collect.ts';
-import { partialFamilies } from './families.ts';
 import { VARIANTS, type PackStats } from './upscale.ts';
 
 export interface CompareOptions {
   out: string;
   pack: string;
-  /** The dump the pack was made from (`out/texdump`): its facts pick the textures the close-ups are centred on. */
+  /** The dump the pack was made from (`out/texdump`): the textures it knows tell the moving capture which misses are new. */
   dump?: string;
   /** Variants of the pack to capture (default: all that exist). */
   variants?: string[];
@@ -148,14 +147,12 @@ export async function compare({ out, pack, dump = 'out/texdump', variants: wante
   const outDir = resolve(out);
   mkdirSync(outDir, { recursive: true });
   const shots: Shot[] = [];
-  // Close-ups are centred on the largest on-screen surface drawn with a texture of the kind. Bush: the plants' leaves, 32x32 cut-outs (alpha 0 or 255)
-  // that clamp, leaving out the family of textures that differ only in their upper half (families.ts: the ground's, whose stale rows are never sampled).
-  // Wall: the forest's cliff face (two textures) and a tree trunk, picked by looking at each texture's largest surface in the first view.
   const facts = Object.values((JSON.parse(readFileSync(join(dump, 'index.json'), 'utf8')) as { textures: Record<string, TextureRecord> }).textures);
-  const family = new Set(partialFamilies(facts.filter((t) => t.alpha === 'binary').map((t) => ({ hash: t.hash, image: decodePng(readFileSync(join(dump, `${t.hash}.png`))) }))).flat());
-  const closeUps: Record<string, string[]> = {
-    bush: facts.filter((t) => t.alpha === 'binary' && t.width === 32 && t.height === 32 && t.edgeS === 'clamp' && t.edgeT === 'clamp' && t.frames > 20 && !family.has(t.hash)).map((t) => t.hash),
-    wall: ['602f8db5413d3717', 'c838eddb39e420dc', '017df837a7884a23'],
+  // Close-ups are centred on the on-screen area drawn with a texture of the kind, in the views (1-based) that show it. Bush: the plants' leaf texture
+  // (a 32x32 cut-out that clamps). Wall: the forest's cliff face (two textures). Both picked by looking at where each texture is drawn.
+  const closeUps: Record<string, { hashes: string[]; views: number[] }> = {
+    bush: { hashes: ['36b4ac9377931977'], views: [3, 4, 6] },
+    wall: { hashes: ['602f8db5413d3717', 'c838eddb39e420dc'], views: [1, 2, 4] },
   };
   try {
     const vite = spawn('npx', ['vite', '--config', 'vite.config.ts', '--port', String(port), '--strictPort'], { stdio: 'ignore', shell: true, env: { ...process.env, OOT_SAVES_DIR: saves, OOT_TEXPACK_DIR: resolve(pack) } });
@@ -204,6 +201,27 @@ export async function compare({ out, pack, dump = 'out/texdump', variants: wante
     await tap('Digit6', '6');
     await sleep(4000);
 
+    // Moving capture: the same walk with the lower-half keys off and on; the textures the pack has no entry for are counted, split into those the dump
+    // knows (left original on purpose: size, too few frames) and those it never saw (hashes that vary with stale rows).
+    for (const aliasKeys of [false, true]) {
+      await evaluate(`globalThis.ootTexPack.pack.aliasKeys = ${aliasKeys}; globalThis.ootTexPack.pack.setVariant('${variants[0]}')`);
+      const unresolved = new Set<string>();
+      for (const code of ['ArrowLeft', 'ArrowDown', 'ArrowRight', 'ArrowUp']) {
+        await key('keyDown', code);
+        for (let i = 0; i < 8; i++) {
+          await sleep(500);
+          for (const h of (await evaluate('globalThis.ootTexPack.pack.unresolved()')) as string[]) unresolved.add(h);
+        }
+        await key('keyUp', code);
+      }
+      const known = new Set(facts.map((t) => t.hash));
+      const summary = (await evaluate('globalThis.ootTexPack.pack.summary()')) as { replaced: number; seen: number };
+      log(`moving, lower-half keys ${aliasKeys ? 'on' : 'off'}: ${summary.seen} textures seen, ${summary.replaced} replaced; ${unresolved.size} without an entry, ${[...unresolved].filter((h) => !known.has(h)).length} of them not in the dump`);
+      await tap('Digit6', '6');
+      await sleep(4000);
+    }
+    await evaluate("globalThis.ootTexPack.pack.aliasKeys = true");
+
     const screenshot = async (): Promise<RgbaImage> => {
       const url = (await evaluate("document.getElementById('screen').toDataURL('image/png')")) as string;
       return decodePng(Buffer.from(url.split(',')[1]!, 'base64'));
@@ -233,7 +251,8 @@ export async function compare({ out, pack, dump = 'out/texdump', variants: wante
       const save = (img: RgbaImage, file: string): void => writeFileSync(join(outDir, file), encodePng(img.width, img.height, img.rgba));
       save(original, `${id}-original.png`);
       const crops: Crop[] = [];
-      for (const [name, hashes] of Object.entries(closeUps)) {
+      for (const [name, { hashes, views }] of Object.entries(closeUps)) {
+        if (!views.includes(n + 1)) continue;
         const box = (await evaluate(`globalThis.ootTexPack.boundsOf(${JSON.stringify(hashes)})`)) as { x: number; y: number; w: number; h: number } | null;
         if (!box) continue;
         const w = Math.min(CROP_W, original.width), h = Math.min(CROP_H, original.height);

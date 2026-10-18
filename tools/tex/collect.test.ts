@@ -2,12 +2,12 @@ import { describe, expect, it } from 'vitest';
 import type { DisplayListResult, DrawState } from '../gfx/types.ts';
 import { alphaKindOf, edgeOf, isGray, TextureCollector } from './collect.ts';
 
-const tile = { fmt: 0, siz: 2, maskS: 5, maskT: 5, cmS: 0, cmT: 1 };
+const tile = { fmt: 0, siz: 2, maskS: 5, maskT: 5, cmS: 0, cmT: 1, shiftS: 0, shiftT: 0, uls: 0, ult: 0 };
 function stateOf(id: number, texels: number[], t = tile): DrawState {
   const rgba = Uint8Array.from(texels);
   return { textures: [{ id, width: 2, height: 1, rgba, tile: 0 }, null], tiles: [t] } as unknown as DrawState;
 }
-const resultOf = (state: DrawState): DisplayListResult => ({ batches: [{ kind: 'triangles', state }] }) as unknown as DisplayListResult;
+const resultOf = (state: DrawState): DisplayListResult => ({ batches: [{ kind: 'triangles', state, uvs: Float32Array.of(0, 0, 2, 1) }] }) as unknown as DisplayListResult;
 
 describe('texture facts', () => {
   it('edgeOf follows the mask and the clamp and mirror bits', () => {
@@ -39,7 +39,7 @@ describe('TextureCollector', () => {
     c.add(resultOf(stateOf(2, [1, 2, 3, 255, 4, 5, 6, 255], { ...tile, cmS: 1, cmT: 0 })));
     const { records, pixels } = c.finish();
     expect(records).toHaveLength(1);
-    expect(records[0]).toMatchObject({ frames: 2, first: 1, last: 2, scenes: [85], edgeS: 'wrap', edgeT: 'wrap', alpha: 'opaque', volatile: false });
+    expect(records[0]).toMatchObject({ frames: 2, first: 1, last: 2, scenes: [85], edgeS: 'wrap', edgeT: 'wrap', alpha: 'opaque', volatile: false, family: null, reach: [0, 0, 2, 1] });
     expect(pixels.get(records[0]!.hash)).toHaveLength(8);
   });
 
@@ -54,5 +54,18 @@ describe('TextureCollector', () => {
     expect(churningGroups.map((g) => g.group)).toEqual(['2x1:0.2']);
     expect(records.filter((r) => r.volatile)).toHaveLength(40);
     expect(records.find((r) => r.fmt === 3)).toMatchObject({ volatile: false, frames: 40 });
+  });
+
+  it('gives textures that differ only in their upper half a shared key', () => {
+    const c = new TextureCollector();
+    c.nextFrame(1);
+    for (let k = 0; k < 3; k++) {
+      const rgba = Uint8Array.from({ length: 2 * 4 * 4 }, (_, i) => (i < 16 ? k : 9));
+      const state = { textures: [{ id: k + 1, width: 2, height: 4, rgba, tile: 0 }, null], tiles: [tile] } as unknown as DrawState;
+      c.add(resultOf(state));
+    }
+    const { records } = c.finish();
+    expect(new Set(records.map((r) => r.family)).size).toBe(1);
+    expect(records[0]!.family).not.toBeNull();
   });
 });

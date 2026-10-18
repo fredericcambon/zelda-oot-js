@@ -8,6 +8,6 @@ describe('partialFamilies', () => {
     const families = partialFamilies([
       { hash: 'a', image: image(1, 9) }, { hash: 'b', image: image(2, 9) }, { hash: 'c', image: image(3, 9) }, { hash: 'd', image: image(1, 8) },
     ]);
-    expect(families).toEqual([['a', 'b', 'c']]);
+    expect([...families.values()]).toEqual([['a', 'b', 'c']]);
   });
 });

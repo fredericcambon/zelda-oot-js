@@ -1,6 +1,8 @@
 // Collects the unique decoded textures of the display lists a run draws, with what is needed to upscale them (how the tiles that sample them
 // wrap, what their alpha holds) and to tell those whose pixels change from frame to frame.
-import type { DisplayListResult, DrawState } from '../gfx/types.ts';
+import type { DisplayListResult, DrawState, TileState } from '../gfx/types.ts';
+import { shiftScale } from '../../web/shader.ts';
+import { partialFamilies } from './families.ts';
 import { hashTexture } from './hash.ts';
 
 export type Edge = 'wrap' | 'mirror' | 'clamp';
@@ -24,6 +26,11 @@ export interface TextureRecord {
   first: number;
   last: number;
   scenes: number[];
+  /** The tile descriptor of the first use, and the texel extent (s0, t0, s1, t1, relative to the tile's origin) the triangles drawn with it reached. */
+  tile: TileState;
+  reach: [number, number, number, number] | null;
+  /** Key (`hashLowerHalf`) shared with the textures that differ from this one only in their upper half, or null (see families.ts). */
+  family: string | null;
   /** Short-lived pixels of a group that keeps producing new ones (see `TextureCollector.finish`): a texture the game rewrites. */
   volatile: boolean;
 }
@@ -99,6 +106,24 @@ export class TextureCollector {
     }
   }
 
+  /** Widens the reach of each texture of the triangle batches by the texel coordinates their vertices ask for. */
+  private reach(result: DisplayListResult): void {
+    for (const b of result.batches) {
+      if (b.kind !== 'triangles') continue;
+      for (const image of b.state.textures) {
+        const e = image && this.entries.get(this.hashOfId.get(image.id) ?? '');
+        if (!e) continue;
+        const tile = b.state.tiles[image!.tile]!;
+        const ks = shiftScale(tile.shiftS), kt = shiftScale(tile.shiftT);
+        for (let i = 0; i < b.uvs.length; i += 2) {
+          const s = b.uvs[i]! * ks - tile.uls / 4, t = b.uvs[i + 1]! * kt - tile.ult / 4;
+          const r = (e.reach ??= [s, t, s, t]);
+          r[0] = Math.min(r[0], s); r[1] = Math.min(r[1], t); r[2] = Math.max(r[2], s); r[3] = Math.max(r[3], t);
+        }
+      }
+    }
+  }
+
   add(result: DisplayListResult): void {
     const states = new Set<DrawState>();
     for (const b of result.batches) states.add(b.state);
@@ -119,7 +144,7 @@ export class TextureCollector {
         if (!e) {
           e = {
             hash, width: image.width, height: image.height, fmt: tile.fmt, siz: tile.siz, edgeS: 'clamp', edgeT: 'clamp',
-            alpha: alphaKindOf(image.rgba), gray: isGray(image.rgba), frames: 0, first: this.frame, last: this.frame, scenes: [], volatile: false,
+            alpha: alphaKindOf(image.rgba), gray: isGray(image.rgba), frames: 0, first: this.frame, last: this.frame, scenes: [], tile: { ...tile }, reach: null, family: null, volatile: false,
             rgba: image.rgba.slice(), wrapS: false, wrapT: false, mirrorS: false, mirrorT: false, seenIn: 0,
           };
           this.entries.set(hash, e);
@@ -139,6 +164,7 @@ export class TextureCollector {
         if (this.scene >= 0 && !e.scenes.includes(this.scene)) e.scenes.push(this.scene);
       }
     }
+    this.reach(result);
   }
 
   /** The textures with their final classification, their pixels by hash, and the groups that churn. */
@@ -158,11 +184,14 @@ export class TextureCollector {
       const record: TextureRecord = {
         hash, width: e.width, height: e.height, fmt: e.fmt, siz: e.siz,
         edgeS: e.wrapS ? 'wrap' : e.mirrorS ? 'mirror' : 'clamp', edgeT: e.wrapT ? 'wrap' : e.mirrorT ? 'mirror' : 'clamp',
-        alpha: e.alpha, gray: e.gray, frames: e.frames, first: e.first, last: e.last, scenes: e.scenes,
+        alpha: e.alpha, gray: e.gray, frames: e.frames, first: e.first, last: e.last, scenes: e.scenes, tile: e.tile, reach: e.reach, family: null,
         volatile: churning.has(this.groupOf.get(hash)!) && e.frames <= SHORT_LIVED_FRAMES,
       };
       records.push(record);
       pixels.set(hash, e.rgba);
+    }
+    for (const [key, hashes] of partialFamilies(records.map((r) => ({ hash: r.hash, image: { width: r.width, height: r.height, rgba: pixels.get(r.hash)! } })))) {
+      for (const hash of hashes) records.find((r) => r.hash === hash)!.family = key;
     }
     return { records, pixels, churningGroups };
   }

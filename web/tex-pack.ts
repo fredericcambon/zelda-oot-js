@@ -34,9 +34,12 @@ export class TexPack {
   private entries: Set<string> | null = null;
   private readonly bitmaps = new Map<string, ImageBitmap | null>();
   private readonly requested = new Set<string>();
-  private readonly seenHashes = new Set<string>();
+  /** Entry that each texture looked up resolved to ('' for none). */
+  private readonly names = new Map<string, string>();
   private on: boolean;
-  /** Called when the index arrives, when a replacement arrives (with its hash) and when the switch is toggled (with no hash). */
+  /** Whether a texture missing from the pack is looked up by the key of its lower half too (see `lookup`). */
+  aliasKeys = true;
+  /** Called when the index arrives, when a replacement arrives (with the name of its entry) and when the switch is toggled (with no name). */
   onChange: ((hash?: string) => void) | null = null;
 
   constructor(private base = PACK_URL, enabled = readEnabled(), public variant = readVariant()) {
@@ -54,7 +57,7 @@ export class TexPack {
     this.entries = null;
     this.bitmaps.clear();
     this.requested.clear();
-    this.seenHashes.clear();
+    this.names.clear();
     await this.load(fetcher);
     this.onChange?.();
   }
@@ -71,6 +74,16 @@ export class TexPack {
       return;
     }
     if (this.entries.size > 0) this.onChange?.();
+  }
+
+  /** Hashes of the textures looked up that the pack has no entry for. */
+  unresolved(): string[] {
+    return [...this.names].filter(([, name]) => name === '').map(([hash]) => hash);
+  }
+
+  /** The entry a texture looked up resolved to ('' for none, undefined when it was not looked up). */
+  nameOf(hash: string): string | undefined {
+    return this.names.get(hash);
   }
 
   get available(): boolean {
@@ -93,18 +106,24 @@ export class TexPack {
   }
 
   /**
-   * The replacement for a texture, or null: not in the pack, pack off, or still on its way (it is requested, and `onChange` is
-   * called with the hash when it arrives).
+   * The replacement for a texture, or null: not in the pack, pack off, or still on its way (it is requested, and `onChange` is called with the name of the
+   * entry when it arrives). A texture is found by its hash or, failing that, by `alias()`, the key of its lower half (`hashLowerHalf`), which names every
+   * variant of a texture whose unloaded upper rows show stale memory.
    */
-  lookup(hash: string): ImageBitmap | null {
+  lookup(hash: string, alias?: () => string): ImageBitmap | null {
     if (!this.entries) return null;
-    this.seenHashes.add(hash);
-    if (!this.on || !this.entries.has(hash)) return null;
-    const known = this.bitmaps.get(hash);
+    let name = hash;
+    if (!this.entries.has(hash)) {
+      const key = this.aliasKeys ? alias?.() : undefined;
+      name = key !== undefined && this.entries.has(key) ? key : '';
+    }
+    this.names.set(hash, name);
+    if (!this.on || name === '') return null;
+    const known = this.bitmaps.get(name);
     if (known !== undefined) return known;
-    if (!this.requested.has(hash)) {
-      this.requested.add(hash);
-      void this.fetchOne(hash);
+    if (!this.requested.has(name)) {
+      this.requested.add(name);
+      void this.fetchOne(name);
     }
     return null;
   }
@@ -126,12 +145,12 @@ export class TexPack {
 
   summary(): PackSummary {
     let replaced = 0;
-    for (const hash of this.seenHashes) if (this.bitmaps.get(hash)) replaced++;
+    for (const name of this.names.values()) if (name !== '' && this.bitmaps.get(name)) replaced++;
     return {
       available: this.available,
       enabled: this.on,
       entries: this.entries?.size ?? 0,
-      seen: this.seenHashes.size,
+      seen: this.names.size,
       replaced,
       pending: this.requested.size - this.bitmaps.size,
     };
