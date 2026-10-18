@@ -501,6 +501,26 @@ TEST(a_state_with_another_format_version_is_refused_with_both_versions_named) {
   game_continues();
 }
 
+TEST(a_state_saved_at_another_retrace_rate_is_refused_and_one_without_a_rate_loads) {
+  blocked_chain_scenario();
+  save_state();
+  rt_set_vi_hz(60);
+  expect_refusal("saved at 50 Hz and this game runs at 60 Hz");
+  rt_set_vi_hz(RT_VI_HZ_PAL);
+  CHECK(rt_state_load(state, state_size));
+  // Drop the trailing rate word from the video interface section, as an older state has it.
+  uint32_t at = section_at("VI  ");
+  uint32_t length;
+  memcpy(&length, state + at - 4, 4);
+  length -= 4;
+  memcpy(state + at - 4, &length, 4);
+  memmove(state + at + length, state + at + length + 4, state_size - (at + length + 4));
+  state_size -= 4;
+  rt_set_vi_hz(60);
+  CHECK(rt_state_load(state, state_size));
+  rt_set_vi_hz(RT_VI_HZ_PAL);
+}
+
 TEST(a_state_in_the_old_format_or_no_state_at_all_is_refused) {
   blocked_chain_scenario();
   save_state();
