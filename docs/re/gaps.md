@@ -7,9 +7,16 @@ Reproduce:
 ```
 npm run port -- --coverage --dist dist-cov --generated generated   # coverage build, see "Coverage mode"
 npm run sweep -- static                                            # ROM + out/inventory.json -> out/sweep/static.json
-npm run sweep -- scenes --dump out/sweep/frames [--shard k/n]      # every entrance, 300 frames each (--entrances 697 for one)
+npm run sweep -- scenes --dump out/sweep/frames [--shard k/n]      # every entrance as child and adult, 300 frames each (--entrances 697, --ages adult)
 npm run sweep -- report                                            # rewrites the generated blocks of this file
 ```
+
+## Unknown commands do not stop a frame
+
+- **Audio.** `Synth` (`tools/audio/synth.ts`) implements all 24 handlers of the microcode's table (`docs/re/audio.md`). An opcode with no handler is logged once (`audio: unknown command 0x.. skipped`, `Synth.unknownOpcodes`) and skipped, so the rest of the list, including the save of the output buffer, still runs; before, the whole list was dropped and the game replayed the previous buffers.
+- **Graphics.** The display-list interpreter in C (`runtime/gfx/dl.c`) never aborted on an unknown opcode: `execute` returns 0, the command is recorded in `GfxResult.unknown` and the list goes on; irregularities (a matrix stack underflow, vertices that are not loaded, a stray half-word) are `problem()` strings and the command is skipped. Only an allocation failure calls `abort()`. What was missing is a log: the reader (`tools/gfx/c-dl.ts`, used by the page and the headless runner) now prints each unimplemented opcode once. Errors stay visible: `unknown` and `problems` are counted in the debug overlay (`web/main.ts`), the headless runner exits with status 4 when any unknown command occurred (`tools/headless/cli.ts`), and the sweep lists them below.
+- **Age.** The sweep runs every entrance twice. The flag at `0x801183d4` (`SETUP_FLAG`) selects the setup layers: non-zero gives layers 0 and 1, zero 2 and 3 (the init's derivation at `0x8009B064`-`0x8009B17C`, `setupVariantFor` in `tools/headless/state.ts`). The scripted new game, a child in Link's house, has it non-zero (the sweep checks); the adult runs write 0 before forcing the entrance. Nothing else is changed, so an adult run is the scene's adult layers with the child's save data.
+- **Short loops.** The sweep runs the mixer on every audio task and keeps the mono output the game queues (`tools/sweep/loops.ts`). A run is a short loop when the last 8192 samples repeat a stretch of 64 to 32000 samples earlier exactly (all but 0.2%), and the output is audible. The mixer is deterministic, so a stuck sequence or a replayed buffer repeats bit for bit while music does not; the test builds both cases.
 
 ## Headless speed
 
@@ -273,13 +280,15 @@ Microcode text 0x800e1ec0, data 0x801123c0. dispatch at microcode offset 0x120: 
 |---|---|---|---|---|
 | `00` |  | `0x120c` | missing | the microcode forwards it to the RDP; the interpreter does not model it |
 | `01` | VTX | `0x14f0` | implemented | microcode routine |
-| `02` |  | `0x1c74` | missing | the handler address holds only zero words in the text image the task points at (the routine is not in it); the interpreter does not model the opcode |
+| `02` | MODIFYVTX | `0x1c74` | implemented | microcode routine |
 | `03` | CULLDL | `0x1c34` | implemented | microcode routine |
-| `04` |  | `0x1c5c` | missing | the handler address holds only zero words in the text image the task points at (the routine is not in it); the interpreter does not model the opcode |
+| `04` | BRANCH_Z | `0x1c5c` | implemented | microcode routine |
 | `05` | TRI1 | `0x17b4` | implemented | microcode routine |
 | `06` | TRI2 | `0x17ac` | implemented | microcode routine |
 | `07` | QUAD | `0x17ac` | implemented | microcode routine |
 | `08` |  | `0x118c` | missing | the microcode has a routine for it; the interpreter does not |
+| `09` | BG_1CYC | – | unsupported-by-design | outside the run of handler addresses of the opcode table (the word read for it, 0x420, is other data): the microcode has no handler |
+| `0a` | BG_COPY | – | unsupported-by-design | outside the run of handler addresses of the opcode table (the word read for it, 0x448, is other data): the microcode has no handler |
 | `d0` |  | `0x1188` | missing | the microcode has a routine for it; the interpreter does not |
 | `d1` |  | `0x1078` | missing | the microcode has a routine for it; the interpreter does not |
 | `d2` |  | `0x1188` | missing | the microcode has a routine for it; the interpreter does not |
@@ -293,7 +302,7 @@ Microcode text 0x800e1ec0, data 0x801123c0. dispatch at microcode offset 0x120: 
 | `da` | MTX | `0x10f0` | implemented | microcode routine |
 | `db` | MOVEWORD | `0x1038` | implemented | microcode routine |
 | `dc` | MOVEMEM | `0x1120` | implemented | microcode routine |
-| `dd` |  | `0x1fac` | missing | the microcode has a routine for it; the interpreter does not |
+| `dd` | LOAD_UCODE | `0x1fac` | implemented | microcode routine |
 | `de` | DL | `0x1000` | implemented | microcode routine |
 | `df` | ENDDL | `0x11e4` | implemented | microcode routine |
 | `e0` |  | `0x118c` | missing | the microcode has a routine for it; the interpreter does not |
@@ -332,8 +341,6 @@ Microcode text 0x800e1ec0, data 0x801123c0. dispatch at microcode offset 0x120: 
 First instructions of the handlers the runtime lacks:
 
 - `00` at `0x120c`: `lw $t8, 4072($zero); mfc0 $t3, c0r10; beq $t3, $t8, 0x210; nop`
-- `02` at `0x1c74`: `nop; nop; nop; nop`
-- `04` at `0x1c5c`: `nop; nop; nop; nop`
 - `08` at `0x118c`: `sw $t9, 0($s7); j 0x250; addi $s7, $s7, 8; addi $ra, $zero, 4616`
 - `d0` at `0x1188`: `sw $t8, 4($s7); sw $t9, 0($s7); j 0x250; addi $s7, $s7, 8`
 - `d1` at `0x1078`: `mfc0 $t3, c0r11; andi $t3, $t3, 0x400; bne $t3, $zero, 0x78; addi $t3, $zero, 1`
@@ -342,7 +349,6 @@ First instructions of the handlers the runtime lacks:
 - `d4` at `0x118c`: `sw $t9, 0($s7); j 0x250; addi $s7, $s7, 8; addi $ra, $zero, 4616`
 - `d5` at `0x118c`: `sw $t9, 0($s7); j 0x250; addi $s7, $s7, 8; addi $ra, $zero, 4616`
 - `d6` at `0x11b8`: `sw $t9, 200($zero); j 0x208; sw $t8, 204($zero); sw $t9, 192($zero)`
-- `dd` at `0x1fac`: `sw $k0, 4080($zero); sw $t8, 4048($zero); addiu $s4, $zero, 4224; jal 0xfd8`
 - `e0` at `0x118c`: `sw $t9, 0($s7); j 0x250; addi $s7, $s7, 8; addi $ra, $zero, 4616`
 - `e5` at `0x102c`: `andi $t4, $t4, 0x1; beq $t4, $zero, 0xac; sw $zero, 4036($zero); j 0x164`
 - `ea` at `0x1208`: `bne $t3, $zero, 0x200; lw $t8, 4072($zero); mfc0 $t3, c0r10; beq $t3, $t8, 0x210`
@@ -350,7 +356,7 @@ First instructions of the handlers the runtime lacks:
 - `ec` at `0x1208`: `bne $t3, $zero, 0x200; lw $t8, 4072($zero); mfc0 $t3, c0r10; beq $t3, $t8, 0x210`
 - `ee` at `0x1208`: `bne $t3, $zero, 0x200; lw $t8, 4072($zero); mfc0 $t3, c0r10; beq $t3, $t8, 0x210`
 
-Of 256 opcode values: 18 missing, 39 implemented, 199 unsupported-by-design (the last are the values outside the table).
+Of 256 opcode values: 15 missing, 42 implemented, 199 unsupported-by-design (the last are the values outside the table).
 
 ### Audio microcode opcodes
 
@@ -358,13 +364,13 @@ Microcode text 0x800e0f10, data 0x801120e0. dispatch at microcode offset 0x60: s
 
 | Op | Name | Handler | Status | Why |
 |---|---|---|---|---|
-| `00` |  | `0x1f68` | missing | the microcode has a handler; the mixer rejects the command |
+| `00` | record | `0x1f68` | implemented | handled by the mixer |
 | `01` | ADPCM decode | `0x1230` | implemented | handled by the mixer |
 | `02` | clear | `0x114c` | implemented | handled by the mixer |
-| `03` |  | `0x1f18` | missing | the microcode has a handler; the mixer rejects the command |
-| `04` |  | `0x1e2c` | missing | the microcode has a handler; the mixer rejects the command |
+| `03` | multiply | `0x1f18` | implemented | handled by the mixer |
+| `04` | add buffers | `0x1e2c` | implemented | handled by the mixer |
 | `05` | resample | `0x14f4` | implemented | handled by the mixer |
-| `06` |  | `0x1e9c` | missing | the microcode has a handler; the mixer rejects the command |
+| `06` | read through positions | `0x1e9c` | implemented | handled by the mixer |
 | `07` | FIR filter | `0x1cb0` | implemented | handled by the mixer |
 | `08` | set buffers | `0x117c` | implemented | handled by the mixer |
 | `09` | repeat block | `0x17cc` | implemented | handled by the mixer |
@@ -381,15 +387,11 @@ Microcode text 0x800e0f10, data 0x801120e0. dispatch at microcode offset 0x60: s
 | `14` | load buffer | `0x1a84` | implemented | handled by the mixer |
 | `15` | save buffer | `0x1a94` | implemented | handled by the mixer |
 | `16` | envelope volumes | `0x1a48` | implemented | handled by the mixer |
-| `17` |  | `0x1ba0` | missing | the microcode has a handler; the mixer rejects the command |
+| `17` | widen bytes | `0x1ba0` | implemented | handled by the mixer |
 
 First instructions of the handlers the runtime lacks:
 
-- `00` at `0x1f68`: `jal 0xa6c; nop; addi $at, $s7, 0; jal 0xad4`
-- `03` at `0x1f18`: `lqv $v31[0], 0($zero); andi $s2, $k0, 0xffff; andi $s3, $t9, 0xffff; srl $s4, $t9, 16`
-- `04` at `0x1e2c`: `vaddc $v31, $v31, $v31[e=0]; srl $s2, $k0, 12; andi $s2, $s2, 0xff0; andi $s3, $t9, 0xffff`
-- `06` at `0x1e9c`: `lh $t6, 0($t8); lh $t7, 2($t8); lh $t5, 4($t8); andi $t4, $k0, 0xffff`
-- `17` at `0x1ba0`: `lhu $t5, 0($t8); vxor $v2, $v2, $v2[e=0]; lhu $t6, 2($t8); vxor $v3, $v3, $v3[e=0]`
+
 
 ### OS routines
 
@@ -571,85 +573,156 @@ The entrance table has 1556 entries; the scene table 102 records. 33 entries nam
 ## Scene sweep
 
 <!-- scenes:begin -->
-Sweep of 1556 entrances (1519 run, 37 skipped as invalid), 300 video frames each, from the game under control at frame 19000; 52 game instance(s) started (1 + recoveries).
+Sweep of 1556 entrances as adult and child (3112 runs: 3038 run, 74 skipped as invalid), 300 video frames each, from the game under control at frame 19000; 91 game instance(s) started (1 + recoveries).
 
-Status: 1483 ok, 37 invalid-scene, 22 not-reached, 14 trap. Blank: 1507 no, 12 no-geometry.
+Status: 2959 ok, 74 invalid-scene, 40 trap, 39 not-reached. Blank: 3009 no, 29 no-geometry.
 
 Traps and hangs (a game that loops past 200 million iterations in one frame is stopped by the watchdog of the coverage build):
 
 | Message | Hits | Entrances |
 |---|---|---|
-| watchdog: over 200000000 loop iterations in one video frame, at the loop 0x8002f824 (last function entered: 0x8002f6dc) | 4 entrances; scenes 7 | 694–697 |
-| PI access to unmapped cartridge address 0x0096e03c | 4 entrances; scenes 6 | 1016–1019 |
-| watchdog: over 200000000 loop iterations in one video frame, at the loop 0x80004fc8 (last function entered: 0x80004f70) | 6 entrances; scenes  | 1410–1411, 1552–1555 |
+| watchdog: over 200000000 loop iterations in one video frame, at the loop 0x8002c78c (last function entered: 0x8002bb84) | 4 entrances; scenes 107, 109 | 40–41, 122–123 |
+| thread 0xd100b129 is runnable but was never created | 2 entrances; scenes 106 | 75–76 |
+| thread 0x39d40000 is runnable but was never created | 1 entrance; scenes 103 | 184 |
+| watchdog: over 200000000 loop iterations in one video frame, at the loop 0x8002f824 (last function entered: 0x8002f6dc) | 8 entrances; scenes 7 | 694–699 |
+| PI access to unmapped cartridge address 0x0096e03c | 8 entrances; scenes 6 | 1016–1021 |
+| watchdog: over 200000000 loop iterations in one video frame, at the loop 0x80004fc8 (last function entered: 0x80004f70) | 11 entrances; scenes  | 1316–1317, 1408–1410, 1552–1555 |
+| thread 0xffed0000 is runnable but was never created | 6 entrances; scenes 93 | 1530–1533 |
 
 Unknown display-list commands (a `*` marks commands that follow an opcode 0xdd in the same list):
 
 | Opcode | Hits | First command seen |
 |---|---|---|
-| `02*` | 16 entrances; scenes 1, 13, 38, 44 | entrance 183: `02140000 003700ce at 0x328388` |
-| `02` | 78 entrances; scenes 8, 12, 19, 42, 54, 62, 64, 66, 71, 76, 81, 82, 87 | entrance 59: `02140000 003700ce at 0x311bf8` |
-| `04` | 232 entrances; scenes 0, 7, 12, 13, 14, 26, 32, 33, 34, 60, 61, 72, 75, 82, 83, 84, 85, 88, 90, 92, 93, 94, 95, 96, 97, 98, 99, 100 | entrance 220: `04000000 000003e8 at 0x23ec00` |
-| `0a*` | 234 entrances; scenes 0, 1, 2, 6, 9, 11, 12, 13, 18, 20, 27, 28, 29, 30, 31, 35, 36, 37, 38, 39, 41, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 55, 56, 57, 58, 62, 63, 67, 69, 74, 81, 85, 86, 89, 90, 93, 97, 98 | entrance 0: `0a000000 8017ac10 at 0x17ac48` |
-| `dd` | 234 entrances; scenes 0, 1, 2, 6, 9, 11, 12, 13, 18, 20, 27, 28, 29, 30, 31, 35, 36, 37, 38, 39, 41, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 55, 56, 57, 58, 62, 63, 67, 69, 74, 81, 85, 86, 89, 90, 93, 97, 98 | entrance 0: `dd0007ff 000e3250 at 0x17ac00` |
-| `ee` | 9 entrances; scenes 32, 86, 88, 95 | entrance 181: `ee000000 00000000 at 0xfafb8` |
+| `ee` | 67 entrances; scenes 0, 7, 14, 21, 28, 32, 33, 34, 42, 54, 63, 66, 67, 81, 82, 86, 87, 88, 91, 93, 95, 96, 99 | entrance 181: `ee000000 00000000 at 0xfafb8` |
 
 Audio opcodes the mixer rejects:
 
-| Opcode | Hits |
-|---|---|
-| `0e` | 415 entrances; scenes 0, 2, 3, 4, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 21, 23, 26, 32, 33, 34, 38, 42, 43, 47, 48, 53, 55, 56, 57, 58, 59, 61, 62, 63, 64, 65, 67, 72, 76, 77, 78, 81, 82, 83, 85, 87, 88, 91, 92, 93, 95, 96, 97, 98, 99, 100 |
+none.
 
 Display-list problems the interpreter worked around:
 
-| Problem | Hits |
-|---|---|
-| stray rdp half-word 0x… | 462 entrances; scenes 0, 1, 2, 6, 7, 9, 11, 12, 13, 14, 18, 20, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 41, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 55, 56, 57, 58, 60, 61, 62, 63, 67, 69, 72, 74, 75, 81, 82, 83, 84, 85, 86, 88, 89, 90, 92, 93, 94, 95, 96, 97, 98, 99, 100 |
+none.
 
 Blank frames:
 
 | Kind | Hits | Entrances |
 |---|---|---|
-| no-geometry | 12 entrances; scenes 83, 85, 94, 100 | 889–892, 1168–1169, 1424–1425, 1528–1531 |
+| no-geometry | 29 entrances; scenes 83, 85, 94, 100, 101 | 164–165, 873–876, 885–890, 1152–1153, 1166–1167, 1411, 1422–1425, 1512–1515, 1526–1529 |
 
 Entrances after which the play state shows another scene than the entry the game loaded (index plus setup variant) names. The game redirects some entries itself, and an entry with a cutscene setup shifts the variant:
 
 | Entrance | Table scene | Variant | Loaded entry | Its scene | Reached scene |
 |---|---|---|---|---|---|
-| 553 | 90 | 1 | 553 | 90 | 93 |
-| 554 | 90 | 1 | 554 | 90 | 93 |
-| 555 | 90 | 1 | 555 | 90 | 93 |
-| 556 | 90 | 1 | 556 | 90 | 93 |
-| 889 | 99 | 0 | 889 | 99 | 94 |
-| 890 | 99 | 0 | 890 | 99 | 94 |
-| 891 | 99 | 0 | 891 | 99 | 94 |
-| 892 | 46 | 0 | 892 | 46 | 94 |
-| 1168 | 12 | 0 | 1168 | 12 | 100 |
-| 1169 | 12 | 0 | 1169 | 12 | 100 |
-| 1304 | 79 | 4 | 1308 | 26 | 79 |
-| 1305 | 79 | 4 | 1309 | 26 | 79 |
-| 1306 | 79 | 4 | 1310 | 26 | 79 |
-| 1307 | 79 | 4 | 1311 | 26 | 79 |
-| 1308 | 26 | 4 | 1311 | 26 | 79 |
-| 1424 | 67 | 0 | 1424 | 67 | 83 |
-| 1425 | 67 | 0 | 1425 | 67 | 83 |
-| 1504 | 91 | 4 | 1508 | 76 | 91 |
-| 1528 | 93 | 0 | 1528 | 93 | 85 |
-| 1529 | 93 | 0 | 1529 | 93 | 85 |
-| 1530 | 93 | 0 | 1530 | 93 | 85 |
-| 1531 | 93 | 0 | 1531 | 93 | 85 |
+| 164 (child) | 71 | 0 | 164 | 71 | 101 |
+| 165 (child) | 71 | 0 | 165 | 71 | 101 |
+| 553 (child) | 90 | 0 | 553 | 90 | 93 |
+| 554 (child) | 90 | 1 | 554 | 90 | 93 |
+| 555 (adult) | 90 | 0 | 553 | 90 | 93 |
+| 555 (child) | 90 | 0 | 555 | 90 | 93 |
+| 556 (adult) | 90 | 0 | 554 | 90 | 93 |
+| 556 (child) | 90 | 1 | 556 | 90 | 93 |
+| 557 (adult) | 90 | 1 | 555 | 90 | 93 |
+| 558 (adult) | 90 | 1 | 556 | 90 | 93 |
+| 885 (child) | 61 | 1 | 885 | 61 | 94 |
+| 886 (child) | 61 | 0 | 886 | 61 | 94 |
+| 887 (child) | 61 | 0 | 887 | 61 | 94 |
+| 888 (child) | 99 | 0 | 888 | 99 | 94 |
+| 889 (child) | 99 | 0 | 889 | 99 | 94 |
+| 890 (child) | 99 | 0 | 890 | 99 | 94 |
+| 1152 (adult) | 100 | 0 | 1150 | 95 | 100 |
+| 1153 (adult) | 100 | 0 | 1151 | 95 | 100 |
+| 1166 (child) | 12 | 0 | 1166 | 12 | 100 |
+| 1167 (child) | 12 | 1 | 1167 | 12 | 100 |
+| 1305 (child) | 79 | 4 | 1308 | 26 | 79 |
+| 1306 (adult) | 79 | 4 | 1308 | 26 | 79 |
+| 1306 (child) | 79 | 4 | 1310 | 26 | 79 |
+| 1307 (adult) | 79 | 4 | 1309 | 26 | 79 |
+| 1307 (child) | 79 | 4 | 1311 | 26 | 79 |
+| 1308 (adult) | 26 | 4 | 1310 | 26 | 79 |
+| 1309 (adult) | 26 | 4 | 1311 | 26 | 79 |
+| 1422 (child) | 67 | 0 | 1422 | 67 | 83 |
+| 1423 (child) | 67 | 0 | 1423 | 67 | 83 |
+| 1424 (child) | 67 | 0 | 1424 | 67 | 83 |
+| 1425 (child) | 67 | 0 | 1425 | 67 | 83 |
+| 1504 (child) | 91 | 4 | 1508 | 76 | 91 |
+| 1506 (adult) | 91 | 4 | 1508 | 76 | 91 |
+| 1512 (adult) | 85 | 1 | 1510 | 76 | 85 |
+| 1513 (adult) | 85 | 1 | 1511 | 76 | 85 |
+| 1526 (child) | 67 | 1 | 1526 | 67 | 85 |
+| 1527 (child) | 67 | 1 | 1527 | 67 | 85 |
+| 1528 (child) | 93 | 0 | 1528 | 93 | 85 |
+| 1529 (child) | 93 | 0 | 1529 | 93 | 85 |
 
-Executed RSP tasks: type 4 microcode `0x800066c0` ×52; type 1 microcode `0x800e1ec0` ×495011; type 2 microcode `0x800e0f10` ×1425021; type 4 microcode `0x800e4b10` ×17475.
+Every remaining failure, by scene, age and command (a short loop is output whose last 8192 samples repeat exactly at the period given, in samples at about 32 kHz; the entrances are table entries):
 
-Graphics opcodes executed (opcode ×count): `01`×32484057 `02`×254233 `03`×2432002 `04`×75678 `05`×9889088 `06`×115675233 `07`×2970477 `0a`×8681 `d7`×17698546 `d8`×260081 `d9`×31970133 `da`×18122145 `db`×16737559 `dc`×14271112 `dd`×17362 `de`×22722507 `df`×20890242 `e1`×2200973 `e2`×10815758 `e3`×14560249 `e4`×2107933 `e6`×35976481 `e7`×71432686 `e8`×7431095 `e9`×146975 `ed`×1793432 `ee`×179 `ef`×5400682 `f0`×6513562 `f1`×2107933 `f2`×39458893 `f3`×24798824 `f4`×4664095 `f5`×66428668 `f6`×440182 `f7`×338090 `f8`×306310 `f9`×440925 `fa`×16192077 `fb`×3466933 `fc`×18632115 `fd`×35976481 `fe`×440925 `ff`×881850.
+| Kind | Command or message | Scene | Age | Entrances |
+|---|---|---|---|---|
+| display list | `ee` | 0 | adult | 597, 599 |
+| display list | `ee` | 0 | child | 597 |
+| display list | `ee` | 7 | adult | 693 |
+| display list | `ee` | 7 | child | 693 |
+| display list | `ee` | 14 | child | 599 |
+| display list | `ee` | 21 | adult | 777 |
+| display list | `ee` | 28 | child | 623 |
+| display list | `ee` | 32 | adult | 183 |
+| display list | `ee` | 32 | child | 181 |
+| display list | `ee` | 33 | adult | 609 |
+| display list | `ee` | 33 | child | 611, 671 |
+| display list | `ee` | 34 | adult | 611 |
+| display list | `ee` | 34 | child | 609 |
+| display list | `ee` | 42 | child | 765 |
+| display list | `ee` | 54 | adult | 765 |
+| display list | `ee` | 63 | adult | 800–801 |
+| display list | `ee` | 66 | child | 753 |
+| display list | `ee` | 67 | child | 800–801 |
+| display list | `ee` | 81 | adult | 387, 399, 645, 647, 657, 659 |
+| display list | `ee` | 81 | child | 387, 399, 635, 645, 657, 659 |
+| display list | `ee` | 82 | adult | 681, 683 |
+| display list | `ee` | 82 | child | 681 |
+| display list | `ee` | 86 | adult | 259 |
+| display list | `ee` | 86 | child | 257 |
+| display list | `ee` | 87 | child | 777 |
+| display list | `ee` | 88 | adult | 341–344 |
+| display list | `ee` | 88 | child | 339–342 |
+| display list | `ee` | 91 | adult | 435 |
+| display list | `ee` | 91 | child | 435 |
+| display list | `ee` | 93 | adult | 705, 729 |
+| display list | `ee` | 93 | child | 683, 705, 729 |
+| display list | `ee` | 95 | adult | 578–579, 838, 1280 |
+| display list | `ee` | 95 | child | 576–577, 836, 1278 |
+| display list | `ee` | 96 | adult | 447 |
+| display list | `ee` | 96 | child | 447 |
+| display list | `ee` | 99 | adult | 741 |
+| display list | `ee` | 99 | child | 741 |
+| trap | PI access to unmapped cartridge address 0x0096e03c | 6 | adult | 1018–1021 |
+| trap | PI access to unmapped cartridge address 0x0096e03c | 6 | child | 1016–1019 |
+| trap | thread 0x39d40000 is runnable but was never created | 103 | adult | 184 |
+| trap | thread 0xd100b129 is runnable but was never created | 106 | adult | 75–76 |
+| trap | thread 0xffed0000 is runnable but was never created | 93 | adult | 1530–1533 |
+| trap | thread 0xffed0000 is runnable but was never created | 93 | child | 1530–1531 |
+| trap | watchdog: over 200000000 loop iterations in one video frame, at the loop 0x80004fc8 (last function entered: 0x80004f70) | 26 | adult | 1316–1317 |
+| trap | watchdog: over 200000000 loop iterations in one video frame, at the loop 0x80004fc8 (last function entered: 0x80004f70) | 83 | child | 1408–1410 |
+| trap | watchdog: over 200000000 loop iterations in one video frame, at the loop 0x80004fc8 (last function entered: 0x80004f70) | 92 | adult | 1554–1555 |
+| trap | watchdog: over 200000000 loop iterations in one video frame, at the loop 0x80004fc8 (last function entered: 0x80004f70) | 92 | child | 1552–1555 |
+| trap | watchdog: over 200000000 loop iterations in one video frame, at the loop 0x8002c78c (last function entered: 0x8002bb84) | 107 | adult | 122–123 |
+| trap | watchdog: over 200000000 loop iterations in one video frame, at the loop 0x8002c78c (last function entered: 0x8002bb84) | 109 | adult | 40–41 |
+| trap | watchdog: over 200000000 loop iterations in one video frame, at the loop 0x8002f824 (last function entered: 0x8002f6dc) | 7 | adult | 696–699 |
+| trap | watchdog: over 200000000 loop iterations in one video frame, at the loop 0x8002f824 (last function entered: 0x8002f6dc) | 7 | child | 694–697 |
 
-Executed graphics opcodes the interpreter lacks: `2`, `4`, `a`, `dd`, `ee`.
+2967 of 3038 runs were audible at the end (peak-to-peak range of the last 8192 samples at least 512); 0 of them repeat a short stretch exactly.
 
-Audio opcodes executed (opcode ×count): `01`×15586874 `02`×1834571 `05`×14520738 `07`×16584738 `08`×30107612 `09`×20843 `0a`×7931509 `0b`×9063857 `0c`×13833015 `0d`×1807364 `0e`×498709 `0f`×147222 `11`×2363870 `12`×14298794 `13`×14298794 `14`×26146344 `15`×12249331 `16`×14298794.
 
-Audio opcodes the mixer lacked when the sweep ran: `0`, `3`, `4`, `6`, `e` (since implemented), `17`; of the implemented ones, never executed: `10`.
+Executed RSP tasks: type 4 microcode `0x800066c0` ×91; type 1 microcode `0x800e1ec0` ×901563; type 2 microcode `0x800e0f10` ×2603075; type 4 microcode `0x800e4b10` ×33150.
 
-Coverage: 4976 of 13365 recompiled functions ran (boot 39 of 144, main code 1795 of 2963, overlays 3141 of 10046); 279 of 468 overlays with code had a function run; 61 of 73 replaced OS routines were called (calls made through the dispatch table are not counted). Overlays no function of which ran: `ovl_0031`, `ovl_0034`, `ovl_0037`, `ovl_0039`, `ovl_0043`, `ovl_0045`, `ovl_0047`, `ovl_0050`, `ovl_0057`, `ovl_0058`, `ovl_0062`, `ovl_0064`, `ovl_0065`, `ovl_0068`, `ovl_0069`, `ovl_0070`, `ovl_0071`, `ovl_0072`, `ovl_0073`, `ovl_0075`, `ovl_0084`, `ovl_0085`, `ovl_0086`, `ovl_0087`, `ovl_0088`, `ovl_0089`, `ovl_0093`, `ovl_0095`, `ovl_0098`, `ovl_0099`, `ovl_0100`, `ovl_0101`, `ovl_0105`, `ovl_0106`, `ovl_0110`, `ovl_0111`, `ovl_0114`, `ovl_0116`, `ovl_0117`, `ovl_0118`, `ovl_0121`, `ovl_0123`, `ovl_0126`, `ovl_0128`, `ovl_0132`, `ovl_0133`, `ovl_0135`, `ovl_0136`, `ovl_0138`, `ovl_0139`, `ovl_0142`, `ovl_0149`, `ovl_0150`, `ovl_0153`, `ovl_0155`, `ovl_0161`, `ovl_0166`, `ovl_0167`, `ovl_0170`, `ovl_0171`, `ovl_0172`, `ovl_0173`, `ovl_0177`, `ovl_0178`, `ovl_0180`, `ovl_0182`, `ovl_0183`, `ovl_0184`, `ovl_0188`, `ovl_0189`, `ovl_0193`, `ovl_0194`, `ovl_0195`, `ovl_0203`, `ovl_0204`, `ovl_0208`, `ovl_0212`, `ovl_0215`, `ovl_0216`, `ovl_0218`, `ovl_0221`, `ovl_0222`, `ovl_0225`, `ovl_0226`, `ovl_0227`, `ovl_0228`, `ovl_0229`, `ovl_0231`, `ovl_0241`, `ovl_0243`, `ovl_0245`, `ovl_0248`, `ovl_0249`, `ovl_0250`, `ovl_0251`, `ovl_0255`, `ovl_0259`, `ovl_0268`, `ovl_0269`, `ovl_0270`, `ovl_0271`, `ovl_0277`, `ovl_0278`, `ovl_0279`, `ovl_0280`, `ovl_0281`, `ovl_0283`, `ovl_0285`, `ovl_0288`, `ovl_0296`, `ovl_0297`, `ovl_0300`, `ovl_0301`, `ovl_0305`, `ovl_0306`, `ovl_0307`, `ovl_0310`, `ovl_0311`, `ovl_0313`, `ovl_0315`, `ovl_0316`, `ovl_0320`, `ovl_0321`, `ovl_0328`, `ovl_0332`, `ovl_0334`, `ovl_0336`, `ovl_0340`, `ovl_0342`, `ovl_0345`, `ovl_0346`, `ovl_0353`, `ovl_0361`, `ovl_0366`, `ovl_0367`, `ovl_0374`, `ovl_0375`, `ovl_0376`, `ovl_0378`, `ovl_0380`, `ovl_0383`, `ovl_0386`, `ovl_0389`, `ovl_0391`, `ovl_0392`, `ovl_0393`, `ovl_0397`, `ovl_0398`, `ovl_0399`, `ovl_0400`, `ovl_0402`, `ovl_0403`, `ovl_0404`, `ovl_0405`, `ovl_0406`, `ovl_0408`, `ovl_0409`, `ovl_0410`, `ovl_0411`, `ovl_0412`, `ovl_0413`, `ovl_0414`, `ovl_0416`, `ovl_0417`, `ovl_0418`, `ovl_0419`, `ovl_0420`, `ovl_0421`, `ovl_0422`, `ovl_0423`, `ovl_0426`, `ovl_0431`, `ovl_0435`, `ovl_0436`, `ovl_0439`, `ovl_0461`, `ovl_0462`, `ovl_0463`, `ovl_0465`, `ovl_0467`, `ovl_0469`, `ovl_0476`, `ovl_0480`, `ovl_0483`, `ovl_0486`, `ovl_0488`, `ovl_0490`, `ovl_0492`, `ovl_0498`.
+Graphics opcodes executed (opcode ×count): `01`×64481296 `02`×508481 `03`×4806291 `04`×136143 `05`×19606005 `06`×228993029 `07`×4934600 `0a`×17019 `d7`×35282736 `d8`×486607 `d9`×63617184 `da`×36158716 `db`×33262967 `dc`×28418399 `dd`×34038 `de`×45202970 `df`×41476393 `e1`×4327189 `e2`×21472969 `e3`×29004367 `e4`×4157008 `e6`×69561551 `e7`×139929717 `e8`×14771684 `e9`×292500 `ed`×3568743 `ee`×447 `ef`×10744040 `f0`×12930145 `f1`×4157008 `f2`×76558625 `f3`×49276369 `f4`×7355037 `f5`×128173170 `f6`×888145 `f7`×676282 `f8`×609266 `f9`×877547 `fa`×32208425 `fb`×6911295 `fc`×37081247 `fd`×69561551 `fe`×877500 `ff`×1755188.
+
+Executed graphics opcodes the interpreter lacks: `a`, `ee`.
+
+Audio opcodes executed (opcode ×count): `01`×33283464 `02`×3666301 `05`×30645598 `07`×33910988 `08`×63929062 `09`×94123 `0a`×15912357 `0b`×19463761 `0c`×27431513 `0d`×3600040 `0e`×933544 `0f`×328749 `11`×5100963 `12`×30539046 `13`×30539046 `14`×54454924 `15`×24672879 `16`×30539046.
+
+Audio opcodes the mixer lacks: none; of the implemented ones, never executed: `0`, `3`, `4`, `6`, `10`, `17`.
+
+Coverage: 5037 of 13365 recompiled functions ran (boot 39 of 144, main code 1839 of 2963, overlays 3158 of 10046); 281 of 468 overlays with code had a function run; 61 of 73 replaced OS routines were called (calls made through the dispatch table are not counted). Overlays no function of which ran: `ovl_0031`, `ovl_0037`, `ovl_0039`, `ovl_0043`, `ovl_0045`, `ovl_0047`, `ovl_0050`, `ovl_0057`, `ovl_0058`, `ovl_0062`, `ovl_0064`, `ovl_0065`, `ovl_0068`, `ovl_0069`, `ovl_0070`, `ovl_0071`, `ovl_0072`, `ovl_0073`, `ovl_0075`, `ovl_0084`, `ovl_0085`, `ovl_0086`, `ovl_0087`, `ovl_0088`, `ovl_0089`, `ovl_0093`, `ovl_0095`, `ovl_0098`, `ovl_0099`, `ovl_0100`, `ovl_0101`, `ovl_0105`, `ovl_0106`, `ovl_0110`, `ovl_0111`, `ovl_0114`, `ovl_0116`, `ovl_0117`, `ovl_0118`, `ovl_0121`, `ovl_0123`, `ovl_0126`, `ovl_0128`, `ovl_0132`, `ovl_0133`, `ovl_0135`, `ovl_0136`, `ovl_0138`, `ovl_0139`, `ovl_0142`, `ovl_0149`, `ovl_0150`, `ovl_0153`, `ovl_0155`, `ovl_0161`, `ovl_0166`, `ovl_0167`, `ovl_0170`, `ovl_0171`, `ovl_0172`, `ovl_0173`, `ovl_0177`, `ovl_0178`, `ovl_0180`, `ovl_0182`, `ovl_0183`, `ovl_0184`, `ovl_0188`, `ovl_0189`, `ovl_0193`, `ovl_0194`, `ovl_0195`, `ovl_0203`, `ovl_0204`, `ovl_0208`, `ovl_0212`, `ovl_0215`, `ovl_0216`, `ovl_0218`, `ovl_0221`, `ovl_0222`, `ovl_0225`, `ovl_0226`, `ovl_0227`, `ovl_0228`, `ovl_0229`, `ovl_0231`, `ovl_0241`, `ovl_0243`, `ovl_0245`, `ovl_0248`, `ovl_0249`, `ovl_0250`, `ovl_0251`, `ovl_0255`, `ovl_0259`, `ovl_0268`, `ovl_0269`, `ovl_0270`, `ovl_0271`, `ovl_0277`, `ovl_0278`, `ovl_0279`, `ovl_0280`, `ovl_0281`, `ovl_0283`, `ovl_0285`, `ovl_0288`, `ovl_0296`, `ovl_0297`, `ovl_0300`, `ovl_0301`, `ovl_0305`, `ovl_0306`, `ovl_0307`, `ovl_0310`, `ovl_0311`, `ovl_0313`, `ovl_0315`, `ovl_0316`, `ovl_0320`, `ovl_0321`, `ovl_0328`, `ovl_0332`, `ovl_0334`, `ovl_0336`, `ovl_0340`, `ovl_0342`, `ovl_0345`, `ovl_0346`, `ovl_0353`, `ovl_0361`, `ovl_0366`, `ovl_0367`, `ovl_0374`, `ovl_0375`, `ovl_0376`, `ovl_0378`, `ovl_0380`, `ovl_0383`, `ovl_0386`, `ovl_0389`, `ovl_0391`, `ovl_0392`, `ovl_0393`, `ovl_0397`, `ovl_0398`, `ovl_0399`, `ovl_0400`, `ovl_0402`, `ovl_0403`, `ovl_0404`, `ovl_0405`, `ovl_0406`, `ovl_0408`, `ovl_0409`, `ovl_0410`, `ovl_0411`, `ovl_0412`, `ovl_0413`, `ovl_0416`, `ovl_0417`, `ovl_0418`, `ovl_0419`, `ovl_0420`, `ovl_0421`, `ovl_0422`, `ovl_0423`, `ovl_0426`, `ovl_0431`, `ovl_0435`, `ovl_0436`, `ovl_0439`, `ovl_0461`, `ovl_0462`, `ovl_0463`, `ovl_0465`, `ovl_0467`, `ovl_0469`, `ovl_0476`, `ovl_0480`, `ovl_0483`, `ovl_0486`, `ovl_0488`, `ovl_0490`, `ovl_0492`, `ovl_0498`.
 
 Accesses beyond RDRAM, in 256-byte blocks (the first address touched; the function entered last when it was first touched is only a hint):
 
@@ -657,526 +730,1717 @@ Hardware registers and cartridge space (the replaced routines never reach the ha
 
 | Address | Register | Accesses | Function entered last | Seen in |
 |---|---|---|---|---|
-| `0xa4000ff4` | SP_DMEM+0xff4 | 104 | `0x800a34b4` | the scripted start (boot, title, file select, opening) |
-| `0xa4600010` | PI_STATUS | 1144 | `0x80002ff0` | the scripted start (boot, title, file select, opening) |
-| `0xa6000000` | 0x6000000 | 52 | `0x80002ff0` | the scripted start (boot, title, file select, opening) |
-| `0xb0000000` | CART_ROM+0x0 | 52 | `0x80002ff0` | the scripted start (boot, title, file select, opening) |
+| `0x875c0004` | 0x75c0004 | 18 | `0x800a34b4` | 6 entrances; scenes 93 |
+| `0xa4000ff4` | SP_DMEM+0xff4 | 182 | `0x800a34b4` | the scripted start (boot, title, file select, opening) |
+| `0xa4600010` | PI_STATUS | 2002 | `0x80002ff0` | the scripted start (boot, title, file select, opening) |
+| `0xa6000000` | 0x6000000 | 91 | `0x80002ff0` | the scripted start (boot, title, file select, opening) |
+| `0xafaf0148` | CART_DOMAIN2 (SRAM or flash)+0x7af0148 | 2 | `0x80081dd4` | 1 entrance; scenes 107 |
+| `0xb0000000` | CART_ROM+0x0 | 91 | `0x80002ff0` | the scripted start (boot, title, file select, opening) |
 
 Other addresses (not a device: a wild pointer, or a read past the end of RDRAM):
 
 | Address | Kind | Accesses | Function entered last | Seen in |
 |---|---|---|---|---|
-| `0x44810002` | user segment (unmapped) | 5852 | `0x8007999c` | 4 entrances; scenes 7 |
-| `0x44810130` | user segment (unmapped) | 400 | `0x80081c38` | 4 entrances; scenes 7 |
-| `0x80800000` | just past the 8 MiB of RDRAM | 7714 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80800100` | just past the 8 MiB of RDRAM | 7908 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80800200` | just past the 8 MiB of RDRAM | 7660 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80800300` | just past the 8 MiB of RDRAM | 8738 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80800400` | just past the 8 MiB of RDRAM | 7936 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80800500` | just past the 8 MiB of RDRAM | 8818 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80800600` | just past the 8 MiB of RDRAM | 8594 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80800700` | just past the 8 MiB of RDRAM | 8606 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80800800` | just past the 8 MiB of RDRAM | 9208 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80800900` | just past the 8 MiB of RDRAM | 9098 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80800a00` | just past the 8 MiB of RDRAM | 8986 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80800b00` | just past the 8 MiB of RDRAM | 8622 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80800c00` | just past the 8 MiB of RDRAM | 9636 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80800d00` | just past the 8 MiB of RDRAM | 8716 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80800e00` | just past the 8 MiB of RDRAM | 8524 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80800f00` | just past the 8 MiB of RDRAM | 8132 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80801000` | just past the 8 MiB of RDRAM | 8144 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80801100` | just past the 8 MiB of RDRAM | 8976 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80801200` | just past the 8 MiB of RDRAM | 8104 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80801300` | just past the 8 MiB of RDRAM | 8210 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80801400` | just past the 8 MiB of RDRAM | 8838 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80801500` | just past the 8 MiB of RDRAM | 8524 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80801600` | just past the 8 MiB of RDRAM | 9302 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80801700` | just past the 8 MiB of RDRAM | 9346 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80801800` | just past the 8 MiB of RDRAM | 8466 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80801900` | just past the 8 MiB of RDRAM | 9282 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80801a00` | just past the 8 MiB of RDRAM | 8338 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80801b00` | just past the 8 MiB of RDRAM | 9016 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80801c00` | just past the 8 MiB of RDRAM | 7996 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80801d00` | just past the 8 MiB of RDRAM | 8528 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80801e00` | just past the 8 MiB of RDRAM | 8300 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80801f00` | just past the 8 MiB of RDRAM | 8040 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80802000` | just past the 8 MiB of RDRAM | 8080 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80802100` | just past the 8 MiB of RDRAM | 8790 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80802200` | just past the 8 MiB of RDRAM | 8760 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80802300` | just past the 8 MiB of RDRAM | 8864 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80802400` | just past the 8 MiB of RDRAM | 9658 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80802500` | just past the 8 MiB of RDRAM | 8076 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80802600` | just past the 8 MiB of RDRAM | 9508 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80802700` | just past the 8 MiB of RDRAM | 8290 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80802800` | just past the 8 MiB of RDRAM | 7836 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80802900` | just past the 8 MiB of RDRAM | 9420 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80802a00` | just past the 8 MiB of RDRAM | 8728 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80802b00` | just past the 8 MiB of RDRAM | 8578 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80802c00` | just past the 8 MiB of RDRAM | 10974 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80802d00` | just past the 8 MiB of RDRAM | 8516 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80802e00` | just past the 8 MiB of RDRAM | 8424 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80802f00` | just past the 8 MiB of RDRAM | 8216 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80803000` | just past the 8 MiB of RDRAM | 8502 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80803100` | just past the 8 MiB of RDRAM | 8794 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80803200` | just past the 8 MiB of RDRAM | 8564 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80803300` | just past the 8 MiB of RDRAM | 8674 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80803400` | just past the 8 MiB of RDRAM | 9516 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80803500` | just past the 8 MiB of RDRAM | 8696 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80803600` | just past the 8 MiB of RDRAM | 8070 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80803700` | just past the 8 MiB of RDRAM | 8320 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80803800` | just past the 8 MiB of RDRAM | 8632 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80803900` | just past the 8 MiB of RDRAM | 8336 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80803a00` | just past the 8 MiB of RDRAM | 8168 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80803b00` | just past the 8 MiB of RDRAM | 8860 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80803c00` | just past the 8 MiB of RDRAM | 9738 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80803d00` | just past the 8 MiB of RDRAM | 8316 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80803e00` | just past the 8 MiB of RDRAM | 9026 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80803f00` | just past the 8 MiB of RDRAM | 8128 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80804000` | just past the 8 MiB of RDRAM | 8526 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80804100` | just past the 8 MiB of RDRAM | 8676 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80804200` | just past the 8 MiB of RDRAM | 8680 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80804300` | just past the 8 MiB of RDRAM | 8264 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80804400` | just past the 8 MiB of RDRAM | 8432 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80804500` | just past the 8 MiB of RDRAM | 8288 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80804600` | just past the 8 MiB of RDRAM | 9050 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80804700` | just past the 8 MiB of RDRAM | 8982 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80804800` | just past the 8 MiB of RDRAM | 7756 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80804900` | just past the 8 MiB of RDRAM | 9094 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80804a00` | just past the 8 MiB of RDRAM | 8898 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80804b00` | just past the 8 MiB of RDRAM | 8724 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80804c00` | just past the 8 MiB of RDRAM | 8778 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80804d00` | just past the 8 MiB of RDRAM | 8682 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80804e00` | just past the 8 MiB of RDRAM | 8456 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80804f00` | just past the 8 MiB of RDRAM | 9320 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80805000` | just past the 8 MiB of RDRAM | 9106 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80805100` | just past the 8 MiB of RDRAM | 8420 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80805200` | just past the 8 MiB of RDRAM | 9004 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80805300` | just past the 8 MiB of RDRAM | 8074 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80805400` | just past the 8 MiB of RDRAM | 8442 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80805500` | just past the 8 MiB of RDRAM | 9190 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80805600` | just past the 8 MiB of RDRAM | 8822 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80805700` | just past the 8 MiB of RDRAM | 8404 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80805800` | just past the 8 MiB of RDRAM | 8570 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80805900` | just past the 8 MiB of RDRAM | 8602 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80805a00` | just past the 8 MiB of RDRAM | 8180 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80805b00` | just past the 8 MiB of RDRAM | 8788 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80805c00` | just past the 8 MiB of RDRAM | 8776 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80805d00` | just past the 8 MiB of RDRAM | 10374 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80805e00` | just past the 8 MiB of RDRAM | 8262 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80805f00` | just past the 8 MiB of RDRAM | 8318 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80806000` | just past the 8 MiB of RDRAM | 8838 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80806100` | just past the 8 MiB of RDRAM | 8060 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80806200` | just past the 8 MiB of RDRAM | 9580 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80806300` | just past the 8 MiB of RDRAM | 9096 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80806400` | just past the 8 MiB of RDRAM | 9326 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80806500` | just past the 8 MiB of RDRAM | 7992 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80806600` | just past the 8 MiB of RDRAM | 8348 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80806700` | just past the 8 MiB of RDRAM | 8064 | `0x800a34b4` | 10 entrances; scenes 6 |
-| `0x80806800` | just past the 8 MiB of RDRAM | 7474 | `0x800a34b4` | 6 entrances; scenes  |
-| `0x80806900` | just past the 8 MiB of RDRAM | 7612 | `0x800a34b4` | 6 entrances; scenes  |
-| `0x80806a00` | just past the 8 MiB of RDRAM | 7726 | `0x800a34b4` | 6 entrances; scenes  |
-| `0x80806b00` | just past the 8 MiB of RDRAM | 7076 | `0x800a34b4` | 6 entrances; scenes  |
-| `0x80806c00` | just past the 8 MiB of RDRAM | 7558 | `0x800a34b4` | 6 entrances; scenes  |
-| `0x80806d00` | just past the 8 MiB of RDRAM | 7162 | `0x800a34b4` | 6 entrances; scenes  |
-| `0x80806e00` | just past the 8 MiB of RDRAM | 7136 | `0x800a34b4` | 6 entrances; scenes  |
-| `0x80806f00` | just past the 8 MiB of RDRAM | 9346 | `0x800a34b4` | 6 entrances; scenes  |
-| `0x80807000` | just past the 8 MiB of RDRAM | 9010 | `0x800a34b4` | 6 entrances; scenes  |
-| `0x80807100` | just past the 8 MiB of RDRAM | 8450 | `0x800a34b4` | 6 entrances; scenes  |
-| `0x80807200` | just past the 8 MiB of RDRAM | 7314 | `0x800a34b4` | 6 entrances; scenes  |
-| `0x80807300` | just past the 8 MiB of RDRAM | 8482 | `0x800a34b4` | 6 entrances; scenes  |
-| `0x80807400` | just past the 8 MiB of RDRAM | 7242 | `0x800a34b4` | 6 entrances; scenes  |
-| `0x80807500` | just past the 8 MiB of RDRAM | 6930 | `0x800a34b4` | 6 entrances; scenes  |
-| `0x80807600` | just past the 8 MiB of RDRAM | 7012 | `0x800a34b4` | 6 entrances; scenes  |
-| `0x80807700` | just past the 8 MiB of RDRAM | 7092 | `0x800a34b4` | 6 entrances; scenes  |
-| `0x80807800` | just past the 8 MiB of RDRAM | 7654 | `0x800a34b4` | 6 entrances; scenes  |
-| `0x80807900` | just past the 8 MiB of RDRAM | 7020 | `0x800a34b4` | 6 entrances; scenes  |
-| `0x80807a00` | just past the 8 MiB of RDRAM | 6700 | `0x800a34b4` | 6 entrances; scenes  |
-| `0x80807b00` | just past the 8 MiB of RDRAM | 5684 | `0x800a34b4` | 6 entrances; scenes  |
-| `0x80807c00` | just past the 8 MiB of RDRAM | 5776 | `0x8000099c` | 6 entrances; scenes  |
-| `0x80807d00` | just past the 8 MiB of RDRAM | 6232 | `0x8000099c` | 6 entrances; scenes  |
-| `0x80807e00` | just past the 8 MiB of RDRAM | 5740 | `0x8000099c` | 6 entrances; scenes  |
-| `0x80807f00` | just past the 8 MiB of RDRAM | 5372 | `0x8000099c` | 6 entrances; scenes  |
-| `0x80808000` | just past the 8 MiB of RDRAM | 6158 | `0x8000099c` | 6 entrances; scenes  |
-| `0x80808100` | just past the 8 MiB of RDRAM | 6018 | `0x8000099c` | 6 entrances; scenes  |
-| `0x80808200` | just past the 8 MiB of RDRAM | 6862 | `0x8000099c` | 6 entrances; scenes  |
-| `0x80808300` | just past the 8 MiB of RDRAM | 5650 | `0x8000099c` | 6 entrances; scenes  |
-| `0x80808400` | just past the 8 MiB of RDRAM | 5726 | `0x8000099c` | 6 entrances; scenes  |
-| `0x80808500` | just past the 8 MiB of RDRAM | 5638 | `0x8000099c` | 6 entrances; scenes  |
-| `0x80808600` | just past the 8 MiB of RDRAM | 6362 | `0x8000099c` | 6 entrances; scenes  |
-| `0x80808700` | just past the 8 MiB of RDRAM | 7020 | `0x8000099c` | 6 entrances; scenes  |
-| `0x80808800` | just past the 8 MiB of RDRAM | 5784 | `0x8000099c` | 6 entrances; scenes  |
-| `0x80808900` | just past the 8 MiB of RDRAM | 6148 | `0x8000099c` | 6 entrances; scenes  |
-| `0x80808a00` | just past the 8 MiB of RDRAM | 6392 | `0x8000099c` | 6 entrances; scenes  |
-| `0x80808b00` | just past the 8 MiB of RDRAM | 6024 | `0x8000099c` | 6 entrances; scenes  |
-| `0x80808c00` | just past the 8 MiB of RDRAM | 5710 | `0x8000099c` | 6 entrances; scenes  |
-| `0x80808d00` | just past the 8 MiB of RDRAM | 6072 | `0x8000099c` | 6 entrances; scenes  |
-| `0x80808e00` | just past the 8 MiB of RDRAM | 5782 | `0x8000099c` | 6 entrances; scenes  |
-| `0x80808f00` | just past the 8 MiB of RDRAM | 5476 | `0x8000099c` | 6 entrances; scenes  |
-| `0x80809000` | just past the 8 MiB of RDRAM | 5232 | `0x8000099c` | 6 entrances; scenes  |
-| `0x80809100` | just past the 8 MiB of RDRAM | 4120 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80809200` | just past the 8 MiB of RDRAM | 4058 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80809300` | just past the 8 MiB of RDRAM | 3712 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80809400` | just past the 8 MiB of RDRAM | 4174 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80809500` | just past the 8 MiB of RDRAM | 4234 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80809600` | just past the 8 MiB of RDRAM | 4228 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80809700` | just past the 8 MiB of RDRAM | 4036 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80809800` | just past the 8 MiB of RDRAM | 4714 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80809900` | just past the 8 MiB of RDRAM | 4138 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80809a00` | just past the 8 MiB of RDRAM | 3976 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80809b00` | just past the 8 MiB of RDRAM | 4464 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80809c00` | just past the 8 MiB of RDRAM | 4084 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80809d00` | just past the 8 MiB of RDRAM | 3998 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80809e00` | just past the 8 MiB of RDRAM | 3830 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80809f00` | just past the 8 MiB of RDRAM | 3770 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080a000` | just past the 8 MiB of RDRAM | 4478 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080a100` | just past the 8 MiB of RDRAM | 4196 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080a200` | just past the 8 MiB of RDRAM | 4480 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080a300` | just past the 8 MiB of RDRAM | 4686 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080a400` | just past the 8 MiB of RDRAM | 3984 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080a500` | just past the 8 MiB of RDRAM | 3954 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080a600` | just past the 8 MiB of RDRAM | 4190 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080a700` | just past the 8 MiB of RDRAM | 3750 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080a800` | just past the 8 MiB of RDRAM | 4024 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080a900` | just past the 8 MiB of RDRAM | 4886 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080aa00` | just past the 8 MiB of RDRAM | 4534 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080ab00` | just past the 8 MiB of RDRAM | 3668 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080ac00` | just past the 8 MiB of RDRAM | 4168 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080ad00` | just past the 8 MiB of RDRAM | 3834 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080ae00` | just past the 8 MiB of RDRAM | 3992 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080af00` | just past the 8 MiB of RDRAM | 3892 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080b000` | just past the 8 MiB of RDRAM | 4218 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080b100` | just past the 8 MiB of RDRAM | 3758 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080b200` | just past the 8 MiB of RDRAM | 3682 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080b300` | just past the 8 MiB of RDRAM | 3962 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080b400` | just past the 8 MiB of RDRAM | 3884 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080b500` | just past the 8 MiB of RDRAM | 3722 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080b600` | just past the 8 MiB of RDRAM | 4174 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080b700` | just past the 8 MiB of RDRAM | 4676 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080b800` | just past the 8 MiB of RDRAM | 4270 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080b900` | just past the 8 MiB of RDRAM | 3886 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080ba00` | just past the 8 MiB of RDRAM | 4122 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080bb00` | just past the 8 MiB of RDRAM | 3954 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080bc00` | just past the 8 MiB of RDRAM | 3898 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080bd00` | just past the 8 MiB of RDRAM | 4090 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080be00` | just past the 8 MiB of RDRAM | 3988 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080bf00` | just past the 8 MiB of RDRAM | 3714 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080c000` | just past the 8 MiB of RDRAM | 4200 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080c100` | just past the 8 MiB of RDRAM | 4602 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080c200` | just past the 8 MiB of RDRAM | 4022 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080c300` | just past the 8 MiB of RDRAM | 4018 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080c400` | just past the 8 MiB of RDRAM | 3914 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080c500` | just past the 8 MiB of RDRAM | 3816 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080c600` | just past the 8 MiB of RDRAM | 4336 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080c700` | just past the 8 MiB of RDRAM | 3716 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080c800` | just past the 8 MiB of RDRAM | 3952 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080c900` | just past the 8 MiB of RDRAM | 3660 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080ca00` | just past the 8 MiB of RDRAM | 4076 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080cb00` | just past the 8 MiB of RDRAM | 4462 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080cc00` | just past the 8 MiB of RDRAM | 4348 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080cd00` | just past the 8 MiB of RDRAM | 4140 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080ce00` | just past the 8 MiB of RDRAM | 3704 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080cf00` | just past the 8 MiB of RDRAM | 4568 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080d000` | just past the 8 MiB of RDRAM | 3850 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080d100` | just past the 8 MiB of RDRAM | 4028 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080d200` | just past the 8 MiB of RDRAM | 4016 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080d300` | just past the 8 MiB of RDRAM | 4042 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080d400` | just past the 8 MiB of RDRAM | 4692 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080d500` | just past the 8 MiB of RDRAM | 4050 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080d600` | just past the 8 MiB of RDRAM | 4160 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080d700` | just past the 8 MiB of RDRAM | 4138 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080d800` | just past the 8 MiB of RDRAM | 4072 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080d900` | just past the 8 MiB of RDRAM | 4434 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080da00` | just past the 8 MiB of RDRAM | 4420 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080db00` | just past the 8 MiB of RDRAM | 3902 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080dc00` | just past the 8 MiB of RDRAM | 3642 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080dd00` | just past the 8 MiB of RDRAM | 4014 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080de00` | just past the 8 MiB of RDRAM | 4106 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080df00` | just past the 8 MiB of RDRAM | 4016 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080e000` | just past the 8 MiB of RDRAM | 3856 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080e100` | just past the 8 MiB of RDRAM | 3850 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080e200` | just past the 8 MiB of RDRAM | 4400 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080e300` | just past the 8 MiB of RDRAM | 4438 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080e400` | just past the 8 MiB of RDRAM | 4210 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080e500` | just past the 8 MiB of RDRAM | 3624 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080e600` | just past the 8 MiB of RDRAM | 4080 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080e700` | just past the 8 MiB of RDRAM | 3718 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080e800` | just past the 8 MiB of RDRAM | 4076 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080e900` | just past the 8 MiB of RDRAM | 4168 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080ea00` | just past the 8 MiB of RDRAM | 4288 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080eb00` | just past the 8 MiB of RDRAM | 4012 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080ec00` | just past the 8 MiB of RDRAM | 4142 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080ed00` | just past the 8 MiB of RDRAM | 4368 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080ee00` | just past the 8 MiB of RDRAM | 4306 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080ef00` | just past the 8 MiB of RDRAM | 3862 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080f000` | just past the 8 MiB of RDRAM | 3942 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080f100` | just past the 8 MiB of RDRAM | 4214 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080f200` | just past the 8 MiB of RDRAM | 3824 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080f300` | just past the 8 MiB of RDRAM | 4062 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080f400` | just past the 8 MiB of RDRAM | 4220 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080f500` | just past the 8 MiB of RDRAM | 4532 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080f600` | just past the 8 MiB of RDRAM | 4000 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080f700` | just past the 8 MiB of RDRAM | 5002 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080f800` | just past the 8 MiB of RDRAM | 4136 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080f900` | just past the 8 MiB of RDRAM | 3688 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080fa00` | just past the 8 MiB of RDRAM | 3974 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080fb00` | just past the 8 MiB of RDRAM | 4194 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080fc00` | just past the 8 MiB of RDRAM | 3932 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080fd00` | just past the 8 MiB of RDRAM | 4070 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080fe00` | just past the 8 MiB of RDRAM | 3854 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8080ff00` | just past the 8 MiB of RDRAM | 3946 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80810000` | just past the 8 MiB of RDRAM | 3650 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80810100` | just past the 8 MiB of RDRAM | 4016 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80810200` | just past the 8 MiB of RDRAM | 4326 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80810300` | just past the 8 MiB of RDRAM | 4470 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80810400` | just past the 8 MiB of RDRAM | 4252 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80810500` | just past the 8 MiB of RDRAM | 3918 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80810600` | just past the 8 MiB of RDRAM | 4146 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80810700` | just past the 8 MiB of RDRAM | 3758 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80810800` | just past the 8 MiB of RDRAM | 3814 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80810900` | just past the 8 MiB of RDRAM | 4102 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80810a00` | just past the 8 MiB of RDRAM | 4532 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80810b00` | just past the 8 MiB of RDRAM | 3632 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80810c00` | just past the 8 MiB of RDRAM | 4290 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80810d00` | just past the 8 MiB of RDRAM | 3644 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80810e00` | just past the 8 MiB of RDRAM | 4264 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80810f00` | just past the 8 MiB of RDRAM | 4554 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80811000` | just past the 8 MiB of RDRAM | 3772 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80811100` | just past the 8 MiB of RDRAM | 4128 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80811200` | just past the 8 MiB of RDRAM | 4184 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80811300` | just past the 8 MiB of RDRAM | 4298 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80811400` | just past the 8 MiB of RDRAM | 3934 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80811500` | just past the 8 MiB of RDRAM | 4556 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80811600` | just past the 8 MiB of RDRAM | 3834 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80811700` | just past the 8 MiB of RDRAM | 4758 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80811800` | just past the 8 MiB of RDRAM | 4276 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80811900` | just past the 8 MiB of RDRAM | 4170 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80811a00` | just past the 8 MiB of RDRAM | 4314 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80811b00` | just past the 8 MiB of RDRAM | 3750 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80811c00` | just past the 8 MiB of RDRAM | 3976 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80811d00` | just past the 8 MiB of RDRAM | 3854 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80811e00` | just past the 8 MiB of RDRAM | 3866 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80811f00` | just past the 8 MiB of RDRAM | 3880 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80812000` | just past the 8 MiB of RDRAM | 4396 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80812100` | just past the 8 MiB of RDRAM | 4182 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80812200` | just past the 8 MiB of RDRAM | 4154 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80812300` | just past the 8 MiB of RDRAM | 4384 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80812400` | just past the 8 MiB of RDRAM | 3962 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80812500` | just past the 8 MiB of RDRAM | 4060 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80812600` | just past the 8 MiB of RDRAM | 4088 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80812700` | just past the 8 MiB of RDRAM | 4222 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80812800` | just past the 8 MiB of RDRAM | 3844 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80812900` | just past the 8 MiB of RDRAM | 3854 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80812a00` | just past the 8 MiB of RDRAM | 3956 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80812b00` | just past the 8 MiB of RDRAM | 4304 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80812c00` | just past the 8 MiB of RDRAM | 4422 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80812d00` | just past the 8 MiB of RDRAM | 3622 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80812e00` | just past the 8 MiB of RDRAM | 3792 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80812f00` | just past the 8 MiB of RDRAM | 3646 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80813000` | just past the 8 MiB of RDRAM | 3890 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80813100` | just past the 8 MiB of RDRAM | 4216 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80813200` | just past the 8 MiB of RDRAM | 4722 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80813300` | just past the 8 MiB of RDRAM | 3942 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80813400` | just past the 8 MiB of RDRAM | 4166 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80813500` | just past the 8 MiB of RDRAM | 4530 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80813600` | just past the 8 MiB of RDRAM | 3666 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80813700` | just past the 8 MiB of RDRAM | 3970 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80813800` | just past the 8 MiB of RDRAM | 4010 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80813900` | just past the 8 MiB of RDRAM | 3708 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80813a00` | just past the 8 MiB of RDRAM | 4312 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80813b00` | just past the 8 MiB of RDRAM | 4740 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80813c00` | just past the 8 MiB of RDRAM | 4416 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80813d00` | just past the 8 MiB of RDRAM | 4424 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80813e00` | just past the 8 MiB of RDRAM | 4116 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80813f00` | just past the 8 MiB of RDRAM | 3742 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80814000` | just past the 8 MiB of RDRAM | 3844 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80814100` | just past the 8 MiB of RDRAM | 3652 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80814200` | just past the 8 MiB of RDRAM | 4002 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80814300` | just past the 8 MiB of RDRAM | 4230 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80814400` | just past the 8 MiB of RDRAM | 4328 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80814500` | just past the 8 MiB of RDRAM | 4834 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80814600` | just past the 8 MiB of RDRAM | 4398 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80814700` | just past the 8 MiB of RDRAM | 3844 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80814800` | just past the 8 MiB of RDRAM | 3718 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80814900` | just past the 8 MiB of RDRAM | 3650 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80814a00` | just past the 8 MiB of RDRAM | 3888 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80814b00` | just past the 8 MiB of RDRAM | 4304 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80814c00` | just past the 8 MiB of RDRAM | 4010 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80814d00` | just past the 8 MiB of RDRAM | 4264 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80814e00` | just past the 8 MiB of RDRAM | 4518 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80814f00` | just past the 8 MiB of RDRAM | 3692 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80815000` | just past the 8 MiB of RDRAM | 4424 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80815100` | just past the 8 MiB of RDRAM | 3744 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80815200` | just past the 8 MiB of RDRAM | 4046 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80815300` | just past the 8 MiB of RDRAM | 3984 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80815400` | just past the 8 MiB of RDRAM | 3886 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80815500` | just past the 8 MiB of RDRAM | 3770 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80815600` | just past the 8 MiB of RDRAM | 4574 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80815700` | just past the 8 MiB of RDRAM | 4272 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80815800` | just past the 8 MiB of RDRAM | 3918 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80815900` | just past the 8 MiB of RDRAM | 3822 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80815a00` | just past the 8 MiB of RDRAM | 3868 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80815b00` | just past the 8 MiB of RDRAM | 4030 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80815c00` | just past the 8 MiB of RDRAM | 4420 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80815d00` | just past the 8 MiB of RDRAM | 4042 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80815e00` | just past the 8 MiB of RDRAM | 4150 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80815f00` | just past the 8 MiB of RDRAM | 3998 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80816000` | just past the 8 MiB of RDRAM | 4020 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80816100` | just past the 8 MiB of RDRAM | 4478 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80816200` | just past the 8 MiB of RDRAM | 4214 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80816300` | just past the 8 MiB of RDRAM | 3950 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80816400` | just past the 8 MiB of RDRAM | 4080 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80816500` | just past the 8 MiB of RDRAM | 3720 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80816600` | just past the 8 MiB of RDRAM | 4404 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80816700` | just past the 8 MiB of RDRAM | 4014 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80816800` | just past the 8 MiB of RDRAM | 3700 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80816900` | just past the 8 MiB of RDRAM | 4396 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80816a00` | just past the 8 MiB of RDRAM | 4044 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80816b00` | just past the 8 MiB of RDRAM | 4298 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80816c00` | just past the 8 MiB of RDRAM | 4030 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80816d00` | just past the 8 MiB of RDRAM | 3862 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80816e00` | just past the 8 MiB of RDRAM | 4238 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80816f00` | just past the 8 MiB of RDRAM | 3840 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80817000` | just past the 8 MiB of RDRAM | 4130 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80817100` | just past the 8 MiB of RDRAM | 3802 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80817200` | just past the 8 MiB of RDRAM | 4280 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80817300` | just past the 8 MiB of RDRAM | 4392 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80817400` | just past the 8 MiB of RDRAM | 4198 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80817500` | just past the 8 MiB of RDRAM | 4206 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80817600` | just past the 8 MiB of RDRAM | 4252 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80817700` | just past the 8 MiB of RDRAM | 3698 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80817800` | just past the 8 MiB of RDRAM | 3654 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80817900` | just past the 8 MiB of RDRAM | 4112 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80817a00` | just past the 8 MiB of RDRAM | 4030 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80817b00` | just past the 8 MiB of RDRAM | 4034 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80817c00` | just past the 8 MiB of RDRAM | 4048 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80817d00` | just past the 8 MiB of RDRAM | 4058 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80817e00` | just past the 8 MiB of RDRAM | 4342 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80817f00` | just past the 8 MiB of RDRAM | 4622 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80818000` | just past the 8 MiB of RDRAM | 3766 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80818100` | just past the 8 MiB of RDRAM | 3920 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80818200` | just past the 8 MiB of RDRAM | 4084 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80818300` | just past the 8 MiB of RDRAM | 3994 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80818400` | just past the 8 MiB of RDRAM | 4372 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80818500` | just past the 8 MiB of RDRAM | 3726 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80818600` | just past the 8 MiB of RDRAM | 3702 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80818700` | just past the 8 MiB of RDRAM | 3928 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80818800` | just past the 8 MiB of RDRAM | 4472 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80818900` | just past the 8 MiB of RDRAM | 4400 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80818a00` | just past the 8 MiB of RDRAM | 4386 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80818b00` | just past the 8 MiB of RDRAM | 4564 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80818c00` | just past the 8 MiB of RDRAM | 3694 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80818d00` | just past the 8 MiB of RDRAM | 3678 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80818e00` | just past the 8 MiB of RDRAM | 3952 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80818f00` | just past the 8 MiB of RDRAM | 4328 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80819000` | just past the 8 MiB of RDRAM | 4422 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80819100` | just past the 8 MiB of RDRAM | 4008 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80819200` | just past the 8 MiB of RDRAM | 4026 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80819300` | just past the 8 MiB of RDRAM | 4130 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80819400` | just past the 8 MiB of RDRAM | 4032 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80819500` | just past the 8 MiB of RDRAM | 4088 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80819600` | just past the 8 MiB of RDRAM | 4674 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80819700` | just past the 8 MiB of RDRAM | 4034 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80819800` | just past the 8 MiB of RDRAM | 4484 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80819900` | just past the 8 MiB of RDRAM | 4034 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80819a00` | just past the 8 MiB of RDRAM | 3988 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80819b00` | just past the 8 MiB of RDRAM | 3630 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80819c00` | just past the 8 MiB of RDRAM | 3790 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80819d00` | just past the 8 MiB of RDRAM | 4254 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80819e00` | just past the 8 MiB of RDRAM | 4162 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80819f00` | just past the 8 MiB of RDRAM | 4020 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081a000` | just past the 8 MiB of RDRAM | 3842 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081a100` | just past the 8 MiB of RDRAM | 4408 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081a200` | just past the 8 MiB of RDRAM | 3758 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081a300` | just past the 8 MiB of RDRAM | 4196 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081a400` | just past the 8 MiB of RDRAM | 3832 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081a500` | just past the 8 MiB of RDRAM | 4312 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081a600` | just past the 8 MiB of RDRAM | 4374 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081a700` | just past the 8 MiB of RDRAM | 4156 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081a800` | just past the 8 MiB of RDRAM | 4422 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081a900` | just past the 8 MiB of RDRAM | 3864 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081aa00` | just past the 8 MiB of RDRAM | 3912 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081ab00` | just past the 8 MiB of RDRAM | 3690 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081ac00` | just past the 8 MiB of RDRAM | 4108 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081ad00` | just past the 8 MiB of RDRAM | 4088 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081ae00` | just past the 8 MiB of RDRAM | 3884 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081af00` | just past the 8 MiB of RDRAM | 3800 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081b000` | just past the 8 MiB of RDRAM | 3922 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081b100` | just past the 8 MiB of RDRAM | 4134 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081b200` | just past the 8 MiB of RDRAM | 3934 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081b300` | just past the 8 MiB of RDRAM | 3978 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081b400` | just past the 8 MiB of RDRAM | 4210 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081b500` | just past the 8 MiB of RDRAM | 4154 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081b600` | just past the 8 MiB of RDRAM | 4278 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081b700` | just past the 8 MiB of RDRAM | 4374 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081b800` | just past the 8 MiB of RDRAM | 3680 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081b900` | just past the 8 MiB of RDRAM | 3986 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081ba00` | just past the 8 MiB of RDRAM | 4236 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081bb00` | just past the 8 MiB of RDRAM | 3908 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081bc00` | just past the 8 MiB of RDRAM | 4090 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081bd00` | just past the 8 MiB of RDRAM | 4048 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081be00` | just past the 8 MiB of RDRAM | 4238 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081bf00` | just past the 8 MiB of RDRAM | 3752 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081c000` | just past the 8 MiB of RDRAM | 4018 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081c100` | just past the 8 MiB of RDRAM | 4222 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081c200` | just past the 8 MiB of RDRAM | 3876 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081c300` | just past the 8 MiB of RDRAM | 4318 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081c400` | just past the 8 MiB of RDRAM | 4768 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081c500` | just past the 8 MiB of RDRAM | 4214 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081c600` | just past the 8 MiB of RDRAM | 4166 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081c700` | just past the 8 MiB of RDRAM | 4314 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081c800` | just past the 8 MiB of RDRAM | 4072 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081c900` | just past the 8 MiB of RDRAM | 4552 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081ca00` | just past the 8 MiB of RDRAM | 4276 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081cb00` | just past the 8 MiB of RDRAM | 3764 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081cc00` | just past the 8 MiB of RDRAM | 4050 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081cd00` | just past the 8 MiB of RDRAM | 4602 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081ce00` | just past the 8 MiB of RDRAM | 3904 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081cf00` | just past the 8 MiB of RDRAM | 4254 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081d000` | just past the 8 MiB of RDRAM | 3780 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081d100` | just past the 8 MiB of RDRAM | 3916 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081d200` | just past the 8 MiB of RDRAM | 3740 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081d300` | just past the 8 MiB of RDRAM | 3668 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081d400` | just past the 8 MiB of RDRAM | 5094 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081d500` | just past the 8 MiB of RDRAM | 4084 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081d600` | just past the 8 MiB of RDRAM | 4110 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081d700` | just past the 8 MiB of RDRAM | 3892 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081d800` | just past the 8 MiB of RDRAM | 4250 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081d900` | just past the 8 MiB of RDRAM | 4162 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081da00` | just past the 8 MiB of RDRAM | 4238 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081db00` | just past the 8 MiB of RDRAM | 3928 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081dc00` | just past the 8 MiB of RDRAM | 3960 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081dd00` | just past the 8 MiB of RDRAM | 4414 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081de00` | just past the 8 MiB of RDRAM | 4250 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081df00` | just past the 8 MiB of RDRAM | 3796 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081e000` | just past the 8 MiB of RDRAM | 4036 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081e100` | just past the 8 MiB of RDRAM | 3638 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081e200` | just past the 8 MiB of RDRAM | 4468 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081e300` | just past the 8 MiB of RDRAM | 4000 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081e400` | just past the 8 MiB of RDRAM | 4212 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081e500` | just past the 8 MiB of RDRAM | 4080 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081e600` | just past the 8 MiB of RDRAM | 5076 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081e700` | just past the 8 MiB of RDRAM | 4074 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081e800` | just past the 8 MiB of RDRAM | 3648 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081e900` | just past the 8 MiB of RDRAM | 3822 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081ea00` | just past the 8 MiB of RDRAM | 4082 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081eb00` | just past the 8 MiB of RDRAM | 3840 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081ec00` | just past the 8 MiB of RDRAM | 4074 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081ed00` | just past the 8 MiB of RDRAM | 3584 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081ee00` | just past the 8 MiB of RDRAM | 3894 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081ef00` | just past the 8 MiB of RDRAM | 3894 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081f000` | just past the 8 MiB of RDRAM | 3796 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081f100` | just past the 8 MiB of RDRAM | 4556 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081f200` | just past the 8 MiB of RDRAM | 3866 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081f300` | just past the 8 MiB of RDRAM | 4064 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081f400` | just past the 8 MiB of RDRAM | 4168 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081f500` | just past the 8 MiB of RDRAM | 3930 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081f600` | just past the 8 MiB of RDRAM | 3988 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081f700` | just past the 8 MiB of RDRAM | 4036 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081f800` | just past the 8 MiB of RDRAM | 4334 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081f900` | just past the 8 MiB of RDRAM | 4062 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081fa00` | just past the 8 MiB of RDRAM | 4342 | `0x80004f70` | 6 entrances; scenes  |
-| `0x8081fb00` | just past the 8 MiB of RDRAM | 4282 | `0x80004f70` | 6 entrances; scenes  |
-| `0x80a514c8` | just past the 8 MiB of RDRAM | 4 | `0x80081dd4` | 4 entrances; scenes 7 |
+| `0xc61d14` | user segment (unmapped) | 18 | `0x800a34b4` | 6 entrances; scenes 93 |
+| `0x1c77829` | user segment (unmapped) | 1 | `0x80081dd4` | 1 entrance; scenes 109 |
+| `0x25419300` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25419400` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25419500` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25419600` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25419700` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25419800` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25419900` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25419a00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25419b00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25419c00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25419d00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25419e00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25419f00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541a000` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541a100` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541a200` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541a300` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541a400` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541a500` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541a600` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541a700` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541a800` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541a900` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541aa00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541ab00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541ac00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541ad00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541ae00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541af00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541b000` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541b100` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541b200` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541b300` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541b400` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541b500` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541b600` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541b700` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541b800` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541b900` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541ba00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541bb00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541bc00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541bd00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541be00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541bf00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541c000` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541c100` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541c200` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541c300` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541c400` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541c500` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541c600` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541c700` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541c800` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541c900` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541ca00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541cb00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541cc00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541cd00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541ce00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541cf00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541d000` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541d100` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541d200` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541d300` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541d400` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541d500` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541d600` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541d700` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541d800` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541d900` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541da00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541db00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541dc00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541dd00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541de00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541df00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541e000` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541e100` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541e200` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541e300` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541e400` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541e500` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541e600` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541e700` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541e800` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541e900` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541ea00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541eb00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541ec00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541ed00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541ee00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541ef00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541f000` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541f100` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541f200` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541f300` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541f400` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541f500` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541f600` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541f700` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541f800` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541f900` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541fa00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541fb00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541fc00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541fd00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541fe00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2541ff00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25420000` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25420100` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25420200` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25420300` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25420400` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25420500` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25420600` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25420700` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25420800` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25420900` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25420a00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25420b00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25420c00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25420d00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25420e00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25420f00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25421000` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25421100` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25421200` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25421300` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25421400` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25421500` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25421600` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25421700` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25421800` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25421900` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25421a00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25421b00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25421c00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25421d00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25421e00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25421f00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25422000` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25422100` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25422200` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25422300` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25422400` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25422500` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25422600` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25422700` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25422800` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25422900` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25422a00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25422b00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25422c00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25422d00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25422e00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25422f00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25423000` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25423100` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25423200` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25423300` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25423400` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25423500` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25423600` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25423700` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25423800` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25423900` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25423a00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25423b00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25423c00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25423d00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25423e00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25423f00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25424000` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25424100` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25424200` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25424300` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25424400` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25424500` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25424600` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25424700` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25424800` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25424900` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25424a00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25424b00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25424c00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25424d00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25424e00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25424f00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25425000` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25425100` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25425200` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25425300` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25425400` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25425500` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25425600` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25425700` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25425800` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25425900` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25425a00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25425b00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25425c00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25425d00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25425e00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25425f00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25426000` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25426100` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25426200` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25426300` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25426400` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25426500` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25426600` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25426700` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25426800` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25426900` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25426a00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25426b00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25426c00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25426d00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25426e00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25426f00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25427000` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25427100` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25427200` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25427300` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25427400` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25427500` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25427600` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25427700` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25427800` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25427900` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25427a00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25427b00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25427c00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25427d00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25427e00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25427f00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25428000` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25428100` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25428200` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25428300` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25428400` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25428500` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25428600` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25428700` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25428800` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25428900` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25428a00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25428b00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25428c00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25428d00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25428e00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25428f00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25429000` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25429100` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25429200` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25429300` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25429400` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25429500` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25429600` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25429700` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25429800` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25429900` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25429a00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25429b00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25429c00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25429d00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25429e00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x25429f00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542a000` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542a100` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542a200` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542a300` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542a400` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542a500` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542a600` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542a700` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542a800` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542a900` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542aa00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542ab00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542ac00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542ad00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542ae00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542af00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542b000` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542b100` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542b200` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542b300` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542b400` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542b500` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542b600` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542b700` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542b800` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542b900` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542ba00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542bb00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542bc00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542bd00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542be00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542bf00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542c000` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542c100` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542c200` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542c300` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542c400` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542c500` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542c600` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542c700` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542c800` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542c900` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542ca00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542cb00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542cc00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542cd00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542ce00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542cf00` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542d000` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542d100` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542d200` | user segment (unmapped) | 256 | `0x8000099c` | 1 entrance; scenes 103 |
+| `0x2542d300` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542d400` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542d500` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542d600` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542d700` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542d800` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542d900` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542da00` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542db00` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542dc00` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542dd00` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542de00` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542df00` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542e000` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542e100` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542e200` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542e300` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542e400` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542e500` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542e600` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542e700` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542e800` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542e900` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542ea00` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542eb00` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542ec00` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542ed00` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542ee00` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542ef00` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542f000` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542f100` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542f200` | user segment (unmapped) | 256 | `0x800a0a30` | 1 entrance; scenes 103 |
+| `0x2542f300` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x2542f400` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x2542f500` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x2542f600` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x2542f700` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x2542f800` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x2542f900` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x2542fa00` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x2542fb00` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x2542fc00` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x2542fd00` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x2542fe00` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x2542ff00` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x25430000` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x25430100` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x25430200` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x25430300` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x25430400` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x25430500` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x25430600` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x25430700` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x25430800` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x25430900` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x25430a00` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x25430b00` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x25430c00` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x25430d00` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x25430e00` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x25430f00` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x25431000` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x25431100` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x25431200` | user segment (unmapped) | 256 | `0x800a27c4` | 1 entrance; scenes 103 |
+| `0x25431300` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25431400` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25431500` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25431600` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25431700` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25431800` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25431900` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25431a00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25431b00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25431c00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25431d00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25431e00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25431f00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25432000` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25432100` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25432200` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25432300` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25432400` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25432500` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25432600` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25432700` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25432800` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25432900` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25432a00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25432b00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25432c00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25432d00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25432e00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25432f00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25433000` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25433100` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25433200` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25433300` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25433400` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25433500` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25433600` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25433700` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25433800` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25433900` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25433a00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25433b00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25433c00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25433d00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25433e00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25433f00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25434000` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25434100` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25434200` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25434300` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25434400` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25434500` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25434600` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25434700` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25434800` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25434900` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25434a00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25434b00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25434c00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25434d00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25434e00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25434f00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25435000` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25435100` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25435200` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25435300` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25435400` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25435500` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25435600` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25435700` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25435800` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25435900` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25435a00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25435b00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25435c00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25435d00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25435e00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25435f00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25436000` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25436100` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25436200` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25436300` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25436400` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25436500` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25436600` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25436700` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25436800` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25436900` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25436a00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25436b00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25436c00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25436d00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25436e00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25436f00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25437000` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25437100` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25437200` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25437300` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25437400` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25437500` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25437600` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25437700` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25437800` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25437900` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25437a00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25437b00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25437c00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25437d00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25437e00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25437f00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25438000` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25438100` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25438200` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25438300` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25438400` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25438500` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25438600` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25438700` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25438800` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25438900` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25438a00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25438b00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25438c00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25438d00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x25438e00` | user segment (unmapped) | 256 | `0x800a34b4` | 1 entrance; scenes 103 |
+| `0x2c021c04` | user segment (unmapped) | 6 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0x3365000b` | user segment (unmapped) | 16 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0x3365011b` | user segment (unmapped) | 2 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0x4080bc08` | user segment (unmapped) | 12 | `0x800a34b4` | 6 entrances; scenes 93 |
+| `0x44810002` | user segment (unmapped) | 14630 | `0x8007999c` | 10 entrances; scenes 7 |
+| `0x44810130` | user segment (unmapped) | 1000 | `0x80081c38` | 10 entrances; scenes 7 |
+| `0x76011e04` | user segment (unmapped) | 6 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0x7ffffff4` | user segment (unmapped) | 6 | `0x80035f60` | 2 entrances; scenes 8 |
+| `0x80800000` | just past the 8 MiB of RDRAM | 13619 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80800100` | just past the 8 MiB of RDRAM | 13910 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80800200` | just past the 8 MiB of RDRAM | 13538 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80800300` | just past the 8 MiB of RDRAM | 15155 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80800400` | just past the 8 MiB of RDRAM | 13952 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80800500` | just past the 8 MiB of RDRAM | 15275 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80800600` | just past the 8 MiB of RDRAM | 14939 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80800700` | just past the 8 MiB of RDRAM | 14957 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80800800` | just past the 8 MiB of RDRAM | 15860 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80800900` | just past the 8 MiB of RDRAM | 15695 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80800a00` | just past the 8 MiB of RDRAM | 15527 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80800b00` | just past the 8 MiB of RDRAM | 14981 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80800c00` | just past the 8 MiB of RDRAM | 16502 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80800d00` | just past the 8 MiB of RDRAM | 15122 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80800e00` | just past the 8 MiB of RDRAM | 14834 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80800f00` | just past the 8 MiB of RDRAM | 14246 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80801000` | just past the 8 MiB of RDRAM | 14264 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80801100` | just past the 8 MiB of RDRAM | 15512 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80801200` | just past the 8 MiB of RDRAM | 14204 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80801300` | just past the 8 MiB of RDRAM | 14363 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80801400` | just past the 8 MiB of RDRAM | 15305 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80801500` | just past the 8 MiB of RDRAM | 14834 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80801600` | just past the 8 MiB of RDRAM | 16001 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80801700` | just past the 8 MiB of RDRAM | 16067 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80801800` | just past the 8 MiB of RDRAM | 14747 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80801900` | just past the 8 MiB of RDRAM | 15971 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80801a00` | just past the 8 MiB of RDRAM | 14555 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80801b00` | just past the 8 MiB of RDRAM | 15572 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80801c00` | just past the 8 MiB of RDRAM | 14042 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80801d00` | just past the 8 MiB of RDRAM | 14840 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80801e00` | just past the 8 MiB of RDRAM | 14498 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80801f00` | just past the 8 MiB of RDRAM | 14108 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80802000` | just past the 8 MiB of RDRAM | 14168 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80802100` | just past the 8 MiB of RDRAM | 15233 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80802200` | just past the 8 MiB of RDRAM | 15188 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80802300` | just past the 8 MiB of RDRAM | 15344 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80802400` | just past the 8 MiB of RDRAM | 16535 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80802500` | just past the 8 MiB of RDRAM | 14162 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80802600` | just past the 8 MiB of RDRAM | 16310 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80802700` | just past the 8 MiB of RDRAM | 14483 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80802800` | just past the 8 MiB of RDRAM | 13802 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80802900` | just past the 8 MiB of RDRAM | 16178 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80802a00` | just past the 8 MiB of RDRAM | 15140 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80802b00` | just past the 8 MiB of RDRAM | 14915 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80802c00` | just past the 8 MiB of RDRAM | 18509 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80802d00` | just past the 8 MiB of RDRAM | 14822 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80802e00` | just past the 8 MiB of RDRAM | 14684 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80802f00` | just past the 8 MiB of RDRAM | 14372 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80803000` | just past the 8 MiB of RDRAM | 14801 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80803100` | just past the 8 MiB of RDRAM | 15239 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80803200` | just past the 8 MiB of RDRAM | 14894 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80803300` | just past the 8 MiB of RDRAM | 15059 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80803400` | just past the 8 MiB of RDRAM | 16322 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80803500` | just past the 8 MiB of RDRAM | 15092 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80803600` | just past the 8 MiB of RDRAM | 14153 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80803700` | just past the 8 MiB of RDRAM | 14528 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80803800` | just past the 8 MiB of RDRAM | 14996 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80803900` | just past the 8 MiB of RDRAM | 14552 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80803a00` | just past the 8 MiB of RDRAM | 14300 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80803b00` | just past the 8 MiB of RDRAM | 15338 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80803c00` | just past the 8 MiB of RDRAM | 16655 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80803d00` | just past the 8 MiB of RDRAM | 14522 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80803e00` | just past the 8 MiB of RDRAM | 15587 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80803f00` | just past the 8 MiB of RDRAM | 14240 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80804000` | just past the 8 MiB of RDRAM | 14837 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80804100` | just past the 8 MiB of RDRAM | 15062 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80804200` | just past the 8 MiB of RDRAM | 15068 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80804300` | just past the 8 MiB of RDRAM | 14444 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80804400` | just past the 8 MiB of RDRAM | 14696 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80804500` | just past the 8 MiB of RDRAM | 14480 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80804600` | just past the 8 MiB of RDRAM | 15623 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80804700` | just past the 8 MiB of RDRAM | 15521 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80804800` | just past the 8 MiB of RDRAM | 13682 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80804900` | just past the 8 MiB of RDRAM | 15689 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80804a00` | just past the 8 MiB of RDRAM | 15395 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80804b00` | just past the 8 MiB of RDRAM | 15134 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80804c00` | just past the 8 MiB of RDRAM | 15215 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80804d00` | just past the 8 MiB of RDRAM | 15071 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80804e00` | just past the 8 MiB of RDRAM | 14732 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80804f00` | just past the 8 MiB of RDRAM | 16028 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80805000` | just past the 8 MiB of RDRAM | 15707 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80805100` | just past the 8 MiB of RDRAM | 14678 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80805200` | just past the 8 MiB of RDRAM | 15554 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80805300` | just past the 8 MiB of RDRAM | 14159 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80805400` | just past the 8 MiB of RDRAM | 14711 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80805500` | just past the 8 MiB of RDRAM | 15833 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80805600` | just past the 8 MiB of RDRAM | 15281 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80805700` | just past the 8 MiB of RDRAM | 14654 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80805800` | just past the 8 MiB of RDRAM | 14903 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80805900` | just past the 8 MiB of RDRAM | 14951 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80805a00` | just past the 8 MiB of RDRAM | 14318 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80805b00` | just past the 8 MiB of RDRAM | 15230 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80805c00` | just past the 8 MiB of RDRAM | 15212 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80805d00` | just past the 8 MiB of RDRAM | 17609 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80805e00` | just past the 8 MiB of RDRAM | 14441 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80805f00` | just past the 8 MiB of RDRAM | 14525 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80806000` | just past the 8 MiB of RDRAM | 15305 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80806100` | just past the 8 MiB of RDRAM | 14138 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80806200` | just past the 8 MiB of RDRAM | 16418 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80806300` | just past the 8 MiB of RDRAM | 15692 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80806400` | just past the 8 MiB of RDRAM | 16037 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80806500` | just past the 8 MiB of RDRAM | 14036 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80806600` | just past the 8 MiB of RDRAM | 14570 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80806700` | just past the 8 MiB of RDRAM | 14016 | `0x800a34b4` | 23 entrances; scenes 6, 93 |
+| `0x80806800` | just past the 8 MiB of RDRAM | 12747 | `0x800a34b4` | 15 entrances; scenes 93 |
+| `0x808068ff` | just past the 8 MiB of RDRAM | 9 | `0x80081f50` | 1 entrance; scenes 107 |
+| `0x80806900` | just past the 8 MiB of RDRAM | 12954 | `0x800a34b4` | 15 entrances; scenes 93 |
+| `0x80806907` | just past the 8 MiB of RDRAM | 12 | `0x80081f50` | 1 entrance; scenes 107 |
+| `0x80806a00` | just past the 8 MiB of RDRAM | 13125 | `0x800a34b4` | 15 entrances; scenes 93 |
+| `0x80806b00` | just past the 8 MiB of RDRAM | 12150 | `0x800a34b4` | 15 entrances; scenes 93 |
+| `0x80806c00` | just past the 8 MiB of RDRAM | 12873 | `0x800a34b4` | 15 entrances; scenes 93 |
+| `0x80806d00` | just past the 8 MiB of RDRAM | 12279 | `0x800a34b4` | 15 entrances; scenes 93 |
+| `0x80806e00` | just past the 8 MiB of RDRAM | 12240 | `0x800a34b4` | 15 entrances; scenes 93 |
+| `0x80806f00` | just past the 8 MiB of RDRAM | 15555 | `0x800a34b4` | 15 entrances; scenes 93 |
+| `0x80807000` | just past the 8 MiB of RDRAM | 15051 | `0x800a34b4` | 15 entrances; scenes 93 |
+| `0x80807100` | just past the 8 MiB of RDRAM | 14211 | `0x800a34b4` | 15 entrances; scenes 93 |
+| `0x80807200` | just past the 8 MiB of RDRAM | 12507 | `0x800a34b4` | 15 entrances; scenes 93 |
+| `0x80807300` | just past the 8 MiB of RDRAM | 14259 | `0x800a34b4` | 15 entrances; scenes 93 |
+| `0x80807400` | just past the 8 MiB of RDRAM | 12399 | `0x800a34b4` | 15 entrances; scenes 93 |
+| `0x80807500` | just past the 8 MiB of RDRAM | 11931 | `0x800a34b4` | 15 entrances; scenes 93 |
+| `0x80807600` | just past the 8 MiB of RDRAM | 12054 | `0x8000099c` | 15 entrances; scenes 93 |
+| `0x80807700` | just past the 8 MiB of RDRAM | 12174 | `0x8000099c` | 15 entrances; scenes 93 |
+| `0x80807800` | just past the 8 MiB of RDRAM | 13017 | `0x8000099c` | 15 entrances; scenes 93 |
+| `0x80807900` | just past the 8 MiB of RDRAM | 12066 | `0x8000099c` | 15 entrances; scenes 93 |
+| `0x80807a00` | just past the 8 MiB of RDRAM | 11586 | `0x8000099c` | 15 entrances; scenes 93 |
+| `0x80807b00` | just past the 8 MiB of RDRAM | 10062 | `0x8000099c` | 15 entrances; scenes 93 |
+| `0x80807c00` | just past the 8 MiB of RDRAM | 10200 | `0x8000099c` | 15 entrances; scenes 93 |
+| `0x80807d00` | just past the 8 MiB of RDRAM | 10884 | `0x8000099c` | 15 entrances; scenes 93 |
+| `0x80807e00` | just past the 8 MiB of RDRAM | 10146 | `0x8000099c` | 15 entrances; scenes 93 |
+| `0x80807f00` | just past the 8 MiB of RDRAM | 9594 | `0x8000099c` | 15 entrances; scenes 93 |
+| `0x80808000` | just past the 8 MiB of RDRAM | 10773 | `0x8000099c` | 15 entrances; scenes 93 |
+| `0x80808100` | just past the 8 MiB of RDRAM | 10563 | `0x8000099c` | 15 entrances; scenes 93 |
+| `0x80808200` | just past the 8 MiB of RDRAM | 11829 | `0x8000099c` | 15 entrances; scenes 93 |
+| `0x80808300` | just past the 8 MiB of RDRAM | 8763 | `0x8000099c` | 15 entrances; scenes 93 |
+| `0x80808400` | just past the 8 MiB of RDRAM | 8589 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80808500` | just past the 8 MiB of RDRAM | 8457 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80808600` | just past the 8 MiB of RDRAM | 9543 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80808700` | just past the 8 MiB of RDRAM | 10530 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80808800` | just past the 8 MiB of RDRAM | 8676 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80808900` | just past the 8 MiB of RDRAM | 9222 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80808a00` | just past the 8 MiB of RDRAM | 9588 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80808b00` | just past the 8 MiB of RDRAM | 9036 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80808c00` | just past the 8 MiB of RDRAM | 8565 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80808d00` | just past the 8 MiB of RDRAM | 9108 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80808e00` | just past the 8 MiB of RDRAM | 8673 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80808f00` | just past the 8 MiB of RDRAM | 8214 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80809000` | just past the 8 MiB of RDRAM | 7848 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80809100` | just past the 8 MiB of RDRAM | 6180 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80809200` | just past the 8 MiB of RDRAM | 6087 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80809300` | just past the 8 MiB of RDRAM | 5568 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80809400` | just past the 8 MiB of RDRAM | 6261 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80809500` | just past the 8 MiB of RDRAM | 6351 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80809600` | just past the 8 MiB of RDRAM | 6342 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80809700` | just past the 8 MiB of RDRAM | 6054 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80809800` | just past the 8 MiB of RDRAM | 7071 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80809900` | just past the 8 MiB of RDRAM | 6207 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80809a00` | just past the 8 MiB of RDRAM | 5964 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80809b00` | just past the 8 MiB of RDRAM | 6696 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80809c00` | just past the 8 MiB of RDRAM | 6126 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80809d00` | just past the 8 MiB of RDRAM | 5997 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80809e00` | just past the 8 MiB of RDRAM | 5745 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80809f00` | just past the 8 MiB of RDRAM | 5655 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080a000` | just past the 8 MiB of RDRAM | 6717 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080a100` | just past the 8 MiB of RDRAM | 6294 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080a200` | just past the 8 MiB of RDRAM | 6720 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080a300` | just past the 8 MiB of RDRAM | 7029 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080a400` | just past the 8 MiB of RDRAM | 5976 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080a500` | just past the 8 MiB of RDRAM | 5931 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080a600` | just past the 8 MiB of RDRAM | 6285 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080a700` | just past the 8 MiB of RDRAM | 5625 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080a800` | just past the 8 MiB of RDRAM | 6036 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080a900` | just past the 8 MiB of RDRAM | 7329 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080aa00` | just past the 8 MiB of RDRAM | 6801 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080ab00` | just past the 8 MiB of RDRAM | 5502 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080ac00` | just past the 8 MiB of RDRAM | 6252 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080ad00` | just past the 8 MiB of RDRAM | 5751 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080ae00` | just past the 8 MiB of RDRAM | 5988 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080af00` | just past the 8 MiB of RDRAM | 5838 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080b000` | just past the 8 MiB of RDRAM | 6327 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080b100` | just past the 8 MiB of RDRAM | 5637 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080b200` | just past the 8 MiB of RDRAM | 5523 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080b300` | just past the 8 MiB of RDRAM | 5943 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080b400` | just past the 8 MiB of RDRAM | 5826 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080b500` | just past the 8 MiB of RDRAM | 5583 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080b600` | just past the 8 MiB of RDRAM | 6261 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080b700` | just past the 8 MiB of RDRAM | 7014 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080b800` | just past the 8 MiB of RDRAM | 6405 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080b900` | just past the 8 MiB of RDRAM | 5829 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080ba00` | just past the 8 MiB of RDRAM | 6183 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080bb00` | just past the 8 MiB of RDRAM | 5931 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080bc00` | just past the 8 MiB of RDRAM | 5847 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080bd00` | just past the 8 MiB of RDRAM | 6135 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080be00` | just past the 8 MiB of RDRAM | 5982 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080bf00` | just past the 8 MiB of RDRAM | 5571 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080c000` | just past the 8 MiB of RDRAM | 6300 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080c100` | just past the 8 MiB of RDRAM | 6903 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080c200` | just past the 8 MiB of RDRAM | 6033 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080c300` | just past the 8 MiB of RDRAM | 6027 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080c400` | just past the 8 MiB of RDRAM | 5871 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080c500` | just past the 8 MiB of RDRAM | 5724 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080c600` | just past the 8 MiB of RDRAM | 6504 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080c700` | just past the 8 MiB of RDRAM | 5574 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080c800` | just past the 8 MiB of RDRAM | 5928 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080c900` | just past the 8 MiB of RDRAM | 5490 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080ca00` | just past the 8 MiB of RDRAM | 6114 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080cb00` | just past the 8 MiB of RDRAM | 6693 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080cc00` | just past the 8 MiB of RDRAM | 6522 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080cd00` | just past the 8 MiB of RDRAM | 6210 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080ce00` | just past the 8 MiB of RDRAM | 5556 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080cf00` | just past the 8 MiB of RDRAM | 6852 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080d000` | just past the 8 MiB of RDRAM | 5775 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080d100` | just past the 8 MiB of RDRAM | 6042 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080d200` | just past the 8 MiB of RDRAM | 6024 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080d300` | just past the 8 MiB of RDRAM | 6063 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080d400` | just past the 8 MiB of RDRAM | 7038 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080d500` | just past the 8 MiB of RDRAM | 6075 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080d600` | just past the 8 MiB of RDRAM | 6240 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080d700` | just past the 8 MiB of RDRAM | 6207 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080d800` | just past the 8 MiB of RDRAM | 6108 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080d900` | just past the 8 MiB of RDRAM | 6651 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080da00` | just past the 8 MiB of RDRAM | 6630 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080db00` | just past the 8 MiB of RDRAM | 5853 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080dc00` | just past the 8 MiB of RDRAM | 5463 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080dd00` | just past the 8 MiB of RDRAM | 6021 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080de00` | just past the 8 MiB of RDRAM | 6159 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080df00` | just past the 8 MiB of RDRAM | 6024 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080e000` | just past the 8 MiB of RDRAM | 5784 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080e100` | just past the 8 MiB of RDRAM | 5775 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080e200` | just past the 8 MiB of RDRAM | 6600 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080e300` | just past the 8 MiB of RDRAM | 6657 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080e400` | just past the 8 MiB of RDRAM | 6315 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080e500` | just past the 8 MiB of RDRAM | 5436 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080e600` | just past the 8 MiB of RDRAM | 6120 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080e700` | just past the 8 MiB of RDRAM | 5577 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080e800` | just past the 8 MiB of RDRAM | 6114 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080e900` | just past the 8 MiB of RDRAM | 6252 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080ea00` | just past the 8 MiB of RDRAM | 6432 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080eb00` | just past the 8 MiB of RDRAM | 6018 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080ec00` | just past the 8 MiB of RDRAM | 6213 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080ed00` | just past the 8 MiB of RDRAM | 6552 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080ee00` | just past the 8 MiB of RDRAM | 6459 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080ef00` | just past the 8 MiB of RDRAM | 5793 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080f000` | just past the 8 MiB of RDRAM | 5913 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080f100` | just past the 8 MiB of RDRAM | 6321 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080f200` | just past the 8 MiB of RDRAM | 5736 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080f300` | just past the 8 MiB of RDRAM | 6093 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080f400` | just past the 8 MiB of RDRAM | 6330 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080f500` | just past the 8 MiB of RDRAM | 6798 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080f600` | just past the 8 MiB of RDRAM | 6000 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080f700` | just past the 8 MiB of RDRAM | 7503 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080f800` | just past the 8 MiB of RDRAM | 6204 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080f900` | just past the 8 MiB of RDRAM | 5532 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080fa00` | just past the 8 MiB of RDRAM | 5961 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080fb00` | just past the 8 MiB of RDRAM | 6291 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080fc00` | just past the 8 MiB of RDRAM | 5898 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080fd00` | just past the 8 MiB of RDRAM | 6105 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080fe00` | just past the 8 MiB of RDRAM | 5781 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8080ff00` | just past the 8 MiB of RDRAM | 5919 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80810000` | just past the 8 MiB of RDRAM | 5475 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80810100` | just past the 8 MiB of RDRAM | 6024 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80810200` | just past the 8 MiB of RDRAM | 6489 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80810300` | just past the 8 MiB of RDRAM | 6705 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80810400` | just past the 8 MiB of RDRAM | 6378 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80810500` | just past the 8 MiB of RDRAM | 5877 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80810600` | just past the 8 MiB of RDRAM | 6219 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80810700` | just past the 8 MiB of RDRAM | 5637 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80810800` | just past the 8 MiB of RDRAM | 5721 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80810900` | just past the 8 MiB of RDRAM | 6153 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80810a00` | just past the 8 MiB of RDRAM | 6798 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80810b00` | just past the 8 MiB of RDRAM | 5448 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80810c00` | just past the 8 MiB of RDRAM | 6435 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80810d00` | just past the 8 MiB of RDRAM | 5466 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80810e00` | just past the 8 MiB of RDRAM | 6396 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80810f00` | just past the 8 MiB of RDRAM | 6831 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80811000` | just past the 8 MiB of RDRAM | 5658 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80811100` | just past the 8 MiB of RDRAM | 6192 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80811200` | just past the 8 MiB of RDRAM | 6276 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80811300` | just past the 8 MiB of RDRAM | 6447 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80811400` | just past the 8 MiB of RDRAM | 5901 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80811500` | just past the 8 MiB of RDRAM | 6834 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80811600` | just past the 8 MiB of RDRAM | 5751 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80811700` | just past the 8 MiB of RDRAM | 7137 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80811800` | just past the 8 MiB of RDRAM | 6414 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80811900` | just past the 8 MiB of RDRAM | 6255 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80811a00` | just past the 8 MiB of RDRAM | 6471 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80811b00` | just past the 8 MiB of RDRAM | 5625 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80811c00` | just past the 8 MiB of RDRAM | 5964 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80811d00` | just past the 8 MiB of RDRAM | 5781 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80811e00` | just past the 8 MiB of RDRAM | 5799 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80811f00` | just past the 8 MiB of RDRAM | 5820 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80812000` | just past the 8 MiB of RDRAM | 6594 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80812100` | just past the 8 MiB of RDRAM | 6273 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80812200` | just past the 8 MiB of RDRAM | 6231 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80812300` | just past the 8 MiB of RDRAM | 6576 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80812400` | just past the 8 MiB of RDRAM | 5943 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80812500` | just past the 8 MiB of RDRAM | 6090 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80812600` | just past the 8 MiB of RDRAM | 6132 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80812700` | just past the 8 MiB of RDRAM | 6333 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80812800` | just past the 8 MiB of RDRAM | 5766 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80812900` | just past the 8 MiB of RDRAM | 5781 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80812a00` | just past the 8 MiB of RDRAM | 5934 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80812b00` | just past the 8 MiB of RDRAM | 6456 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80812c00` | just past the 8 MiB of RDRAM | 6633 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80812d00` | just past the 8 MiB of RDRAM | 5433 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80812e00` | just past the 8 MiB of RDRAM | 5688 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80812f00` | just past the 8 MiB of RDRAM | 5469 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80813000` | just past the 8 MiB of RDRAM | 5835 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80813100` | just past the 8 MiB of RDRAM | 6324 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80813200` | just past the 8 MiB of RDRAM | 7083 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80813300` | just past the 8 MiB of RDRAM | 5913 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80813400` | just past the 8 MiB of RDRAM | 6249 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80813500` | just past the 8 MiB of RDRAM | 6795 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80813600` | just past the 8 MiB of RDRAM | 5499 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80813700` | just past the 8 MiB of RDRAM | 5955 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80813800` | just past the 8 MiB of RDRAM | 6015 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80813900` | just past the 8 MiB of RDRAM | 5562 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80813a00` | just past the 8 MiB of RDRAM | 6468 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80813b00` | just past the 8 MiB of RDRAM | 7110 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80813c00` | just past the 8 MiB of RDRAM | 6624 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80813d00` | just past the 8 MiB of RDRAM | 6636 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80813e00` | just past the 8 MiB of RDRAM | 6174 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80813f00` | just past the 8 MiB of RDRAM | 5613 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80814000` | just past the 8 MiB of RDRAM | 5766 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80814100` | just past the 8 MiB of RDRAM | 5478 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80814200` | just past the 8 MiB of RDRAM | 6003 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80814300` | just past the 8 MiB of RDRAM | 6345 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80814400` | just past the 8 MiB of RDRAM | 6492 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80814500` | just past the 8 MiB of RDRAM | 7251 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80814600` | just past the 8 MiB of RDRAM | 6597 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80814700` | just past the 8 MiB of RDRAM | 5766 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80814800` | just past the 8 MiB of RDRAM | 5577 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80814900` | just past the 8 MiB of RDRAM | 5475 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80814a00` | just past the 8 MiB of RDRAM | 5832 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80814b00` | just past the 8 MiB of RDRAM | 6456 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80814c00` | just past the 8 MiB of RDRAM | 6015 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80814d00` | just past the 8 MiB of RDRAM | 6396 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80814e00` | just past the 8 MiB of RDRAM | 6777 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80814f00` | just past the 8 MiB of RDRAM | 5538 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80815000` | just past the 8 MiB of RDRAM | 6636 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80815100` | just past the 8 MiB of RDRAM | 5616 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80815200` | just past the 8 MiB of RDRAM | 6069 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80815300` | just past the 8 MiB of RDRAM | 5976 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80815400` | just past the 8 MiB of RDRAM | 5829 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80815500` | just past the 8 MiB of RDRAM | 5655 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80815600` | just past the 8 MiB of RDRAM | 6861 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80815700` | just past the 8 MiB of RDRAM | 6408 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80815800` | just past the 8 MiB of RDRAM | 5877 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80815900` | just past the 8 MiB of RDRAM | 5733 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80815a00` | just past the 8 MiB of RDRAM | 5802 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80815b00` | just past the 8 MiB of RDRAM | 6045 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80815c00` | just past the 8 MiB of RDRAM | 6630 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80815d00` | just past the 8 MiB of RDRAM | 6063 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80815e00` | just past the 8 MiB of RDRAM | 6225 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80815ecf` | just past the 8 MiB of RDRAM | 21 | `0x80081f50` | 1 entrance; scenes 107 |
+| `0x80815f00` | just past the 8 MiB of RDRAM | 5997 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80816000` | just past the 8 MiB of RDRAM | 6030 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80816100` | just past the 8 MiB of RDRAM | 6717 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80816200` | just past the 8 MiB of RDRAM | 6321 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80816300` | just past the 8 MiB of RDRAM | 5925 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80816400` | just past the 8 MiB of RDRAM | 6120 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80816500` | just past the 8 MiB of RDRAM | 5580 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80816600` | just past the 8 MiB of RDRAM | 6606 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80816700` | just past the 8 MiB of RDRAM | 6021 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80816800` | just past the 8 MiB of RDRAM | 5550 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80816900` | just past the 8 MiB of RDRAM | 6594 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80816a00` | just past the 8 MiB of RDRAM | 6066 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80816b00` | just past the 8 MiB of RDRAM | 6447 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80816c00` | just past the 8 MiB of RDRAM | 6045 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80816d00` | just past the 8 MiB of RDRAM | 5793 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80816e00` | just past the 8 MiB of RDRAM | 6357 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80816f00` | just past the 8 MiB of RDRAM | 5760 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80817000` | just past the 8 MiB of RDRAM | 6195 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80817100` | just past the 8 MiB of RDRAM | 5703 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80817200` | just past the 8 MiB of RDRAM | 6420 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80817300` | just past the 8 MiB of RDRAM | 6588 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80817400` | just past the 8 MiB of RDRAM | 6297 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80817500` | just past the 8 MiB of RDRAM | 6309 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80817600` | just past the 8 MiB of RDRAM | 6378 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80817700` | just past the 8 MiB of RDRAM | 5547 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80817800` | just past the 8 MiB of RDRAM | 5481 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80817900` | just past the 8 MiB of RDRAM | 6168 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80817a00` | just past the 8 MiB of RDRAM | 6045 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80817b00` | just past the 8 MiB of RDRAM | 6051 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80817c00` | just past the 8 MiB of RDRAM | 6072 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80817d00` | just past the 8 MiB of RDRAM | 6087 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80817e00` | just past the 8 MiB of RDRAM | 6513 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80817f00` | just past the 8 MiB of RDRAM | 6933 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80818000` | just past the 8 MiB of RDRAM | 5649 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80818100` | just past the 8 MiB of RDRAM | 5880 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80818200` | just past the 8 MiB of RDRAM | 6126 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80818300` | just past the 8 MiB of RDRAM | 5991 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80818400` | just past the 8 MiB of RDRAM | 6558 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80818500` | just past the 8 MiB of RDRAM | 5589 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80818600` | just past the 8 MiB of RDRAM | 5553 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80818700` | just past the 8 MiB of RDRAM | 5892 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80818800` | just past the 8 MiB of RDRAM | 6708 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80818900` | just past the 8 MiB of RDRAM | 6600 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80818a00` | just past the 8 MiB of RDRAM | 6579 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80818b00` | just past the 8 MiB of RDRAM | 6846 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80818c00` | just past the 8 MiB of RDRAM | 5541 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80818d00` | just past the 8 MiB of RDRAM | 5517 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80818e00` | just past the 8 MiB of RDRAM | 5928 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80818f00` | just past the 8 MiB of RDRAM | 6492 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80819000` | just past the 8 MiB of RDRAM | 6633 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80819100` | just past the 8 MiB of RDRAM | 6012 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80819200` | just past the 8 MiB of RDRAM | 6039 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80819300` | just past the 8 MiB of RDRAM | 6195 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80819400` | just past the 8 MiB of RDRAM | 6048 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80819500` | just past the 8 MiB of RDRAM | 6132 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80819600` | just past the 8 MiB of RDRAM | 7011 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80819700` | just past the 8 MiB of RDRAM | 6051 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80819800` | just past the 8 MiB of RDRAM | 6726 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80819900` | just past the 8 MiB of RDRAM | 6051 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80819a00` | just past the 8 MiB of RDRAM | 5982 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80819b00` | just past the 8 MiB of RDRAM | 5445 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80819c00` | just past the 8 MiB of RDRAM | 5685 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80819d00` | just past the 8 MiB of RDRAM | 6381 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80819e00` | just past the 8 MiB of RDRAM | 6243 | `0x8000099c` | 9 entrances; scenes  |
+| `0x80819f00` | just past the 8 MiB of RDRAM | 6030 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081a000` | just past the 8 MiB of RDRAM | 5763 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081a100` | just past the 8 MiB of RDRAM | 6612 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081a200` | just past the 8 MiB of RDRAM | 5637 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081a300` | just past the 8 MiB of RDRAM | 6294 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081a400` | just past the 8 MiB of RDRAM | 5748 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081a500` | just past the 8 MiB of RDRAM | 6468 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081a600` | just past the 8 MiB of RDRAM | 6561 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081a700` | just past the 8 MiB of RDRAM | 6234 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081a800` | just past the 8 MiB of RDRAM | 6633 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081a900` | just past the 8 MiB of RDRAM | 5796 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081aa00` | just past the 8 MiB of RDRAM | 5868 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081ab00` | just past the 8 MiB of RDRAM | 5535 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081ac00` | just past the 8 MiB of RDRAM | 6162 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081ad00` | just past the 8 MiB of RDRAM | 6132 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081ae00` | just past the 8 MiB of RDRAM | 5826 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081af00` | just past the 8 MiB of RDRAM | 5700 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081b000` | just past the 8 MiB of RDRAM | 5883 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081b100` | just past the 8 MiB of RDRAM | 6201 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081b200` | just past the 8 MiB of RDRAM | 5901 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081b300` | just past the 8 MiB of RDRAM | 5967 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081b400` | just past the 8 MiB of RDRAM | 6315 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081b500` | just past the 8 MiB of RDRAM | 6231 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081b600` | just past the 8 MiB of RDRAM | 6417 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081b700` | just past the 8 MiB of RDRAM | 6561 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081b800` | just past the 8 MiB of RDRAM | 5520 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081b900` | just past the 8 MiB of RDRAM | 5979 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081ba00` | just past the 8 MiB of RDRAM | 6354 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081bb00` | just past the 8 MiB of RDRAM | 5862 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081bc00` | just past the 8 MiB of RDRAM | 6135 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081bd00` | just past the 8 MiB of RDRAM | 6072 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081be00` | just past the 8 MiB of RDRAM | 6357 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081bf00` | just past the 8 MiB of RDRAM | 5628 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081c000` | just past the 8 MiB of RDRAM | 6027 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081c100` | just past the 8 MiB of RDRAM | 6333 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081c200` | just past the 8 MiB of RDRAM | 5814 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081c300` | just past the 8 MiB of RDRAM | 6477 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081c400` | just past the 8 MiB of RDRAM | 7152 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081c500` | just past the 8 MiB of RDRAM | 6321 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081c600` | just past the 8 MiB of RDRAM | 6249 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081c700` | just past the 8 MiB of RDRAM | 6471 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081c800` | just past the 8 MiB of RDRAM | 6108 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081c900` | just past the 8 MiB of RDRAM | 6828 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081ca00` | just past the 8 MiB of RDRAM | 6414 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081cb00` | just past the 8 MiB of RDRAM | 5646 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081cc00` | just past the 8 MiB of RDRAM | 6075 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081cd00` | just past the 8 MiB of RDRAM | 6903 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081ce00` | just past the 8 MiB of RDRAM | 5856 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081cf00` | just past the 8 MiB of RDRAM | 6381 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081d000` | just past the 8 MiB of RDRAM | 5670 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081d100` | just past the 8 MiB of RDRAM | 5874 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081d200` | just past the 8 MiB of RDRAM | 5610 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081d300` | just past the 8 MiB of RDRAM | 5502 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081d400` | just past the 8 MiB of RDRAM | 7641 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081d500` | just past the 8 MiB of RDRAM | 6126 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081d600` | just past the 8 MiB of RDRAM | 6165 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081d700` | just past the 8 MiB of RDRAM | 5838 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081d800` | just past the 8 MiB of RDRAM | 6375 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081d900` | just past the 8 MiB of RDRAM | 6243 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081da00` | just past the 8 MiB of RDRAM | 6357 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081db00` | just past the 8 MiB of RDRAM | 5892 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081dc00` | just past the 8 MiB of RDRAM | 5940 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081dd00` | just past the 8 MiB of RDRAM | 6621 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081de00` | just past the 8 MiB of RDRAM | 6375 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081df00` | just past the 8 MiB of RDRAM | 5694 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081e000` | just past the 8 MiB of RDRAM | 6054 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081e100` | just past the 8 MiB of RDRAM | 5457 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081e200` | just past the 8 MiB of RDRAM | 6702 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081e300` | just past the 8 MiB of RDRAM | 6000 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081e400` | just past the 8 MiB of RDRAM | 6318 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081e500` | just past the 8 MiB of RDRAM | 6120 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081e600` | just past the 8 MiB of RDRAM | 7614 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081e700` | just past the 8 MiB of RDRAM | 6111 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081e800` | just past the 8 MiB of RDRAM | 5472 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081e900` | just past the 8 MiB of RDRAM | 5733 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081ea00` | just past the 8 MiB of RDRAM | 6123 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081eb00` | just past the 8 MiB of RDRAM | 5760 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081ec00` | just past the 8 MiB of RDRAM | 6111 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081ed00` | just past the 8 MiB of RDRAM | 5376 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081ee00` | just past the 8 MiB of RDRAM | 5841 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081ef00` | just past the 8 MiB of RDRAM | 5841 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081f000` | just past the 8 MiB of RDRAM | 5694 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081f100` | just past the 8 MiB of RDRAM | 6834 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081f200` | just past the 8 MiB of RDRAM | 5799 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081f300` | just past the 8 MiB of RDRAM | 6096 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081f400` | just past the 8 MiB of RDRAM | 6252 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081f500` | just past the 8 MiB of RDRAM | 5895 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081f600` | just past the 8 MiB of RDRAM | 5982 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081f700` | just past the 8 MiB of RDRAM | 6054 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081f800` | just past the 8 MiB of RDRAM | 6501 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081f900` | just past the 8 MiB of RDRAM | 6093 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081fa00` | just past the 8 MiB of RDRAM | 6513 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8081fb00` | just past the 8 MiB of RDRAM | 6423 | `0x8000099c` | 9 entrances; scenes  |
+| `0x8095e54f` | just past the 8 MiB of RDRAM | 42 | `0x80081f50` | 2 entrances; scenes 109 |
+| `0x8095e58f` | just past the 8 MiB of RDRAM | 42 | `0x80081f50` | 2 entrances; scenes 107 |
+| `0x80a514c8` | just past the 8 MiB of RDRAM | 8 | `0x80081dd4` | 8 entrances; scenes 7 |
+| `0x80a62712` | just past the 8 MiB of RDRAM | 4 | `0x80081dd4` | 2 entrances; scenes 107 |
+| `0x80b698ee` | just past the 8 MiB of RDRAM | 399824818 | `0x8002e428` | 2 entrances; scenes 109 |
+| `0x80b6992e` | just past the 8 MiB of RDRAM | 399542973 | `0x8002e428` | 2 entrances; scenes 107 |
+| `0x80b79930` | just past the 8 MiB of RDRAM | 2 | `0x8002bb84` | 1 entrance; scenes 107 |
+| `0x80b79ef4` | just past the 8 MiB of RDRAM | 399824830 | `0x800642fc` | 2 entrances; scenes 109 |
+| `0x80b79f34` | just past the 8 MiB of RDRAM | 399542985 | `0x800642fc` | 2 entrances; scenes 107 |
+| `0x80ba2dbe` | just past the 8 MiB of RDRAM | 1 | `0x8002bb84` | 1 entrance; scenes 107 |
+| `0x80bab5de` | just past the 8 MiB of RDRAM | 1 | `0x8002bb84` | 1 entrance; scenes 107 |
+| `0x80ff000e` | just past the 8 MiB of RDRAM | 222 | `0x8002f674` | 3 entrances; scenes 31 |
+| `0x8124ca81` | just past the 8 MiB of RDRAM | 2 | `0x80081dd4` | 2 entrances; scenes 109 |
+| `0xc4f2002c` | other | 2 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xd100b129` | other | 2 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdb2ebdd0` | other | 844 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ebe00` | other | 1564 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ebf00` | other | 1572 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ec000` | other | 1584 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ec100` | other | 2126 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ec200` | other | 1444 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ec300` | other | 1310 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ec400` | other | 1532 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ec500` | other | 1508 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ec600` | other | 1732 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ec700` | other | 1884 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ec800` | other | 1256 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ec900` | other | 2092 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2eca00` | other | 1554 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ecb00` | other | 1452 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ecc00` | other | 1906 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ecd00` | other | 1480 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ece00` | other | 1144 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ecf00` | other | 1174 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ed000` | other | 1116 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ed100` | other | 1968 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ed200` | other | 1374 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ed300` | other | 1460 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ed400` | other | 1546 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ed500` | other | 1500 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ed600` | other | 1838 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ed700` | other | 1764 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ed800` | other | 1052 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ed900` | other | 1170 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2eda00` | other | 1480 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2edb00` | other | 1484 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2edc00` | other | 1428 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2edd00` | other | 1522 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ede00` | other | 1526 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2edf00` | other | 1744 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ee000` | other | 1810 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ee100` | other | 1448 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ee200` | other | 1558 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ee300` | other | 1846 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ee400` | other | 1718 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ee500` | other | 1434 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ee600` | other | 1358 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ee700` | other | 1816 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ee800` | other | 1814 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ee900` | other | 1594 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2eea00` | other | 1204 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2eeb00` | other | 1202 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2eec00` | other | 1934 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2eed00` | other | 1418 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2eee00` | other | 1488 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2eef00` | other | 1850 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ef000` | other | 1784 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ef100` | other | 1372 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ef200` | other | 1602 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ef300` | other | 1104 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ef400` | other | 1686 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ef500` | other | 1350 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ef600` | other | 1928 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ef700` | other | 1096 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ef800` | other | 1296 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ef900` | other | 1566 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2efa00` | other | 1576 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2efb00` | other | 1866 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2efc00` | other | 1654 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2efd00` | other | 1714 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2efe00` | other | 1106 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2eff00` | other | 1218 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f0000` | other | 1572 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f0100` | other | 1832 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f0200` | other | 1736 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f0300` | other | 1656 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f0400` | other | 1852 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f0500` | other | 1598 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f0600` | other | 1406 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f0700` | other | 1322 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f0800` | other | 1732 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f0900` | other | 1344 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f0a00` | other | 1776 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f0b00` | other | 1624 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f0c00` | other | 1216 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f0d00` | other | 1632 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f0e00` | other | 1308 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f0f00` | other | 1508 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f1000` | other | 2016 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f1100` | other | 1184 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f1200` | other | 1716 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f1300` | other | 1320 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f1400` | other | 1650 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f1500` | other | 1378 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f1600` | other | 1152 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f1700` | other | 1552 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f1800` | other | 1324 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f1900` | other | 1560 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f1a00` | other | 1322 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f1b00` | other | 1902 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f1c00` | other | 1458 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f1d00` | other | 2074 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f1e00` | other | 1160 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f1f00` | other | 1410 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f2000` | other | 1414 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f2100` | other | 1204 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f2200` | other | 1546 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f2300` | other | 1726 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f2400` | other | 2162 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f2500` | other | 1380 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f2600` | other | 1892 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f2700` | other | 1572 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f2800` | other | 1472 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f2900` | other | 1058 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f2a00` | other | 1442 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f2b00` | other | 1590 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f2c00` | other | 1664 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f2d00` | other | 1414 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f2e00` | other | 1392 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f2f00` | other | 1158 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f3000` | other | 1298 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f3100` | other | 1596 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f3200` | other | 2226 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f3300` | other | 1740 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f3400` | other | 1314 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f3500` | other | 1956 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f3600` | other | 1534 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f3700` | other | 1484 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f3800` | other | 1684 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f3900` | other | 1124 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f3a00` | other | 1884 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f3b00` | other | 1298 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f3c00` | other | 1322 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f3d00` | other | 1722 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f3e00` | other | 1632 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f3f00` | other | 1830 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f4000` | other | 1584 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f4100` | other | 1452 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f4200` | other | 1586 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f4300` | other | 1814 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f4400` | other | 1530 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f4500` | other | 1536 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f4600` | other | 1640 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f4700` | other | 1216 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f4800` | other | 1466 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f4900` | other | 1344 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f4a00` | other | 1158 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f4b00` | other | 1698 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f4c00` | other | 1656 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f4d00` | other | 1604 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f4e00` | other | 1500 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f4f00` | other | 1686 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f5000` | other | 2134 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f5100` | other | 2086 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f5200` | other | 1320 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f5300` | other | 1396 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f5400` | other | 1804 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f5500` | other | 1052 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f5600` | other | 1558 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f5700` | other | 1256 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f5800` | other | 1120 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f5900` | other | 1458 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f5a00` | other | 1636 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f5b00` | other | 2200 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f5c00` | other | 1398 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f5d00` | other | 1380 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f5e00` | other | 1726 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f5f00` | other | 1128 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f6000` | other | 1240 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f6100` | other | 1488 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f6200` | other | 1440 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f6300` | other | 1798 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f6400` | other | 1190 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f6500` | other | 1766 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f6600` | other | 1716 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f6700` | other | 1434 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f6800` | other | 1456 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f6900` | other | 1312 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f6a00` | other | 1348 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f6b00` | other | 1114 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f6c00` | other | 1306 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f6d00` | other | 1640 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f6e00` | other | 1814 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f6f00` | other | 1932 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f7000` | other | 1888 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f7100` | other | 1324 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f7200` | other | 1514 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f7300` | other | 1430 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f7400` | other | 1056 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f7500` | other | 1904 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f7600` | other | 1644 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f7700` | other | 1192 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f7800` | other | 2008 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f7900` | other | 1832 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f7a00` | other | 1626 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f7b00` | other | 1182 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f7c00` | other | 1960 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f7d00` | other | 1344 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f7e00` | other | 1518 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f7f00` | other | 1274 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f8000` | other | 1386 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f8100` | other | 1828 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f8200` | other | 1538 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f8300` | other | 1206 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f8400` | other | 1334 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f8500` | other | 1436 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f8600` | other | 1646 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f8700` | other | 1448 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f8800` | other | 1744 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f8900` | other | 1622 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f8a00` | other | 1488 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f8b00` | other | 1158 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f8c00` | other | 1388 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f8d00` | other | 1540 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f8e00` | other | 1484 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f8f00` | other | 2012 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f9000` | other | 1908 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f9100` | other | 1292 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f9200` | other | 1534 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f9300` | other | 2274 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f9400` | other | 1458 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f9500` | other | 1832 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f9600` | other | 1658 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f9700` | other | 1240 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f9800` | other | 1614 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f9900` | other | 1510 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f9a00` | other | 1402 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f9b00` | other | 1368 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f9c00` | other | 1312 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f9d00` | other | 1104 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f9e00` | other | 1272 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2f9f00` | other | 1418 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fa000` | other | 1878 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fa100` | other | 1334 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fa200` | other | 1418 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fa300` | other | 1442 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fa400` | other | 1338 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fa500` | other | 1298 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fa600` | other | 1370 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fa700` | other | 1634 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fa800` | other | 1400 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fa900` | other | 1804 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2faa00` | other | 1462 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fab00` | other | 1590 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fac00` | other | 1386 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fad00` | other | 1954 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fae00` | other | 1696 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2faf00` | other | 1394 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fb000` | other | 2110 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fb100` | other | 1314 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fb200` | other | 1100 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fb300` | other | 1448 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fb400` | other | 1586 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fb500` | other | 1666 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fb600` | other | 1634 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fb700` | other | 2158 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fb800` | other | 1154 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fb900` | other | 1134 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fba00` | other | 1220 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fbb00` | other | 1332 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fbc00` | other | 1476 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fbd00` | other | 1658 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fbe00` | other | 1432 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fbf00` | other | 1650 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fc000` | other | 1500 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fc100` | other | 1730 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fc200` | other | 1290 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fc300` | other | 1260 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fc400` | other | 1454 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fc500` | other | 2312 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fc600` | other | 1290 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fc700` | other | 1632 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fc800` | other | 1424 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fc900` | other | 1254 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fca00` | other | 1690 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fcb00` | other | 1664 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fcc00` | other | 1666 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fcd00` | other | 1764 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fce00` | other | 1204 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fcf00` | other | 1870 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fd000` | other | 1288 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fd100` | other | 1830 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fd200` | other | 1642 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fd300` | other | 1764 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fd400` | other | 1562 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fd500` | other | 1544 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fd600` | other | 1512 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fd700` | other | 1598 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fd800` | other | 1500 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fd900` | other | 1694 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fda00` | other | 1404 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fdb00` | other | 1210 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fdc00` | other | 1534 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fdd00` | other | 1428 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fde00` | other | 1394 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fdf00` | other | 1598 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fe000` | other | 1380 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fe100` | other | 1538 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fe200` | other | 1746 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fe300` | other | 1630 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fe400` | other | 1350 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fe500` | other | 1678 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fe600` | other | 1462 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fe700` | other | 1240 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fe800` | other | 1800 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fe900` | other | 1768 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fea00` | other | 1260 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2feb00` | other | 1502 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fec00` | other | 1856 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fed00` | other | 1246 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fee00` | other | 2038 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2fef00` | other | 1590 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ff000` | other | 1586 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ff100` | other | 1752 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ff200` | other | 1422 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ff300` | other | 1418 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ff400` | other | 1526 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ff500` | other | 1632 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ff600` | other | 1934 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ff700` | other | 1846 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ff800` | other | 1492 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ff900` | other | 1916 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ffa00` | other | 1584 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ffb00` | other | 1318 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ffc00` | other | 1280 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ffd00` | other | 1226 | `0x8000099c` | 2 entrances; scenes  |
+| `0xdb2ffe00` | other | 1288 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb2fff00` | other | 1820 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb300000` | other | 1432 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb300100` | other | 1288 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb300200` | other | 1380 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb300300` | other | 1110 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb300400` | other | 1636 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb300500` | other | 1386 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb300600` | other | 1352 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb300700` | other | 1632 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb300800` | other | 1264 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb300900` | other | 1472 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb300a00` | other | 1120 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb300b00` | other | 1548 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb300c00` | other | 1422 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb300d00` | other | 1540 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb300e00` | other | 2562 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb300f00` | other | 1896 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb301000` | other | 1686 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb301100` | other | 1454 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb301200` | other | 1462 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb301300` | other | 1148 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb301400` | other | 1690 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb301500` | other | 1534 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb301600` | other | 1430 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb301700` | other | 1542 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb301800` | other | 1478 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb301900` | other | 1282 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb301a00` | other | 1586 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb301b00` | other | 1416 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb301c00` | other | 1674 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb301d00` | other | 1642 | `0x800a0a30` | 2 entrances; scenes  |
+| `0xdb301e00` | other | 1728 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb301f00` | other | 1414 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb302000` | other | 1588 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb302100` | other | 1238 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb302200` | other | 1452 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb302300` | other | 1560 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb302400` | other | 1728 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb302500` | other | 1596 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb302600` | other | 1654 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb302700` | other | 1632 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb302800` | other | 1416 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb302900` | other | 1090 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb302a00` | other | 2154 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb302b00` | other | 1052 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb302c00` | other | 1348 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb302d00` | other | 1228 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb302e00` | other | 1910 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb302f00` | other | 1488 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb303000` | other | 2170 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb303100` | other | 1464 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb303200` | other | 1076 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb303300` | other | 1390 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb303400` | other | 1776 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb303500` | other | 2002 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb303600` | other | 1478 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb303700` | other | 2014 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb303800` | other | 1208 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb303900` | other | 1516 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb303a00` | other | 1052 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb303b00` | other | 1082 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb303c00` | other | 1284 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb303d00` | other | 2072 | `0x800a27c4` | 2 entrances; scenes  |
+| `0xdb303e00` | other | 2010 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb303f00` | other | 1412 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb304000` | other | 1232 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb304100` | other | 1674 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb304200` | other | 1962 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb304300` | other | 1284 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb304400` | other | 1344 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb304500` | other | 1126 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb304600` | other | 1358 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb304700` | other | 1160 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb304800` | other | 1486 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb304900` | other | 1394 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb304a00` | other | 2122 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb304b00` | other | 1846 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb304c00` | other | 1164 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb304d00` | other | 1904 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb304e00` | other | 1666 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb304f00` | other | 1224 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb305000` | other | 1492 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb305100` | other | 2088 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb305200` | other | 1840 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb305300` | other | 1160 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb305400` | other | 1210 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb305500` | other | 1400 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb305600` | other | 2264 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb305700` | other | 1690 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb305800` | other | 1630 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb305900` | other | 1078 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb305a00` | other | 1146 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb305b00` | other | 1386 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb305c00` | other | 1450 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb305d00` | other | 1348 | `0x800a2770` | 2 entrances; scenes  |
+| `0xdb305e00` | other | 1260 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb305f00` | other | 1720 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb306000` | other | 2050 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb306100` | other | 1378 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb306200` | other | 1822 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb306300` | other | 1678 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb306400` | other | 1304 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb306500` | other | 1502 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb306600` | other | 1390 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb306700` | other | 1354 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb306800` | other | 1386 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb306900` | other | 1370 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb306a00` | other | 1338 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb306b00` | other | 1430 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb306c00` | other | 1708 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb306d00` | other | 1410 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb306e00` | other | 1748 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb306f00` | other | 1312 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb307000` | other | 1954 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb307100` | other | 1744 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb307200` | other | 1530 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb307300` | other | 1294 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb307400` | other | 1780 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb307500` | other | 1044 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb307600` | other | 1596 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb307700` | other | 1224 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb307800` | other | 1628 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb307900` | other | 1470 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb307a00` | other | 1582 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb307b00` | other | 1528 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb307c00` | other | 1770 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb307d00` | other | 1404 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb307e00` | other | 1574 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb307f00` | other | 1914 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb308000` | other | 1470 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb308100` | other | 1332 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb308200` | other | 1466 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb308300` | other | 1350 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb308400` | other | 1288 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb308500` | other | 1660 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb308600` | other | 2470 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb308700` | other | 1636 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb308800` | other | 1750 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb308900` | other | 1420 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb308a00` | other | 1432 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb308b00` | other | 1618 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb308c00` | other | 1642 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb308d00` | other | 1396 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb308e00` | other | 1576 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb308f00` | other | 1764 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb309000` | other | 1610 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb309100` | other | 1914 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb309200` | other | 1258 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb309300` | other | 1324 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb309400` | other | 1548 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb309500` | other | 1344 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb309600` | other | 1138 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb309700` | other | 1322 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb309800` | other | 1846 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb309900` | other | 1312 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb309a00` | other | 1372 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb309b00` | other | 1472 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb309c00` | other | 1928 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb309d00` | other | 1486 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb309e00` | other | 1482 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb309f00` | other | 1844 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb30a000` | other | 1764 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb30a100` | other | 1546 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb30a200` | other | 1518 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb30a300` | other | 1206 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb30a400` | other | 1794 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb30a500` | other | 1276 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb30a600` | other | 1358 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb30a700` | other | 1384 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb30a800` | other | 1952 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb30a900` | other | 1384 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb30aa00` | other | 1650 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb30ab00` | other | 1204 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb30ac00` | other | 1624 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb30ad00` | other | 1338 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb30ae00` | other | 1620 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb30af00` | other | 1838 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb30b000` | other | 1270 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb30b100` | other | 1580 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb30b200` | other | 1410 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb30b300` | other | 1270 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb30b400` | other | 1604 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb30b500` | other | 1914 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb30b600` | other | 1384 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb30b700` | other | 1460 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdb30b800` | other | 1400 | `0x800a34b4` | 2 entrances; scenes  |
+| `0xdcfd0408` | other | 6 | `0x800a34b4` | 6 entrances; scenes 93 |
+| `0xdfff6f0f` | other | 2360 | `0x8000122c` | 2 entrances; scenes 106 |
+| `0xdfff7000` | other | 1506 | `0x8000122c` | 2 entrances; scenes 106 |
+| `0xdfff7100` | other | 1454 | `0x8000122c` | 2 entrances; scenes 106 |
+| `0xdfff7200` | other | 1036 | `0x8000122c` | 2 entrances; scenes 106 |
+| `0xdfff7300` | other | 654 | `0x8000122c` | 2 entrances; scenes 106 |
+| `0xdfff7400` | other | 824 | `0x8000122c` | 2 entrances; scenes 106 |
+| `0xdfff7500` | other | 1056 | `0x8000122c` | 2 entrances; scenes 106 |
+| `0xdfff7600` | other | 2174 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff7700` | other | 1678 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff7800` | other | 1180 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff7900` | other | 1012 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff7a00` | other | 930 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff7b00` | other | 686 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff7c00` | other | 842 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff7d00` | other | 822 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff7e00` | other | 1040 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff7f00` | other | 556 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff8000` | other | 894 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff8100` | other | 804 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff8200` | other | 702 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff8300` | other | 998 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff8400` | other | 644 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff8500` | other | 834 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff8600` | other | 1098 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff8700` | other | 1066 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff8800` | other | 802 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff8900` | other | 740 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff8a00` | other | 1008 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff8b00` | other | 660 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff8c00` | other | 954 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff8d00` | other | 1022 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff8e00` | other | 1512 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff8f00` | other | 1072 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff9000` | other | 758 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff9100` | other | 1040 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff9200` | other | 896 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff9300` | other | 764 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff9400` | other | 680 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff9500` | other | 926 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff9600` | other | 706 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff9700` | other | 1002 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff9800` | other | 814 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff9900` | other | 656 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff9a00` | other | 766 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff9b00` | other | 688 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff9c00` | other | 706 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff9d00` | other | 708 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff9e00` | other | 1986 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfff9f00` | other | 1490 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffa000` | other | 750 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffa100` | other | 702 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffa200` | other | 544 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffa300` | other | 564 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffa400` | other | 626 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffa500` | other | 722 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffa600` | other | 1538 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffa700` | other | 1304 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffa800` | other | 526 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffa900` | other | 836 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffaa00` | other | 824 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffab00` | other | 842 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffac00` | other | 694 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffad00` | other | 1032 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffae00` | other | 818 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffaf00` | other | 588 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffb000` | other | 704 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffb100` | other | 808 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffb200` | other | 856 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffb300` | other | 780 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffb400` | other | 640 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffb500` | other | 630 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffb600` | other | 512 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffb700` | other | 578 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffb800` | other | 866 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffb900` | other | 672 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffba00` | other | 546 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffbb00` | other | 1924 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffbc00` | other | 572 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffbd00` | other | 598 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffbe00` | other | 674 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffbf00` | other | 1020 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffc000` | other | 754 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffc100` | other | 648 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffc200` | other | 512 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffc300` | other | 518 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffc400` | other | 512 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffc500` | other | 512 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffc600` | other | 996 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffc700` | other | 812 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffc800` | other | 738 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffc900` | other | 954 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffca00` | other | 552 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffcb00` | other | 1238 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffcc00` | other | 830 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffcd00` | other | 682 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffce00` | other | 756 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffcf00` | other | 782 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffd000` | other | 868 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffd100` | other | 862 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffd200` | other | 790 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffd300` | other | 1078 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffd400` | other | 564 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffd500` | other | 590 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffd600` | other | 548 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffd700` | other | 668 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffd800` | other | 602 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffd900` | other | 688 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffda00` | other | 958 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffdb00` | other | 854 | `0x800a0a30` | 2 entrances; scenes 106 |
+| `0xdfffdc00` | other | 620 | `0x800a0a30` | 2 entrances; scenes 106 |
+| `0xdfffdd00` | other | 1216 | `0x800a0a30` | 2 entrances; scenes 106 |
+| `0xdfffde00` | other | 896 | `0x800a0a30` | 2 entrances; scenes 106 |
+| `0xdfffdf00` | other | 586 | `0x800a0a30` | 2 entrances; scenes 106 |
+| `0xdfffe000` | other | 666 | `0x800a0a30` | 2 entrances; scenes 106 |
+| `0xdfffe100` | other | 1082 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffe200` | other | 638 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffe300` | other | 924 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffe400` | other | 676 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffe500` | other | 682 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffe600` | other | 936 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffe700` | other | 962 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffe800` | other | 766 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffe900` | other | 682 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffea00` | other | 652 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffeb00` | other | 636 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffec00` | other | 626 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffed00` | other | 590 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffee00` | other | 1140 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffef00` | other | 1624 | `0x800a27c4` | 2 entrances; scenes 106 |
+| `0xdffff000` | other | 1216 | `0x800a27c4` | 2 entrances; scenes 106 |
+| `0xdffff100` | other | 964 | `0x800a27c4` | 2 entrances; scenes 106 |
+| `0xdffff200` | other | 830 | `0x800a27c4` | 2 entrances; scenes 106 |
+| `0xdffff300` | other | 854 | `0x800a27c4` | 2 entrances; scenes 106 |
+| `0xdffff400` | other | 816 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdffff500` | other | 690 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdffff600` | other | 716 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdffff700` | other | 686 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdffff800` | other | 644 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdffff900` | other | 574 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdffffa00` | other | 606 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdffffb00` | other | 556 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdffffc00` | other | 574 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdffffd00` | other | 786 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdffffe00` | other | 700 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xdfffff00` | other | 684 | `0x8000099c` | 2 entrances; scenes 106 |
+| `0xfbd2fb6c` | other | 2 | `0x80081dd4` | 1 entrance; scenes 107 |
+| `0xffed0004` | other | 18 | `0x800a34b4` | 6 entrances; scenes 93 |
 <!-- scenes:end -->
 
 ## Rendering bugs of the forest task that are not solved (moved to the playable-forest task)

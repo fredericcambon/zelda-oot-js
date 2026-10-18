@@ -109,11 +109,20 @@ export function readResult(core: GfxCore): DisplayListResult {
   const unknown = Array.from({ length: unknownCount }, (_, i) => ({
     addr: unknownWords[i * 3]!, w0: unknownWords[i * 3 + 1]!, w1: unknownWords[i * 3 + 2]!,
   }));
+  for (const u of unknown) {
+    const op = u.w0 >>> 24;
+    if (warnedUnknown.has(op)) continue;
+    warnedUnknown.add(op);
+    console.warn(`gfx: unimplemented display-list command 0x${op.toString(16)} at 0x${u.addr.toString(16)} (${u.w0.toString(16).padStart(8, '0')} ${u.w1.toString(16).padStart(8, '0')}) skipped`);
+  }
   const pairs = new Uint32Array(buffer, opcodesAt || 0, opcodeCount * 2);
   const opcodes = new Map<number, number>();
   for (let i = 0; i < opcodeCount; i++) opcodes.set(pairs[i * 2]!, pairs[i * 2 + 1]!);
   return { batches, commands, opcodes, unknown, problems };
 }
+
+/** Opcodes already reported: an unimplemented command is logged once and the rest of the list still runs. */
+const warnedUnknown = new Set<number>();
 
 function readTile(w: Int32Array, o: number): TileState {
   return {

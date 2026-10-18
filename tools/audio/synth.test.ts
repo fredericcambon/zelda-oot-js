@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { existsSync } from 'node:fs';
 import { loadContext } from '../analyze/context.ts';
 import { buildSpecs } from '../analyze/image.ts';
@@ -318,9 +318,15 @@ describe('buffer commands', () => {
     expect(m.readS16(0x3000, 8)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
   });
 
-  it('rejects a command it does not know', () => {
+  it('logs a command it does not know once and runs the rest of the list', () => {
     const m = new Machine();
-    expect(() => m.run([[0x7e000000, 0]])).toThrow(/unknown audio command 0x7e/);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    m.s16(0x2000, [1, 2, 3, 4, 5, 6, 7, 8]);
+    m.run([[0x7e000000, 0], load(0x400, 0x2000, 16), [0x7e000000, 0], [0x7f000000, 0]]);
+    m.run([[0x7e000000, 0]]);
+    expect(warn.mock.calls.map((c) => c[0])).toEqual(['audio: unknown command 0x7e skipped', 'audio: unknown command 0x7f skipped']);
+    expect(m.dm(0x400, 8)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    warn.mockRestore();
   });
 });
 
@@ -343,5 +349,141 @@ describe('the FIR filter', () => {
       const expected = Math.floor((input[n]! * 0x3fff * 2 + input[n - 1]! * 0x1000 * 2 + 0x8000) / 65536);
       expect(out[n]).toBe(expected);
     }
+  });
+});
+
+// Commands 00, 03, 04, 06 and 17 (ucode+0xf68, 0xf18, 0xe2c, 0xe9c, 0xba0).
+const recordCmd = (bytes: number, low: number, ram: number): [number, number] => [((bytes >> 4) << 16) | low, ram];
+const multiplyCmd = (bytes: number, src: number, dst: number): [number, number] => [0x03000000 | bytes, (src << 16) | dst];
+const addCmd = (bytes: number, src: number, dst: number): [number, number] => [0x04000000 | ((bytes >> 4) << 16), (src << 16) | dst];
+const gatherCmd = (step: number, fraction: number): [number, number] => [0x06000000 | step, fraction];
+const widenCmd = (flags: number, state: number): [number, number] => [0x17000000 | (flags << 16), state];
+
+function noisy(m: Machine, at: number, bytes: number, seed: number): void {
+  let x = seed;
+  for (let i = 0; i < bytes; i++) {
+    x = (Math.imul(x, 1103515245) + 12345) >>> 0;
+    m.ram[at + i] = x >>> 16;
+  }
+}
+
+describe('commands 03, 04, 06, 17 and 00', () => {
+  it('multiplies the second half of each 32 bytes by the first', () => {
+    const m = new Machine();
+    const a = [3, -3, 30000, -30000, 1, 0, 32767, -32768], b = [5, 5, 40000, 100, 65535, 9, 2, 2];
+    m.s16(0x2000, [...a, ...b.map((x) => (x << 16) >> 16)]);
+    m.run([load(0x400, 0x2000, 32), multiplyCmd(32, 0x400, 0x440), save(0x440, 0x3000, 32)]);
+    const low = (x: number) => ((x & 0xffff) << 16) >> 16;
+    const clamp = (x: number) => (x >= -(2 ** 31) && x < 2 ** 31 ? low(x) : x < 0 ? 0 : -1);
+    expect(m.readS16(0x3000, 16)).toEqual([...a.map((x, i) => clamp(2 * x * b[i]!)), ...a.map((x, i) => low(x * b[i]!))]);
+  });
+
+  it('adds two buffers with saturation in 64-byte steps', () => {
+    const m = new Machine();
+    m.s16(0x2000, Array.from({ length: 64 }, (_, i) => (i % 2 ? 30000 : -100)));
+    m.s16(0x2100, Array.from({ length: 64 }, (_, i) => (i % 2 ? 10000 : -32000)));
+    m.run([load(0x400, 0x2000, 128), load(0x500, 0x2100, 128), addCmd(0, 0x500, 0x400)]);
+    expect(m.dm(0x400, 33)).toEqual([...Array.from({ length: 32 }, (_, i) => (i % 2 ? 32767 : -32100)), -100]);
+  });
+
+  it('reads samples through a position that steps by four times the pitch', () => {
+    const m = new Machine();
+    m.s16(0x2000, Array.from({ length: 16 }, (_, i) => i * 100));
+    m.run([load(0x400, 0x2000, 32), setBuffer(0x404, 0x500, 16), gatherCmd(0x8000, 0), setBuffer(0x400, 0x520, 8), gatherCmd(0x4000, 0x8000)]);
+    expect(m.dm(0x500, 8)).toEqual([200, 300, 400, 500, 600, 700, 800, 900]);
+    expect(m.dm(0x520, 4)).toEqual([0, 0, 100, 100]);
+  });
+
+  it('widens bytes to high bytes after the saved state', () => {
+    const m = new Machine();
+    m.ram.set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], 0x2000);
+    m.run([load(0x400, 0x2000, 16), setBuffer(0x400, 0x600, 32), widenCmd(1, 0x3000), save(0x600, 0x3100, 64)]);
+    expect(m.ram.slice(0x3100, 0x3100 + 64).filter((_, i) => i % 2 === 1)).toEqual(new Uint8Array(32));
+    expect(Array.from(m.ram.slice(0x3120, 0x3140)).filter((_, i) => i % 2 === 0)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+    expect(Array.from(m.ram.slice(0x3000, 0x3020))).toEqual(Array.from(m.ram.slice(0x3120, 0x3140)));
+  });
+
+  it('counts itself, the rest of the list and of its 64-byte chunk in a record', () => {
+    const m = new Machine();
+    m.ram.fill(0, 0x2000, 0x2010);
+    m.ram.fill(0xaa, 0x2010, 0x2020);
+    const filler: [number, number] = [0x02000000, 0];
+    m.run([recordCmd(32, 0x1234, 0x2000), ...Array(9).fill(filler), recordCmd(32, 0x4321, 0x2000), filler]);
+    const dv = new DataView(m.ram.buffer);
+    expect([dv.getUint16(0x2000), dv.getUint32(0x2004), dv.getUint32(0x2008), dv.getUint32(0x200c)]).toEqual([0x4321, 2, 8, 8]);
+    expect(m.ram[0x2010]).toBe(0xaa);
+  });
+});
+
+describe.skipIf(!romPath || !existsSync(romPath))('commands 00, 03, 04, 06, 10 and 17 against the audio microcode', () => {
+  /** Runs `commands` in the mixer and in the microcode on a copy of the same memory and compares memory and scratch. */
+  function same(commands: ReadonlyArray<readonly [number, number]>, prepare: (m: Machine) => void, what: string): void {
+    const code = buildSpecs(loadContext(romPath!)).find((s) => s.name === 'code')!;
+    const at = (address: number, size: number) => code.bytes.subarray(address - code.base, address - code.base + size);
+    const m = new Machine();
+    m.ram.set(at(0x801120e0, 0x2e0), DATA_SEGMENT);
+    prepare(m);
+    const expected = m.ram.slice();
+    const dv = new DataView(expected.buffer);
+    commands.forEach(([w0, w1], i) => {
+      dv.setUint32(LIST + i * 8, w0 >>> 0);
+      dv.setUint32(LIST + i * 8 + 4, w1 >>> 0);
+    });
+    m.run(commands);
+    const reference = new RspReference(at(0x800e0f10, 0x1000));
+    reference.run(expected, { dataPtr: DATA_SEGMENT, dataSize: 0x2df, listPtr: LIST, listSize: commands.length * 8 });
+    expect(Buffer.compare(m.ram, expected), `${what}: memory`).toBe(0);
+    expect(Buffer.compare(m.synth.dmem.subarray(0x330, 0xfc0), reference.dmem.subarray(0x330, 0xfc0)), `${what}: working memory`).toBe(0);
+  }
+
+  const filler: [number, number] = [0x02000000, 0];
+
+  it('multiplies like the microcode', () => {
+    for (const bytes of [0, 32, 64, 100]) {
+      same([load(0x400, 0x2000, 256), multiplyCmd(bytes, 0x400, 0x600), save(0x600, 0x3000, 256)], (m) => noisy(m, 0x2000, 256, bytes + 1), `bytes ${bytes}`);
+    }
+    same([load(0x400, 0x2000, 64), multiplyCmd(64, 0x400, 0x400), save(0x400, 0x3000, 64)], (m) => {
+      m.s16(0x2000, [32767, -32768, 32767, -32768, 1, -1, 0, 0, 65535 - 65536, 65535 - 65536, 32768 - 65536, 32768 - 65536, 4, 4, 4, 4]);
+      noisy(m, 0x2020, 32, 3);
+    }, 'extremes');
+  });
+
+  it('adds like the microcode', () => {
+    for (const bytes of [0, 16, 64, 80, 128]) {
+      same([load(0x400, 0x2000, 256), load(0x600, 0x2100, 256), addCmd(bytes, 0x600, 0x400), save(0x400, 0x3000, 256)], (m) => {
+        noisy(m, 0x2000, 256, bytes + 5);
+        noisy(m, 0x2100, 256, bytes + 9);
+      }, `bytes ${bytes}`);
+    }
+  });
+
+  it('reads through positions like the microcode', () => {
+    for (const [step, fraction, count] of [[0x8000, 0, 32], [0x4000, 0x8000, 24], [0x9abc, 0x1234, 8], [0xffff, 0xffff, 64], [0x2000, 0, 0]] as const) {
+      same([load(0x400, 0x2000, 256), setBuffer(0x410, 0x600, count), gatherCmd(step, fraction), save(0x600, 0x3000, 128)], (m) => noisy(m, 0x2000, 256, step), `step ${step}`);
+    }
+  });
+
+  it('widens like the microcode', () => {
+    for (const [flags, count] of [[1, 64], [0, 32], [0, 0], [2, 100], [1, 33], [4, 64]] as const) {
+      same([
+        load(0x400, 0x2000, 128), setBuffer(0x403, 0x600, count), [0x0f000000, 0x3200], widenCmd(flags, 0x3000), save(0x600, 0x3400, 256),
+      ], (m) => {
+        noisy(m, 0x2000, 128, count + flags);
+        noisy(m, 0x3000, 32, 11);
+        noisy(m, 0x3200, 32, 12);
+      }, `flags ${flags} count ${count}`);
+    }
+  });
+
+  it('copies runs like the microcode', () => {
+    for (const [times, bytes] of [[0, 0], [1, 32], [2, 64], [3, 50], [1, 100]] as const) {
+      same([load(0x400, 0x2000, 512), [0x10000000 | (times << 16) | 0x400, (0x800 << 16) | bytes], save(0x800, 0x3000, 512)], (m) => noisy(m, 0x2000, 512, times + bytes), `times ${times} bytes ${bytes}`);
+    }
+  });
+
+  it('records like the microcode, wherever the command sits in the list', () => {
+    const list: Array<readonly [number, number]> = [recordCmd(48, 0x1234, 0x2000), filler, filler, filler, filler, filler, filler, recordCmd(16, 7, 0x2100), recordCmd(32, 0xffff, 0x2000), filler, filler, recordCmd(32, 0, 0x2100)];
+    same(list, (m) => { noisy(m, 0x2000, 64, 1); noisy(m, 0x2100, 64, 2); }, 'record');
+    same(list.slice(0, 5), (m) => noisy(m, 0x2000, 64, 4), 'short list');
   });
 });
