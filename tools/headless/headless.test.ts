@@ -7,7 +7,8 @@ import { AudioCapture } from '../audio/capture.ts';
 import { RspReference } from '../audio/rsp-ref.ts';
 import { Synth } from '../audio/synth.ts';
 import { encodeWav } from '../audio/wav.ts';
-import { DisplayListInterpreter, type Batch, type DisplayListResult } from '../gfx/dl.ts';
+import { copyResult } from '../gfx/c-dl.ts';
+import type { Batch, DisplayListResult } from '../gfx/types.ts';
 import { HEIGHT, SoftRenderer, WIDTH } from '../gfx/raster.ts';
 import { bootGame } from './boot.ts';
 import { padAt } from './input.ts';
@@ -238,12 +239,11 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
     /** The graphics tasks of the last frames before `target`, and the colour image the video interface shows then. */
     const capture = async (target: number) => {
       const { moduleUrl, cartridge } = await buildGame();
-      const interpreter = new DisplayListInterpreter();
       const results: DisplayListResult[] = [];
       let frame = 0;
       const game = await bootGame(moduleUrl, cartridge, {
         onGfxTask: (task) => {
-          if (frame > target - DRAW_LEAD) results.push(interpreter.run(task.ram, task.data));
+          if (frame > target - DRAW_LEAD) results.push(copyResult(task.displayList()));
         },
       });
       while (frame < target) {

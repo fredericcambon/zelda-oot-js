@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decodeCombine, type DrawState, type TriangleBatch } from '../tools/gfx/dl.ts';
+import { decodeCombine, type DrawState, type TriangleBatch } from '../tools/gfx/types.ts';
 import { Renderer } from './renderer.ts';
 
 /** A WebGL2 context that records what is bound to each texture unit and which texture each upload went to. */
@@ -28,7 +28,7 @@ function fakeContext() {
 const rgba = { r: 0, g: 0, b: 0, a: 0 };
 function state(textures: [number, number]): DrawState {
   const tile = { fmt: 0, siz: 3, line: 0, tmem: 0, palette: 0, cmT: 0, maskT: 0, shiftT: 0, cmS: 0, maskS: 0, shiftS: 0, uls: 0, ult: 0, lrs: 0, lrt: 0, sized: true };
-  const image = (value: number, index: number) => ({ width: 1, height: 1, rgba: Uint8Array.of(value, 0, 0, 255), tile: index });
+  const image = (value: number, index: number) => ({ id: value, width: 1, height: 1, rgba: Uint8Array.of(value, 0, 0, 255), tile: index });
   return {
     geometryMode: 0, otherModeH: 0, otherModeL: 0, combine: decodeCombine(0, 0), primColor: { ...rgba, minLod: 0, lodFrac: 0 },
     envColor: rgba, fogColor: rgba, blendColor: rgba, fillColor: 0, texture: { on: true, level: 0, tile: 0, scaleS: 0, scaleT: 0 },

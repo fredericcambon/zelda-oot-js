@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync } from 'node:fs';
-import { DisplayListInterpreter, type Batch, type DisplayListResult } from '../gfx/dl.ts';
+import { copyResult } from '../gfx/c-dl.ts';
+import { sharedGfxModule } from '../gfx/c-dl-node.ts';
+import type { Batch, DisplayListResult } from '../gfx/types.ts';
 import { SoftRenderer } from '../gfx/raster.ts';
-import { bootGame } from './boot.ts';
+import { bootGame, type GfxTask } from './boot.ts';
 import { padAt, parseInput } from './input.ts';
 import { playState, requestEntrance } from './state.ts';
 import { compareWithMicrocode } from '../gfx/ucode-compare.ts';
 import { rom, SCRIPT, DRAW_LEAD, CONTROL_FRAME, buildGame } from './headless-support.ts';
+
+const gfx = await sharedGfxModule();
 
 /**
  * Kokiri Forest and the houses around it, entered the way the scene sweep enters them: from Link's house under control (frame
@@ -22,7 +26,7 @@ describe.skipIf(!rom || !existsSync(rom))('Kokiri Forest and its interiors', () 
   const PLATFORM_FRAME = 2448;
 
   /** Plays the new game to Link's house, loads `entrance` and runs `frames` frames, calling `onTask` for the tasks after `from`. */
-  async function visit(entrance: number, frames: number, from: number, onTask: (task: { ram: Uint8Array; data: number; task: number }, frame: number) => void) {
+  async function visit(entrance: number, frames: number, from: number, onTask: (task: GfxTask, frame: number) => void) {
     const { moduleUrl, cartridge } = await buildGame();
     let frame = 0;
     let record = false;
@@ -48,16 +52,15 @@ describe.skipIf(!rom || !existsSync(rom))('Kokiri Forest and its interiors', () 
   }
 
   it('draws the forest without an unknown command or an inconsistency, and its display lists agree with the microcode', async () => {
-    const interpreter = new DisplayListInterpreter();
     const unknown: string[] = [];
     let compared = 0;
     const worst = { colour: 0, texture: 0, uncovered: 0 };
     const { scene } = await visit(FOREST_ENTRANCE, 2410, 1, (task, frame) => {
       const k = frame - CONTROL_FRAME;
-      const result = interpreter.run(task.ram, task.data);
+      const result = task.displayList();
       unknown.push(...result.unknown.map((u) => `frame ${k} 0x${u.w0.toString(16)}`), ...result.problems.map((p) => `frame ${k} ${p}`));
       if (k >= 2400) {
-        const c = compareWithMicrocode(task.ram, task.data, task.task);
+        const c = compareWithMicrocode(gfx, task.ram, task.data, task.task);
         compared++;
         worst.colour = Math.max(worst.colour, c.colourError);
         worst.texture = Math.max(worst.texture, c.textureError);
@@ -76,16 +79,15 @@ describe.skipIf(!rom || !existsSync(rom))('Kokiri Forest and its interiors', () 
 
   it('draws the interiors without an unknown command and as the microcode does', async () => {
     for (const entrance of INTERIOR_ENTRANCES) {
-      const interpreter = new DisplayListInterpreter();
-      const unknown: string[] = [];
+        const unknown: string[] = [];
       let compared = 0;
       const worst = { colour: 0, texture: 0, uncovered: 0 };
       await visit(entrance, 202, 1, (task, frame) => {
         const k = frame - CONTROL_FRAME;
-        const result = interpreter.run(task.ram, task.data);
+        const result = task.displayList();
         unknown.push(...result.unknown.map((u) => `frame ${k} 0x${u.w0.toString(16)}`), ...result.problems);
         if (k >= 200) {
-          const c = compareWithMicrocode(task.ram, task.data, task.task);
+          const c = compareWithMicrocode(gfx, task.ram, task.data, task.task);
           compared++;
           worst.colour = Math.max(worst.colour, c.colourError);
           worst.texture = Math.max(worst.texture, c.textureError);
@@ -102,8 +104,7 @@ describe.skipIf(!rom || !existsSync(rom))('Kokiri Forest and its interiors', () 
 
   it('draws the decal surfaces (the path, the leaves, the shadow) over the ground they lie on', async () => {
     const results: DisplayListResult[] = [];
-    const interpreter = new DisplayListInterpreter();
-    await visit(FOREST_ENTRANCE, PLATFORM_FRAME, PLATFORM_FRAME - DRAW_LEAD + 1, (task) => results.push(interpreter.run(task.ram, task.data)));
+    await visit(FOREST_ENTRANCE, PLATFORM_FRAME, PLATFORM_FRAME - DRAW_LEAD + 1, (task) => results.push(copyResult(task.displayList())));
     const isPath = (b: Batch) => b.kind === 'triangles' && ((b.state.otherModeL >>> 10) & 3) === 3;
     const paths = results.flatMap((r) => r.batches.filter(isPath));
     expect(paths.length).toBeGreaterThan(0);

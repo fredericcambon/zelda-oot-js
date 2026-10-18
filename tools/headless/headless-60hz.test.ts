@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync } from 'node:fs';
 import { AudioCapture } from '../audio/capture.ts';
-import { DisplayListInterpreter } from '../gfx/dl.ts';
 import { bootGame } from './boot.ts';
 import { averageSpectrum, envelope, playbackSpeed, similarity } from './spectrum.ts';
 import { padAt } from './input.ts';
@@ -23,7 +22,6 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
 
     // 60 Hz: the whole script, every display list interpreted.
     const cap = new AudioCapture();
-    const interpreter = new DisplayListInterpreter();
     const problems: string[] = [];
     let frame = 0;
     let bytes = 0;
@@ -33,7 +31,7 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
     const game = await bootGame(moduleUrl, cartridge, {
       hz: 60,
       onGfxTask: (task) => {
-        const result = interpreter.run(task.ram, task.data);
+        const result = task.displayList();
         problems.push(...result.unknown.map((u) => `frame ${frame} unknown 0x${u.w0.toString(16)}`), ...result.problems);
       },
       onAudioTask: cap.hooks.onAudioTask,

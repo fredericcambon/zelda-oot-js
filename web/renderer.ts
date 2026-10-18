@@ -1,6 +1,8 @@
-// WebGL2 back end for the draw batches of tools/gfx/dl.ts. Every colour image the game draws into is a 320x240 texture
+// WebGL2 back end for the draw batches of tools/gfx/types.ts (produced by the interpreter in runtime/gfx/). Every colour image the game draws into is a 320x240 texture
 // keyed by its address, so double buffering behaves as on the console; the depth image is one shared buffer.
-import type { Batch, DecodedTexture, DisplayListResult, DrawState, RectBatch, TriangleBatch } from '../tools/gfx/dl.ts';
+import type { DecodedTexture, DisplayListResult, DrawState, RectBatch, TriangleBatch } from '../tools/gfx/types.ts';
+import { mergeRuns, type DrawRun, type Run } from './batching.ts';
+import { GpuTimer } from './gpu-timer.ts';
 import { Geo } from '../tools/gfx/opcodes.ts';
 import { CycleType, cycleTypeOf, fragmentSource, OtherL, shiftScale, specKey, specOf, VERTEX_SHADER, type ShaderSpec } from './shader.ts';
 
@@ -16,6 +18,10 @@ export interface RenderStats {
   batches: number;
   triangles: number;
   rects: number;
+  /** WebGL draw calls of the last task. */
+  drawCalls: number;
+  /** Draw calls the last task would have needed with one per batch. */
+  unmergedDrawCalls: number;
   unknown: number;
   problems: string[];
   programs: number;
@@ -64,9 +70,14 @@ const physical = (addr: number): number => addr & 0x1fffffff;
 
 export class Renderer {
   cullMode: CullMode = 'normal';
-  readonly stats: RenderStats = { tasks: 0, commands: 0, batches: 0, triangles: 0, rects: 0, unknown: 0, problems: [], programs: 0, textures: 0, targets: 0 };
+  readonly stats: RenderStats = { tasks: 0, commands: 0, batches: 0, triangles: 0, rects: 0, drawCalls: 0, unmergedDrawCalls: 0, unknown: 0, problems: [], programs: 0, textures: 0, targets: 0 };
 
   private readonly gl: WebGL2RenderingContext;
+  /** Called with the GPU milliseconds of each finished game frame (its task plus the presents that followed). */
+  onGpuTime: ((ms: number) => void) | null = null;
+
+  private readonly gpuTimer: GpuTimer;
+  private presentGpuMs = 0;
   private readonly programs = new Map<string, Program>();
   private readonly presentProgram: Program;
   private readonly buffer: WebGLBuffer;
@@ -74,8 +85,7 @@ export class Renderer {
   private readonly depth: WebGLRenderbuffer;
   private scale = 1;
   private readonly targets = new Map<number, Target>();
-  private readonly textureCache = new Map<string, GpuTexture>();
-  private textureByImage = new WeakMap<Uint8Array, GpuTexture>();
+  private readonly textureCache = new Map<number, GpuTexture>();
   private readonly white: GpuTexture;
   private lastTarget: Target | null = null;
   private vertices = new Float32Array(0);
@@ -84,6 +94,7 @@ export class Renderer {
     const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, preserveDrawingBuffer: true });
     if (!gl) throw new Error('WebGL2 is not available in this browser');
     this.gl = gl;
+    this.gpuTimer = new GpuTimer(gl);
     this.presentProgram = this.link(PRESENT_VERTEX, PRESENT_FRAGMENT);
     this.buffer = gl.createBuffer()!;
     this.vao = gl.createVertexArray()!;
@@ -128,14 +139,22 @@ export class Renderer {
     const s = this.stats;
     // The cache is emptied between tasks: emptying it while a draw holds two textures would delete the first one.
     if (this.textureCache.size >= MAX_TEXTURES) this.clearTextures();
+    this.collectGpu();
+    this.gpuTimer.begin('task');
     s.tasks++;
+    s.drawCalls = 0;
+    s.unmergedDrawCalls = 0;
     s.commands = result.commands;
     s.batches = result.batches.length;
     s.triangles = 0;
     s.rects = 0;
     s.unknown = result.unknown.length;
     s.problems = result.problems.slice(0, 8);
-    for (const batch of result.batches) this.drawBatch(batch);
+    try {
+      this.drawRuns(mergeRuns(result.batches));
+    } finally {
+      this.gpuTimer.end();
+    }
     s.programs = this.programs.size;
     s.textures = this.textureCache.size;
     s.targets = this.targets.size;
@@ -143,6 +162,25 @@ export class Renderer {
 
   /** Shows the colour image at `address` (the one the video interface scans out), or the last one drawn when unknown. */
   present(address: number): void {
+    this.gpuTimer.begin('present');
+    try {
+      this.presentImage(address);
+    } finally {
+      this.gpuTimer.end();
+    }
+  }
+
+  private collectGpu(): void {
+    for (const { tag, ms } of this.gpuTimer.poll()) {
+      if (tag === 'present') this.presentGpuMs += ms;
+      else {
+        this.onGpuTime?.(ms + this.presentGpuMs);
+        this.presentGpuMs = 0;
+      }
+    }
+  }
+
+  private presentImage(address: number): void {
     const gl = this.gl;
     const target = this.targets.get(physical(address)) ?? this.lastTarget;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -196,12 +234,34 @@ export class Renderer {
 
   // ---- Batches -----------------------------------------------------------------------------------------------------
 
-  private drawBatch(batch: Batch): void {
-    const state = batch.state;
-    this.bindTarget(state.colorImage.addr);
-    if (batch.kind === 'triangles') this.drawTriangles(batch);
-    else if (batch.kind === 'fillrect' && cycleTypeOf(state.otherModeH) === CycleType.FILL) this.fillRect(batch);
-    else this.drawRect(batch);
+  /** Fills the vertex buffer once for the whole task, then draws each run from its slice of it. */
+  private drawRuns(runs: Run[]): void {
+    const counts = runs.map((run) => (run.kind === 'draw' ? run.batches.reduce((n, b) => n + (b.kind === 'triangles' ? b.positions.length / 4 : 6), 0) : 0));
+    const vertices = counts.reduce((a, b) => a + b, 0);
+    const v = this.scratch(vertices);
+    const gl = this.gl;
+    let at = 0;
+    for (const run of runs) {
+      if (run.kind === 'fill') continue;
+      for (const b of run.batches) at = b.kind === 'triangles' ? this.writeTriangles(b, v, at) : this.writeRect(b, v, at);
+    }
+    if (vertices > 0) {
+      gl.bindVertexArray(this.vao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+      gl.bufferData(gl.ARRAY_BUFFER, v.subarray(0, vertices * FLOATS_PER_VERTEX), gl.STREAM_DRAW);
+    }
+    let first = 0;
+    for (const [i, run] of runs.entries()) {
+      if (run.kind === 'fill') {
+        this.bindTarget(run.batch.state.colorImage.addr);
+        this.fillRect(run.batch);
+        continue;
+      }
+      const count = counts[i]!;
+      this.bindTarget(run.state.colorImage.addr);
+      this.draw(run, first, count);
+      first += count;
+    }
   }
 
   private scissorRect(state: DrawState): { x: number; y: number; w: number; h: number } {
@@ -238,23 +298,23 @@ export class Renderer {
     gl.clear(gl.COLOR_BUFFER_BIT);
   }
 
-  private drawTriangles(b: TriangleBatch): void {
+  private writeTriangles(b: TriangleBatch, v: Float32Array, first: number): number {
     const n = b.positions.length / 4;
-    if (n === 0) return;
     this.stats.triangles += n / 3;
-    const v = this.scratch(n);
+    this.stats.unmergedDrawCalls++;
     for (let i = 0; i < n; i++) {
-      const o = i * FLOATS_PER_VERTEX;
+      const o = (first + i) * FLOATS_PER_VERTEX;
       v.set(b.positions.subarray(i * 4, i * 4 + 4), o);
       v.set(b.colors.subarray(i * 4, i * 4 + 4), o + 4);
       v[o + 8] = b.uvs[i * 2]!;
       v[o + 9] = b.uvs[i * 2 + 1]!;
     }
-    this.draw(b.state, n, true);
+    return first + n;
   }
 
-  private drawRect(b: RectBatch): void {
+  private writeRect(b: RectBatch, v: Float32Array, first: number): number {
     this.stats.rects++;
+    this.stats.unmergedDrawCalls++;
     const state = b.state;
     const copyOrFill = cycleTypeOf(state.otherModeH) >= CycleType.COPY;
     const x0 = b.xh / 4, y0 = b.yh / 4;
@@ -263,7 +323,7 @@ export class Renderer {
     const stepS = b.dsdx / 1024 / (cycleTypeOf(state.otherModeH) === CycleType.COPY ? 4 : 1);
     const stepT = b.dtdy / 1024;
     const s0 = b.s / 32, t0 = b.t / 32;
-    const corner = (px: number, py: number, o: number, v: Float32Array) => {
+    const corner = (px: number, py: number, o: number) => {
       v[o] = (px / SCREEN_W) * 2 - 1;
       v[o + 1] = 1 - (py / SCREEN_H) * 2;
       v[o + 2] = 0;
@@ -272,10 +332,9 @@ export class Renderer {
       v[o + 8] = s0 + (px - x0) * stepS;
       v[o + 9] = t0 + (py - y0) * stepT;
     };
-    const v = this.scratch(6);
     const order: [number, number][] = [[x0, y0], [x1, y0], [x0, y1], [x1, y0], [x1, y1], [x0, y1]];
-    order.forEach(([px, py], i) => corner(px, py, i * FLOATS_PER_VERTEX, v));
-    this.draw(state, 6, false);
+    order.forEach(([px, py], i) => corner(px, py, (first + i) * FLOATS_PER_VERTEX));
+    return first + 6;
   }
 
   private scratch(vertices: number): Float32Array {
@@ -283,17 +342,16 @@ export class Renderer {
     return this.vertices;
   }
 
-  private draw(state: DrawState, count: number, triangles: boolean): void {
+  private draw(run: DrawRun, first: number, count: number): void {
     const gl = this.gl;
+    const state = run.state;
     const spec = specOf(state);
     const program = this.program(spec);
     gl.useProgram(program.gl);
-    this.applyRaster(state, triangles, spec);
-    this.applyUniforms(program, state, triangles);
-    gl.bindVertexArray(this.vao);
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
-    gl.bufferData(gl.ARRAY_BUFFER, this.vertices.subarray(0, count * FLOATS_PER_VERTEX), gl.DYNAMIC_DRAW);
-    gl.drawArrays(gl.TRIANGLES, 0, count);
+    this.applyRaster(state, run.triangles, spec);
+    this.applyUniforms(program, state, run.triangles);
+    gl.drawArrays(gl.TRIANGLES, first, count);
+    this.stats.drawCalls++;
   }
 
   // ---- State -------------------------------------------------------------------------------------------------------
@@ -309,7 +367,7 @@ export class Renderer {
     const vp = state.viewport;
     if (triangles && vp.scale[0] !== 0 && vp.scale[1] !== 0) {
       // The viewport is twice as wide and high as the screen it maps to, around the same centre: triangles are clipped to
-      // twice the screen's size (dl.ts), and the vertex shader halves x and y, so that this guard band is the clip volume.
+      // twice the screen's size (runtime/gfx/dl.c), and the vertex shader halves x and y, so that this guard band is the clip volume.
       const hw = Math.abs(vp.scale[0]) / 4, hh = Math.abs(vp.scale[1]) / 4;
       const cx = vp.trans[0] / 4, cy = vp.trans[1] / 4;
       gl.viewport(Math.round((cx - 2 * hw) * k), Math.round((SCREEN_H - (cy + 2 * hh)) * k), Math.round(hw * 4 * k), Math.round(hh * 4 * k));
@@ -427,22 +485,15 @@ export class Renderer {
   private clearTextures(): void {
     for (const t of this.textureCache.values()) this.gl.deleteTexture(t.texture);
     this.textureCache.clear();
-    this.textureByImage = new WeakMap();
   }
 
-  /** Decoded textures are rebuilt for every task, so they are shared by content. */
+  /** The interpreter numbers each decoded image once, so the id names the pixels and no upload repeats across tasks. */
   private textureFor(image: DecodedTexture): GpuTexture {
-    const hit = this.textureByImage.get(image.rgba);
-    if (hit) return hit;
-    let h = 0x811c9dc5 ^ (image.width * 65537 + image.height);
-    for (let i = 0; i < image.rgba.length; i++) h = Math.imul(h ^ image.rgba[i]!, 0x01000193);
-    const key = `${image.width}x${image.height}:${h >>> 0}`;
-    let tex = this.textureCache.get(key);
+    let tex = this.textureCache.get(image.id);
     if (!tex) {
       tex = this.upload(image.width, image.height, image.rgba);
-      this.textureCache.set(key, tex);
+      this.textureCache.set(image.id, tex);
     }
-    this.textureByImage.set(image.rgba, tex);
     return tex;
   }
 }

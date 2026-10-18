@@ -1,5 +1,5 @@
 // Accumulates the results of many display-list runs.
-import type { DisplayListResult, UnknownCommand } from './dl.ts';
+import type { DisplayListResult, UnknownCommand } from './types.ts';
 
 export class DlTotals {
   tasks = 0;

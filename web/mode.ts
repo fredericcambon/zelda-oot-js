@@ -60,6 +60,11 @@ export class FramePacer {
     return due;
   }
 
+  /** How far into the next video frame real time is, from 0 to 1. */
+  fraction(): number {
+    return this.owed / frameMs(this.hz);
+  }
+
   /** Forgets the time owed (fast-forward runs without pacing). */
   reset(): void {
     this.owed = 0;

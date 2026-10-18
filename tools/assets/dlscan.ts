@@ -1,6 +1,6 @@
 // Finds display lists inside a file's bytes and reads the textures, palettes and vertex arrays they name.
 // Nothing here runs the lists; it only walks the commands the way the interpreter in tools/gfx does.
-import { Fmt } from '../gfx/decode.ts';
+import { Fmt } from '../gfx/types.ts';
 import { Op } from '../gfx/opcodes.ts';
 
 /** Bytes of a display-list command. */

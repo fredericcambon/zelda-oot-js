@@ -28,18 +28,21 @@ export interface BuildOptions {
   log: (msg: string) => void;
 }
 
-/** The runtime's C sources: every file of runtime/ itself (the unit tests live in a subdirectory). */
+/** The display-list interpreter's C sources, a module of its own that also builds without the game (runtime/gfx/gfx.h). */
+export const GFX_DIR = join(repoRoot, 'runtime', 'gfx');
+
+/** The runtime's C sources: every file of runtime/ and of runtime/gfx/ (the unit tests live in another subdirectory). */
 export function runtimeSources(): string[] {
   const dir = join(repoRoot, 'runtime');
-  return readdirSync(dir).filter((f) => f.endsWith('.c')).map((f) => join(dir, f));
+  return [dir, GFX_DIR].flatMap((d) => readdirSync(d).filter((f) => f.endsWith('.c')).map((f) => join(d, f)));
 }
 
 /** Host entry points (runtime/headless.c) and the allocator the host copies the ROM through. */
-const EXPORTS = ['_main', '_malloc', '_free', '_oot_boot', '_oot_frame', '_oot_idle', '_oot_frames', '_oot_gfx_tasks', '_oot_audio_tasks', '_oot_jpeg_tasks', '_oot_retraces', '_oot_fatal_message', '_oot_rd32', '_oot_rdram', '_oot_rom_base', '_oot_rom_size', '_oot_pad_set', '_oot_sram', '_oot_sram_size', '_oot_sram_take_dirty', '_oot_trace_count', '_oot_trace_at', '_oot_rsp_task_kinds', '_oot_rsp_task_kind', '_oot_cov_enabled', '_oot_cov_functions', '_oot_cov_os_count', '_oot_cov_os_addr', '_oot_cov_os_hits', '_oot_cov_outside_count', '_oot_cov_outside'];
+const EXPORTS = ['_main', '_malloc', '_free', '_oot_boot', '_oot_frame', '_oot_idle', '_oot_frames', '_oot_gfx_tasks', '_oot_audio_tasks', '_oot_jpeg_tasks', '_oot_retraces', '_oot_fatal_message', '_oot_rd32', '_oot_rdram', '_oot_rom_base', '_oot_rom_size', '_oot_pad_set', '_oot_sram', '_oot_sram_size', '_oot_sram_take_dirty', '_oot_trace_count', '_oot_trace_at', '_oot_rsp_task_kinds', '_oot_rsp_task_kind', '_oot_cov_enabled', '_oot_cov_functions', '_oot_cov_os_count', '_oot_cov_os_addr', '_oot_cov_os_hits', '_oot_cov_outside_count', '_oot_cov_outside', '_gfx_run', '_gfx_run_ram', '_gfx_result', '_gfx_reset', '_gfx_layout', '_gfx_trace_vertices', '_gfx_vertex_trace', '_gfx_vertex_trace_length', '_gfx_keep', '_gfx_run_kept', '_gfx_forget_kept', '_gfx_motion_record', '_gfx_motion_count', '_gfx_motion_matrices', '_gfx_motion_vertex_load_count', '_gfx_motion_vertex_loads', '_gfx_motion_input', '_gfx_motion_commit'];
 
 const COMPILE_FLAGS = ['-ffp-contract=off', '-Wall', '-Wno-unused-label', '-Wno-unused-variable', '-Wno-unused-but-set-variable', '-Wno-unused-function'];
 
-function emcc(tc: Toolchain, args: string[], cwd: string): Promise<{ code: number; output: string }> {
+export function emcc(tc: Toolchain, args: string[], cwd: string): Promise<{ code: number; output: string }> {
   return new Promise((resolve) => {
     const child = spawn(tc.python, [tc.emcc, ...args], { cwd, env: tc.env });
     let output = '';

@@ -2,7 +2,6 @@ import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { bootGame } from '../headless/boot.ts';
 import { loadBase } from '../recomp/test-base.ts';
-import { DisplayListInterpreter } from './dl.ts';
 import { flatness, SoftRenderer } from './raster.ts';
 import { DlTotals } from './totals.ts';
 
@@ -18,14 +17,13 @@ describe.skipIf(!rom || !existsSync(rom))('display lists of the booted game', ()
     const base = loadBase();
     expect(base.problems).toEqual([]);
 
-    const interpreter = new DisplayListInterpreter();
     const soft = new SoftRenderer();
     const flat: string[] = [];
     const totals = new DlTotals();
     let textured = 0;
     const game = await bootGame(base.moduleUrl, new Uint8Array(readFileSync(rom!)), {
       onGfxTask: (task) => {
-        const r = interpreter.run(task.ram, task.data);
+        const r = task.displayList();
         for (const b of r.batches) if (b.state.textures[0]) textured++;
         totals.add(r);
         soft.drawTask(r);

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { DisplayListInterpreter, decodeCombine, type TriangleBatch } from './dl.ts';
+import { sharedInterpreter } from './c-dl-node.ts';
+import { decodeCombine, type DisplayListResult, type TriangleBatch } from './types.ts';
 import { Op } from './opcodes.ts';
 import { SoftRenderer } from './raster.ts';
 
@@ -39,7 +40,8 @@ class Ram {
 const END: [number, number] = [0xdf000000, 0];
 const vtx = (n: number, v0: number, addr: number): [number, number] => [0x01000000 | (n << 12) | ((v0 + n) << 1), addr];
 const tri = (a: number, b: number, c: number): [number, number] => [0x05000000 | ((a * 2) << 16) | ((b * 2) << 8) | (c * 2), 0];
-const run = (ram: Ram, at: number) => new DisplayListInterpreter().run(ram.bytes, at);
+const run = (ram: Ram, at: number): DisplayListResult => interpreter.run(ram.bytes, at);
+const interpreter = await sharedInterpreter();
 const trianglesIn = (batches: { kind: string }[]) =>
   (batches as TriangleBatch[]).reduce((n, b) => n + (b.kind === 'triangles' ? b.positions.length / 12 : 0), 0);
 const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];

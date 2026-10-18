@@ -9,6 +9,7 @@ import { indexedDbStates, SaveStates, serverStates } from './savestate.ts';
 import { STATE_VERSION } from '../tools/runtime/snapshot.ts';
 import { migrateToServer } from './migrate.ts';
 import { FastForward } from './fastforward.ts';
+import { formatBreakdown } from '../tools/gfx/profile.ts';
 import { fetchWasm, preloadModule } from './wasm.ts';
 import { mark, timingLines } from './timing.ts';
 import { FramePacer, loadHz, saveHz, type Hz } from './mode.ts';
@@ -34,6 +35,58 @@ debugToggle.addEventListener('click', () => {
   debugToggle.blur();
 });
 
+const SMOOTH_KEY = 'oot.smooth';
+const readSmooth = (): boolean => {
+  try {
+    return localStorage.getItem(SMOOTH_KEY) === '1';
+  } catch {
+    return false;
+  }
+};
+const writeSmooth = (on: boolean): void => {
+  try {
+    localStorage.setItem(SMOOTH_KEY, on ? '1' : '0');
+  } catch {
+    // Storage may be blocked; the choice then lasts until the page is closed.
+  }
+};
+let smoothOn = readSmooth();
+const smoothToggle = document.getElementById('smooth-toggle') as HTMLButtonElement;
+smoothToggle.setAttribute('aria-pressed', String(smoothOn));
+smoothToggle.addEventListener('mousedown', (e) => e.preventDefault());
+smoothToggle.addEventListener('click', () => {
+  smoothOn = !smoothOn;
+  smoothToggle.setAttribute('aria-pressed', String(smoothOn));
+  writeSmooth(smoothOn);
+  smoothToggle.blur();
+});
+
+// Percent sliders: how much motion is shown and how fast it catches up to the current game frame.
+const tuneInput = (id: string, key: string): HTMLInputElement => {
+  const input = document.getElementById(id) as HTMLInputElement;
+  try {
+    const stored = Number(localStorage.getItem(key));
+    if (localStorage.getItem(key) !== null && stored >= Number(input.min) && stored <= Number(input.max)) input.value = String(stored);
+  } catch {
+    // Storage may be blocked; the default stays.
+  }
+  input.addEventListener('input', () => {
+    try {
+      localStorage.setItem(key, input.value);
+    } catch {
+      // The choice then lasts until the page is closed.
+    }
+    applyTuning();
+  });
+  // A slider that kept focus would take the arrow keys from the game.
+  input.addEventListener('change', () => input.blur());
+  return input;
+};
+const strengthInput = tuneInput('smooth-strength', 'oot.smooth.strength');
+const spanInput = tuneInput('smooth-span', 'oot.smooth.span');
+function applyTuning(): void {
+  game?.tuneSmooth({ strength: Number(strengthInput.value) / 100, span: Number(spanInput.value) / 100 });
+}
 // The video rate is chosen when the game boots, so the button only changes what the next page load boots.
 const bootHz: Hz = loadHz();
 let wantedHz: Hz = bootHz;
@@ -92,6 +145,7 @@ addEventListener('keydown', (e) => fastForward.keydown(e));
 addEventListener('keyup', (e) => fastForward.keyup(e));
 addEventListener('blur', () => fastForward.reset());
 let fps = 0;
+let shownFps = 0;
 let gameFps = 0;
 
 // Browsers start sound only from a user gesture; a key press or click does it, and for touch only the release counts.
@@ -145,15 +199,26 @@ addEventListener('keydown', (e) => {
   }
 });
 
+function smoothLines(): string[] {
+  if (!smoothOn) return [];
+  if (fastForward.active) return ['smooth: off while fast-forwarding'];
+  const info = game?.smoothInfo();
+  if (!info) return ['smooth: on, waiting for two game frames'];
+  const share = info.threeD === 0 ? 100 : (info.matched / info.threeD) * 100;
+  return [`smooth: on, ${info.matched} of ${info.threeD} 3D matrices matched (${share.toFixed(1)}%)${info.cut ? ', cut: drawn as is' : ''}, vertices written by the game ${(info.rewritten * 100).toFixed(1)}%`];
+}
+
 function updateOverlay(): void {
   if (overlay.hidden) return;
   const s = renderer.stats;
   const g = game?.info();
   overlay.textContent = [
-    `${fps.toFixed(0)} fps (${bootHz} Hz mode)  game ${gameFps.toFixed(1)} frames/s`,
+    `${fps.toFixed(0)} fps (${bootHz} Hz mode)  game ${gameFps.toFixed(1)} frames/s  displayed ${shownFps.toFixed(0)} fps`,
+    ...smoothLines(),
     ...timingLines(),
     g ? `frame ${g.frames}  retraces ${g.retraces}  gfx tasks ${g.gfxTasks}${g.idle ? '  IDLE' : ''}` : 'no game',
     `last task: ${s.commands} commands, ${s.batches} batches, ${s.triangles} triangles, ${s.rects} rects`,
+    ...(game ? formatBreakdown(game.profiler.breakdown()) : []),
     `unknown commands ${s.unknown}  problems ${s.problems.length}`,
     `programs ${s.programs}  textures ${s.textures}  colour images ${s.targets}`,
     game ? `video framebuffer 0x${game.framebuffer().toString(16)}` : '',
@@ -171,6 +236,7 @@ async function loop(): Promise<void> {
   const pacer = new FramePacer(bootHz);
   let countedGfx = game?.info().gfxTasks ?? 0;
   let counted = 0;
+  let presented = 0;
   let countStart = last;
   while (game) {
     await new Promise<void>((r) => requestAnimationFrame(() => r()));
@@ -196,6 +262,9 @@ async function loop(): Promise<void> {
       }
       last = performance.now();
     }
+    // Fast-forward runs frames back to back and has no time for in-between pictures.
+    game?.setSmooth(smoothOn && !fastForward.active);
+    applyTuning();
     const now = performance.now();
     let due = pacer.advance(now - last);
     last = now;
@@ -222,12 +291,18 @@ async function loop(): Promise<void> {
       counted++;
       stepped = true;
     }
-    if (game && stepped) {
-      renderer.present(game.framebuffer());
-      mark('firstFrame');
+    if (game) {
+      const smooth = game.drawSmooth(pacer.fraction());
+      if (smooth !== null || stepped) {
+        renderer.present(smooth ?? game.framebuffer());
+        mark('firstFrame');
+        presented++;
+      }
     }
     if (now - countStart >= 1000) {
       fps = (counted * 1000) / (now - countStart);
+      shownFps = (presented * 1000) / (now - countStart);
+      presented = 0;
       const gfxTasks = game?.info().gfxTasks ?? countedGfx;
       gameFps = ((gfxTasks - countedGfx) * 1000) / (now - countStart);
       countedGfx = gfxTasks;

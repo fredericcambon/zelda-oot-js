@@ -11,6 +11,7 @@ import type { Inventory } from '../analyze/types.ts';
 import { ENTRANCE_COUNT } from '../headless/state.ts';
 import { renderScenes, renderStatic, replaceBlock } from './render.ts';
 import { DEFAULT_START_FRAME, mergeReports, sweepScenes, type SceneSweepReport } from './scenes.ts';
+import { sharedInterpreter } from '../gfx/c-dl-node.ts';
 import { staticSweep, type StaticSweep } from './static.ts';
 
 const { values, positionals } = parseArgs({
@@ -46,7 +47,7 @@ async function main(): Promise<number> {
   const command = positionals[0];
   if (command === 'static') {
     const inventory = JSON.parse(readFileSync(values.inventory!, 'utf8')) as Inventory;
-    const result = staticSweep(loadContext(romPathFromEnv(values.rom)), inventory, resolve('runtime'));
+    const result = staticSweep(loadContext(romPathFromEnv(values.rom)), inventory, resolve('runtime'), await sharedInterpreter());
     writeFileSync(staticPath, JSON.stringify(result));
     console.log(`wrote ${staticPath}: ${result.tasks.tasks.length} RSP task kinds, ${result.os.entries.length} OS routines, ${result.os.mmio.length} register accesses`);
     return 0;

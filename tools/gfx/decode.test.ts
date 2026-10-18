@@ -1,5 +1,40 @@
 import { describe, expect, it } from 'vitest';
-import { decodeTexture, Fmt, Siz } from './decode.ts';
+import { sharedGfxModule } from './c-dl-node.ts';
+import { Fmt, Siz } from './types.ts';
+
+interface TextureSource {
+  fmt: number;
+  siz: number;
+  width: number;
+  height: number;
+  rowBytes: number;
+  data: Uint8Array;
+  offset?: number;
+  palette?: { data: Uint8Array; offset: number; ia: boolean };
+}
+
+const core = await sharedGfxModule();
+
+/** Decodes through gfx_decode_texture (runtime/gfx/decode.c); the source record is laid out as GfxTextureSource (wasm32). */
+function decodeTexture(src: TextureSource): { width: number; height: number; rgba: Uint8Array } {
+  const record = core._malloc(48);
+  const data = core._malloc(Math.max(1, src.data.length));
+  const palette = core._malloc(Math.max(1, src.palette?.data.length ?? 0));
+  const out = core._malloc(src.width * src.height * 4);
+  try {
+    core.HEAPU8.set(src.data, data);
+    if (src.palette) core.HEAPU8.set(src.palette.data, palette);
+    const words = new Int32Array(core.HEAPU8.buffer, record, 12);
+    words.set([
+      src.fmt, src.siz, src.width, src.height, src.rowBytes, data, src.data.length, src.offset ?? 0,
+      src.palette ? palette : 0, src.palette?.data.length ?? 0, src.palette?.offset ?? 0, src.palette?.ia ? 1 : 0,
+    ]);
+    core._gfx_decode_texture(record, out);
+    return { width: src.width, height: src.height, rgba: core.HEAPU8.slice(out, out + src.width * src.height * 4) };
+  } finally {
+    for (const p of [record, data, palette, out]) core._free(p);
+  }
+}
 
 const px = (img: { rgba: Uint8Array }, i: number) => Array.from(img.rgba.subarray(i * 4, i * 4 + 4));
 const bytes = (...b: number[]) => Uint8Array.from(b);

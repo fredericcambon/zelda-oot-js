@@ -6,7 +6,6 @@ import { pathToFileURL } from 'node:url';
 import { expect } from 'vitest';
 import { link } from '../port/build.ts';
 import { loadBase, variantDistDir } from '../recomp/test-base.ts';
-import { DisplayListInterpreter } from '../gfx/dl.ts';
 import { encodePng } from '../gfx/png.ts';
 import { HEIGHT, SoftRenderer, WIDTH } from '../gfx/raster.ts';
 import { bootGame, type Game } from './boot.ts';
@@ -70,14 +69,13 @@ export async function buildVariant(optimize: string): Promise<{ moduleUrl: strin
 /** A game whose display lists are drawn into frame images only shortly before each frame in `capture`. */
 export async function bootCapturing(capture: ReadonlySet<number>) {
   const { moduleUrl, cartridge } = await buildGame();
-  const interpreter = new DisplayListInterpreter();
   const soft = new SoftRenderer();
   let frame = 0;
   const unknown: string[] = [];
   const game = await bootGame(moduleUrl, cartridge, {
     onGfxTask: (task) => {
       if (![...capture].some((c) => frame <= c && frame > c - DRAW_LEAD)) return;
-      const result = interpreter.run(task.ram, task.data);
+      const result = task.displayList();
       unknown.push(...result.unknown.map((u) => `frame ${frame} 0x${u.w0.toString(16)}`), ...result.problems);
       soft.drawTask(result);
     },
@@ -170,12 +168,11 @@ export function withSection(state: Uint8Array, tag: string, payload: Uint8Array)
 /** A fresh game that draws the frames it plays into pictures and hashes: for each frame, the shown picture, the sound queued and Link's position. */
 export async function startReplayable(moduleUrl: string, cartridge: Uint8Array) {
   let soft = new SoftRenderer();
-  let interpreter = new DisplayListInterpreter();
   let sound = createHash('sha256');
   let drawing = false;
   const game = await bootGame(moduleUrl, cartridge, {
     onGfxTask: (task) => {
-      if (drawing) soft.drawTask(interpreter.run(task.ram, task.data));
+      if (drawing) soft.drawTask(task.displayList());
     },
     onAiBuffer: (b) => {
       if (drawing) sound.update(b.ram.subarray(b.addr & 0x7fffff, (b.addr & 0x7fffff) + b.length));
@@ -184,7 +181,6 @@ export async function startReplayable(moduleUrl: string, cartridge: Uint8Array) 
   /** Plays the frames after `from`, hashing the shown picture, the sound queued and Link's position of each. */
   const play = async (from: number, to: number): Promise<string[]> => {
     soft = new SoftRenderer();
-    interpreter = new DisplayListInterpreter();
     drawing = true;
     const frames: string[] = [];
     for (let frame = from + 1; frame <= to; frame++) {

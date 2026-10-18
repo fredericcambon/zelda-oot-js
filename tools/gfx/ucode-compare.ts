@@ -1,6 +1,6 @@
 // Compares what the display-list interpreter computes for a graphics task with what the graphics microcode computes on the
 // same task (tools/gfx/ucode-ref.ts): the vertices it loads and the pixels its triangles cover. Used by tests only.
-import { DisplayListInterpreter } from './dl.ts';
+import { CDisplayListInterpreter, readVertexTrace, type GfxTraceCore } from './c-dl.ts';
 import { GfxMicrocodeRef } from './ucode-ref.ts';
 
 const WIDTH = 320;
@@ -27,7 +27,9 @@ export interface Comparison {
 
 interface LoadEvent {
   w0: number;
-  vertices: ({ clip: number[]; color: number[]; s: number; t: number } | undefined)[];
+  /** First slot the load filled. */
+  first: number;
+  vertices: { clip: number[]; color: number[]; s: number; t: number }[];
 }
 
 /** Triangle commands of the RDP command stream: opcode, offset and length. */
@@ -71,18 +73,13 @@ function cover(mask: Uint8Array, p: { x: number; y: number }[]): void {
   }
 }
 
-/** Runs the interpreter and the microcode on the task and compares them; `ram` is not modified. */
-export function compareWithMicrocode(ram: Uint8Array, data: number, task: number): Comparison {
-  const interpreter = new DisplayListInterpreter();
-  const events: LoadEvent[] = [];
+/** Runs the interpreter (in `core`) and the microcode on the task and compares them; `ram` is not modified. */
+export function compareWithMicrocode(core: GfxTraceCore, ram: Uint8Array, data: number, task: number): Comparison {
   // The interpreter's vertex slots after each vertex load, to be read against the microcode's records at the same moment.
-  const internals = interpreter as unknown as { loadVertices(w0: number, w1: number): void; verts: LoadEvent['vertices'] };
-  const original = internals.loadVertices.bind(interpreter);
-  internals.loadVertices = (w0, w1) => {
-    original(w0, w1);
-    events.push({ w0, vertices: internals.verts.map((v) => v && { clip: [...v.clip], color: [...v.color], s: v.s, t: v.t }) });
-  };
-  const result = interpreter.run(ram, data);
+  core._gfx_trace_vertices(1);
+  const result = new CDisplayListInterpreter(core).run(ram, data);
+  const events: LoadEvent[] = readVertexTrace(core);
+  core._gfx_trace_vertices(0);
 
   const micro = new GfxMicrocodeRef();
   const snapshots: Uint8Array[] = [];
@@ -99,11 +96,9 @@ export function compareWithMicrocode(ram: Uint8Array, data: number, task: number
   const out: Comparison = { colourError: 0, textureError: 0, positionError: 0, coverageDifference: 0, vertices: 0 };
   for (let k = 0; k < Math.min(events.length, snapshots.length); k++) {
     const event = events[k]!, dmem = snapshots[k]!;
-    const count = (event.w0 >>> 12) & 0xff, first = ((event.w0 >>> 1) & 0x7f) - count;
-    for (let i = 0; i < count; i++) {
-      const v = event.vertices[first + i];
-      if (!v) continue;
-      const at = VERTEX_RECORDS + RECORD_BYTES * (first + i);
+    for (let i = 0; i < event.vertices.length; i++) {
+      const v = event.vertices[i]!;
+      const at = VERTEX_RECORDS + RECORD_BYTES * (event.first + i);
       const dv = new DataView(dmem.buffer, at);
       for (let c = 0; c < 4; c++) {
         const d = Math.abs(dmem[at + 0x10 + c]! - v.color[c]! * 255);

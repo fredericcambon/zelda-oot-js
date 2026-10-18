@@ -28,6 +28,106 @@ The old 3 frames per second were not the recompiled game. Measured here (video f
 - **Asyncify:** left as is. Guest threads are fibers (`runtime/sched.c`), which need it, and the guest alone is far above the target. **The thread mechanism is unchanged** (m4-savestate: nothing to adapt).
 - **Target:** at least 20 game frames per second headless is met by a factor of 10 or more even with every display list interpreted. `tools/sweep/sweep.test.ts` asserts more than 20 video fps over 2,500 frames of the scripted new game, on the coverage build.
 
+## Frame time breakdown
+
+Where one game frame (one graphics task) spends its time, headless at `-O2`, scripted new game with Kokiri Forest loaded at frame 19,000 (entrance 238, scene 85; Link under control, the opening cutscene skipped with A taps), mean of the last 300 game frames at frame 21,400, three runs:
+
+```
+npm run headless -- --input tools/headless/newgame.input --frames 21400 --entrance 238 --profile --profile-window 300
+```
+
+| Phase | ms per game frame | Share |
+|---|---|---|
+| Game code (the frame call minus the hooks) | 0.69–0.73 | 12% |
+| Display lists (`DisplayListInterpreter.run`) | 5.04–5.17 | 88% |
+| WebGL submit (`drawTask` + `present`) | n/a headless | – |
+| GPU (`EXT_disjoint_timer_query_webgl2`) | n/a headless | – |
+| Draw calls per frame | 113.5 | – |
+
+- Display-list processing is about 7 times the game code. Interpreting is the dominant CPU cost before any WebGL call, so porting it (and batching the draw calls) is where the gain is.
+- The audio mixer does not run in this measurement (no `--wav`); in the browser it runs inside the frame call as a hook and is left out of the game-code time, like the graphics hook.
+- Submit and GPU time need a browser: the debug overlay shows them (GPU as "n/a" when the browser lacks the timer query extension) and they were not measured here. Draw calls headless are counted as the renderer issues them: one per non-empty triangle batch and per rectangle that is not a fill.
+- Timing is a handful of `performance.now()` reads per task; browsers round them (about 0.1 ms, 1 ms in some), so single frames are coarse and only the means are meaningful.
+
+After the switch (every consumer on the C interpreter, `dl.ts` deleted), the same command with the display lists read into a `DisplayListResult` as the page reads them (`GfxTask.displayList()`, the same `runDisplayList` as `web/game.ts`):
+
+| Phase | ms per game frame, before (TypeScript) | ms per game frame, after (C) |
+|---|---|---|
+| Game code | 0.69–0.73 | 0.67–0.98 |
+| Display lists | 5.04–5.17 | 0.78–0.91 |
+| WebGL submit, GPU | n/a headless | n/a headless |
+
+- The after column is the quietest four of ten runs; the machine was shared with other builds, and the slower runs scaled game code and display lists together (game code 1.4–2.8 ms with display lists 1.2–2.5 ms), so the ratio, about 1 to 1.2, is the stable figure. Display lists went from about 7 times the game code to about equal to it.
+- **Browser:** the page now spends this display-list time per game frame (`runDisplayList` in `web/game.ts`, shown as "display lists" in the debug overlay) plus the WebGL submit and GPU phases, which need a browser and were not measured here. The overlay shows all four phases per game frame.
+
+### Display lists in C
+
+The same scripted new game with the display lists run by the interpreter in the module (`runtime/gfx/`, built with the game at `-O2`), 6,000 video frames (2,365 game frames), two runs each, `npx tsx tools/gfx/bench.ts --mode <mode>`:
+
+| Run | Video frames/s | Game frames/s | Display lists, ms per game frame |
+|---|---|---|---|
+| Game alone (`none`) | 7,872–7,926 | 3,103–3,124 | – |
+| TypeScript interpreter (`ts`, measured before it was deleted) | 813–823 | 320–324 | 2.64–2.68 |
+| C interpreter, result left in the module (`c`) | 3,393–3,472 | 1,337–1,369 | 0.39 |
+| C interpreter and the result read into a `DisplayListResult` (`c-read`) | 2,503–2,604 | 987–1,026 | 0.64–0.66 |
+
+The target was at least 700 game frames per second. Reading the result through `tools/gfx/c-dl.ts` costs 0.25 ms per game frame (it builds one object per state and per batch); a consumer that reads the arrays directly pays less.
+
+## Interpolated rendering ("Smooth")
+
+The game produces one picture per game frame: one graphics task every third retrace (a 20 ms video frame at 50 Hz, so 16.7 game frames per second; the 117 tasks of the walking run below were spaced 3 video frames apart every time). (In the 60 Hz mode the video frame is 1/60 s and a game frame still takes three of them, 20 per second; times below are counted in video frames, so the mapping is the same.) With the "Smooth" toggle on, the page draws a picture on every display refresh between the last two game frames. It interpolates the matrices the display lists load, never pixels, and draws with the interpreter's own pipeline (lighting, culling, clipping, textures), so everything that is not a matrix is exactly the current game frame's.
+
+How it works (`runtime/gfx/dl.c` "Matrix identity", `tools/gfx/motion.ts`, `tools/gfx/smooth.ts`, `web/game.ts`):
+
+- The game module keeps a copy of RDRAM from the last task (`gfx_keep`, 8 MB static buffer in `runtime/gfx/task.c`, 1.0 ms) and runs the task's display list over that copy with the commands' matrices replaced by interpolated ones (`gfx_run_kept`). Pictures are drawn when the display refreshes, not when the task arrives, so any refresh rate works. The copy is display data: `Game.states` empties it before a state is captured and after one is applied, so a saved state never carries it.
+- With the toggle off none of this runs and graphics tasks are drawn as they come, as before. The check: in the headless test, the kept frame run with nothing replaced draws the same pixels as the live run on every frame.
+
+### What names a matrix across frames
+
+A matrix command is named by the path of display-list calls that led to it plus its place in its list:
+
+- a call or branch to a segmented address (segments 1 to 15: the object and scene files) adds that address to the path; one to any other address adds nothing;
+- inside a list entered through a segmented address, the command's offset from the list's start;
+- inside any other list (the lists the game builds anew each frame), what the list does next: the first call or vertex load after the command, and the matrix commands passed on the way.
+
+Commands of one name (one limb list drawn for several actors) are told apart by their ordinal, the count of earlier commands of that name in the run. Pairing two frames is `matchFrames`: equal numbers of a name pair in order; unequal numbers pair the closest first, so that the ones that stayed keep their partners and the rest are left unmatched.
+
+Evidence for this choice, from the scripted new game in Kokiri Forest (entrance 238, Link and the camera moving):
+
+- **The matrix's address in RDRAM is not stable** and is not used. The game builds the frame's matrices in a pool that alternates between two buffers: the camera's matrix of consecutive tasks was read from 0x174538, 0x186948, 0x174538 and so on (the other matrices likewise), and only 5.0% of the matched matrices were at the same address as their counterpart.
+- **A path of raw call targets is not stable either.** The first version numbered the calls to lists the game builds (the n-th call from the same parent). The list that holds the overlays moved to another place in that order on almost every task (its camera matrices got a new name each frame) because the number of such calls before it changes with the actors on screen. Lists at addresses that are not segmented are therefore left out of the path, and the order survives only as the ordinal.
+- Result of the final scheme over 300 consecutive game frames (frames 2,000 to 2,900 after the entrance load): 72,912 matrices of 3D work, **72,642 matched (99.63%)**. In the ROM-gated test (`tools/gfx/smooth.test.ts`, 116 game frames while Link walks forward, right, back and left): 27,164 of 27,340 (**99.36%**). The unmatched ones are objects that appear or disappear (the matched/3D counts per frame go 249/249, 251/253, 253/255 ... as objects enter, and back as they leave).
+
+### What is interpolated, and what never is
+
+- 3D work only: a matrix is 3D when the projection in force while it is loaded is a perspective one (`GFX_MTX_PERSPECTIVE`: the third row's last entry is not zero). Matrices loaded under an orthographic projection (the HUD, text, rectangle transforms) are counted apart (about 6 of the roughly 250 matrices of a forest frame) and never replaced. Rectangles, 2D backgrounds (BG commands) and anything else that is not a matrix command are drawn exactly as in the current frame.
+- A matrix is taken apart into scale, rotation and translation; rotation is interpolated as a quaternion by spherical interpolation along the shortest arc, scale and translation linearly. The view matrix multiplied into the projection (the camera) is interpolated as eye position plus rotation, because interpolating its own translation swings the eye on an arc when the camera turns on the spot. A matrix that is not rotation, scale and translation (the perspective matrix, a sheared one) is blended entry by entry.
+- **Nothing smears.** A matrix with no counterpart in the previous frame is drawn as in the current one. So is a matched one that moved more than a limit (`MOTION_LIMITS`): translation 300 units (Link is 56 tall and runs about 6 per game frame; the fastest things in the forest move under 50), rotation 120 degrees (the shortest way round is ambiguous beyond half a turn), a scale factor changing by more than 4 times either way, or, for a matrix that is not rotation, scale and translation, an entry changing by more than half of its largest value. In the forest run 172 of the 72,642 matched matrices (0.24%) exceeded a limit: objects turning more than 120 degrees per game frame (spinning things, aliased at this rate anyway) and a few that grow from nothing.
+- **Camera cuts.** The camera is held to tighter limits (150 units of eye movement, 45 degrees); if any camera matrix of the frame has no counterpart or exceeds them, the whole frame is drawn as it is, so that the picture is the current frame pixel for pixel (checked in the test on every frame by moving the previous camera 1,000 units). A scene change brings new objects without counterparts and, when the camera matrices still pair, a jump of the camera. The forest run had no cut frames in its 300 game frames.
+- **Vertices the game writes itself** (limbs it skins on the CPU, water, effects) are not moved by a matrix and keep the current frame's values. Measured as the share of the vertices loaded whose bytes are in no vertex load of the previous frame: **0.3% (300-frame run) to 0.75% (test run) of a forest frame's vertices**. In the title and opening scenes the share is higher (13.8 to 15.5% while Epona and Link are on screen, from the browser's overlay).
+
+### Cost and latency
+
+Measured headless at `-O2` over the 117 tasks of the walking test, on a machine shared with other builds, so read the ratios:
+
+| Step | ms per game frame |
+|---|---|
+| Copy of RDRAM (`gfx_keep`) | 1.0 |
+| The recording run (the copy plus one interpreter run) | 3.2 |
+| One picture between frames (replaced matrices, run, read) | 1.9 |
+| The plain run of the same list, for comparison | 1.6 |
+
+A picture is drawn per display refresh (a 60 Hz display shows 3 per game frame, a 144 Hz display 8), each costing one interpreter run and one WebGL submit. A picture that cannot change (a cut, or no matrix moves) is drawn once per game frame.
+
+**Latency added: one game frame at most.** The picture at the moment a game frame arrives has its moving matrices at the previous frame's values, and reaches the current frame's values one game-frame interval later (`smoothFraction`: 0 at the frame's arrival, 1 one interval later, held at 1 if the next frame is late; `interpolate(plan, 0)` equals the previous frame's matrices, both unit-tested). What is on screen is therefore the game state one game-frame interval old: 60 ms at the 3-retrace spacing measured above. With smoothing off the finished frame appears at the next retrace (up to 20 ms), so the added delay is that interval minus the retrace: at most 60 ms, and nothing while the toggle is off.
+
+Two sliders next to the toggle tune it (stored in localStorage, `SmoothTuning`): **strength** (0 to 100%, default 100) keeps the picture nearer the current frame, 0 showing the game's own frames only; **catch-up** (25 to 100%, default 100) is the share of a game-frame interval the motion takes to reach the current frame, so 50% halves the added delay and holds the current frame for the rest.
+
+Fast-forward: smoothing is off while Tab is held, tasks are drawn as they come, and the kept frames are dropped (the first frame after is drawn as it is).
+
+### Browser check
+
+Checked in headless Chrome with software GL (SwiftShader; no real display or GPU): with the toggle on, the title scene (3D camera, Epona and Link, the logo drawn in 2D over it) is drawn correctly, the overlay reports every 3D matrix matched for it, the choice is stored in localStorage (`oot.smooth`) and the button takes no keyboard focus. The displayed fps there is limited by the software GL (35 to 53 ms of GPU time per game frame): 37 fps with smoothing off, 18 with it on. So "a new picture on every refresh of a 60 Hz or faster display" is not measured on a real display; the page draws one per `requestAnimationFrame`.
 ## Cost of the shadow stack
 
 The generated code keeps a shadow stack of its active calls, so that the threads of a saved state can be rebuilt in another build (`docs/runtime.md`, "Portable save states"). Measured on `-O2` builds of the same sources with and without it, guest alone (no hooks), the scripted new game: 3,000 frames of warm-up, then 16,000 timed video frames, the two wasm files run alternately six times each.
@@ -1028,3 +1128,30 @@ Fixed in m4-3d: the black ladder and the path that comes and goes (one browser b
 
 1. **The background that blinks dark blue.** Not reproduced. Checked: (a) display lists only: 14,000 frames of the idle title and attract demo (a throwaway scan, not kept, of what the last task drawn into the picture shown at each retrace contained: triangles, rectangles and fills): the only shown frames without a scene are 257-262, a black gap between the logo and the title (fill colour `0x00010001`, the screen is cleared, no dark blue); every fill in the demo is that black or the depth clear `0xFFFCFFFC`, so "dark blue" cannot be a clear colour. (b) The real page code (`web/game.ts`, `web/renderer.ts`, headless Chrome with SwiftShader, one game frame per present and also the bursts of the main loop, at scale 1 and 3), 26,000 frames, a thumbnail of every presented frame: no frame differs from both neighbours while they agree with each other (the dark-blue stretches are the night shots, frames 341-553, 5534-5539 (a flash fade) and 6388-6600). (c) 60 frames spread over the demo drawn by WebGL and by the software renderer: 100 pixels or fewer differ. (d) The renderer's texture cache is emptied every 512 textures (once per 11,000 frames of the demo): before this task that could delete a texture a draw held; made safe, with no visible effect found. Hypotheses left: a GPU-dependent shader result on real hardware (`wrapCoord`, `texelFetch`), or the user's saved game changing what the demo does. Next step: the frame number of the blink from the `#debug` overlay on the user's machine, then capture the display lists of that range and draw them in the page and in the software renderer as was done here.
 2. **The bridge of the Sheik/Link shot.** Not located. In the castle sequence of the intro (frames 5200-6300 of the headless run) the dl interpreter's triangles cover the same pixels as the microcode's (0.5% at most, 133 tasks compared); so the missing part, if it is in that sequence, is a draw that covers pixels and writes none (texture, alpha, depth or blend), or geometry the game never submits. The scan of batches that write nothing when drawn alone found five kinds of batch in 1,200 frames (opaque `127E03/FFFFFDF8` texture 64x16 and similar), none yet shown to be a bridge. Next step: the frame number of the shot, then draw its batches one by one and compare with footage; if the geometry is absent from the lists, look for an actor or object that fails to load.
+
+## Draw calls and final per-phase times
+
+`web/renderer.ts` now turns a task into runs (`web/batching.ts`): consecutive batches with the same program, uniforms, textures, scissor, viewport and colour image are one `drawArrays`, a fill rectangle or any state change ends a run, and the order of the batches is kept. A task's vertices go to the GPU in one `bufferData` instead of one per batch, and GPU textures are keyed by the interpreter's image id, so they live across tasks and no pixel is hashed (the id is never reused, so equal ids mean equal pixels).
+
+Measured on 20 game frames of Kokiri Forest (entrance 238, video frames 21,340-21,400 of the scripted new game), the recorded display lists drawn in Chrome 155 (headless, SwiftShader, WebGL2) by the old renderer and the new one on the same input:
+
+| | Old | New |
+|---|---|---|
+| Batches per task | 112 | 112 |
+| Draw calls per task | 110.0 | 99.8 |
+| Pixels differing between the two renderers | – | 0 in all 20 frames (the images are identical) |
+| Pixels differing from the software rasteriser (more than 6 per channel) | 614 at most per frame (0.8%) | the same 614 at most, frame by frame |
+
+- The gain is small, about 9%: between two consecutive batches the texture changes in nearly every pair (so does the tile placement), and the primitive colour or render mode in many. Only batches that differ in nothing the draw can see merge (12 of 112 pairs). Merging more needs textures in an atlas or a per-vertex texture index: a different design, not done here.
+- **Time:** not measurable here. The only GL available is SwiftShader (software), where the draw call itself rasterises: 25-40 ms per task in both versions, runs differing by more than the two versions do from each other, and no `EXT_disjoint_timer_query_webgl2`. On a real GPU the submit cost of 100 draw calls is well under 1 ms, so the changes were kept because they are correct and cheaper in calls, buffer uploads and hashing, not because a gain was shown. The debug overlay shows the real submit and GPU times on the user's machine.
+- The harness was throwaway (not kept): the C interpreter's results for the frames were saved as JSON, then drawn by both renderers and the software rasteriser in one page and compared pixel by pixel.
+
+Final per-phase times next to the first measurement (milliseconds per game frame, Kokiri Forest):
+
+| Phase | First measurement (TypeScript interpreter) | Now (C interpreter, merged draws) |
+|---|---|---|
+| Game code | 0.69-0.73 (headless) | 0.67-0.98 (headless) |
+| Display lists | 5.04-5.17 (headless) | 0.78-0.91 (headless, result read as the page reads it) |
+| WebGL submit | not measured (needs a browser) | not measurable here (SwiftShader only); see above |
+| GPU | not measured (needs a browser) | not measurable here (no timer query) |
+| Draw calls per frame | 113.5 | 99.8 (from 110.0 unmerged on the 20 frames above) |

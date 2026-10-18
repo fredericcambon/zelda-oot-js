@@ -1,4 +1,6 @@
 // Loads the built game into this process and steps it one video frame at a time.
+import { runDisplayList, type GfxGameCore } from '../gfx/c-dl.ts';
+import type { DisplayListResult } from '../gfx/types.ts';
 import { shownFramebuffer } from '../gfx/vi.ts';
 import { RDRAM_SIZE, startModule } from '../runtime/instance.ts';
 import { loadState, saveState, type StateCore } from '../runtime/snapshot.ts';
@@ -10,7 +12,7 @@ const TH_PRI = 0x04;
 const TH_ID = 0x14;
 const TH_ENTRY = 0x11c;
 
-interface OotModule extends StateCore {
+interface OotModule extends StateCore, GfxGameCore {
   _oot_reset(): void;
   _oot_jpeg_tasks(): number;
   _oot_ai_gaps(): number;
@@ -67,6 +69,8 @@ export interface GfxTask {
   data: number;
   size: number;
   ram: Uint8Array;
+  /** Runs the interpreter over the live memory; the result is valid until the next display list runs (see `copyResult`). */
+  displayList(): DisplayListResult;
 }
 
 /** An audio command list as the game submitted it. */
@@ -148,7 +152,7 @@ export async function bootGame(moduleUrl: string, rom: Uint8Array, options: Boot
   const guestRam = () => mod.HEAPU8.subarray(mod._oot_rdram(), mod._oot_rdram() + RDRAM_SIZE);
   const mod = await startModule<OotModule>(moduleUrl, rom, {
     onGfxTask: (data: number, size: number, task: number) => {
-      options.onGfxTask?.({ task: task >>> 0, data: data >>> 0, size: size >>> 0, ram: guestRam() });
+      options.onGfxTask?.({ task: task >>> 0, data: data >>> 0, size: size >>> 0, ram: guestRam(), displayList: () => runDisplayList(mod, data) });
     },
     onAudioTask: (data: number, size: number, microcode: number, microcodeData: number) =>
       options.onAudioTask?.({ data: data >>> 0, size: size >>> 0, microcode: microcode >>> 0, microcodeData: microcodeData >>> 0, ram: guestRam() }),

@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readCartridge } from '../assets/write.ts';
-import { DisplayListInterpreter, type DisplayListResult } from '../gfx/dl.ts';
+import type { DisplayListResult } from '../gfx/types.ts';
 import { encodePng } from '../gfx/png.ts';
 import { HEIGHT, SoftRenderer, WIDTH } from '../gfx/raster.ts';
 import { bootGame, type CoverageSnapshot, type Game } from '../headless/boot.ts';
@@ -127,14 +127,13 @@ class Session {
     const collector = { current: new Collector() };
     // The display lists of the scripted start are not interpreted: nothing of it is reported and it is most of the run's time.
     let replaying = true;
-    const interpreter = new DisplayListInterpreter();
     const soft = new SoftRenderer();
     const game = await bootGame(pathToFileURL(resolve(opts.dist, 'oot.js')).href, cartridge, {
       onGfxTask: (task) => {
         if (replaying) return;
         const c = collector.current;
         c.tasks++;
-        const result = interpreter.run(task.ram, task.data);
+        const result = task.displayList();
         record(c, total.graphics, result);
         if (c.draw) soft.drawTask(result);
         c.recent.push(primitives(result));
