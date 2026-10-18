@@ -93,21 +93,21 @@ Measured with `npx tsx tools/gfx/browser-bench.ts` (`tools/gfx/browser-bench.ts`
 
 | Screen | Settings | 3D image | fps | submit ms | GPU ms |
 |---|---|---|---|---|---|
-| desktop, ratio 1 | before | 960x720 | 60.0 | 1.36 | 3.68 |
-| | default (n64, msaa, mips) | 960x720 | 60.0 | 6.02¹ | 6.81¹ |
-| | smooth | 960x720 | 60.0 | 7.55¹ | 6.67¹ |
-| | sharp / no msaa / no mips | 960x720 | 60.0-60.1 | 1.34-1.47 | 3.88-4.08 |
-| desktop, ratio 2 | before | 1280x960 | 60.0 | 1.34 | 3.56 |
-| | default | 1920x1440 | 60.0 | 1.38 | 4.53 |
-| | smooth / sharp / no msaa / no mips | 1920x1440 | 60.0-60.1 | 1.35-1.41 | 3.91-4.47 |
-| phone (emulated), ratio 3 | before | 1231x924 | 60.1 | 1.35 | 3.53 |
-| | default (cap 2) | 1624x1218 | 60.0 | 1.37 | 4.29 |
-| | smooth / sharp / no msaa / no mips | 1624x1218 | 60.0-60.1 | 1.38-1.44 | 4.12-4.58 |
+| desktop, ratio 1 | before | 960x720 | 59.9 | 1.13 | 2.78 |
+| | default (n64, msaa, mips) | 960x720 | 60.1 | 1.14 | 3.69 |
+| | smooth / sharp / no msaa / no mips | 960x720 | 60.0-60.1 | 0.94-1.16 | 2.96-3.56 |
+| desktop, ratio 2 | before | 1280x960 | 60.0 | 0.67 | 2.12 |
+| | default | 1920x1440 | 60.1 | 0.68 | 2.96 |
+| | smooth / sharp / no msaa / no mips | 1920x1440 | 60.1 | 0.81-0.89 | 3.01-3.36 |
+| phone (emulated), ratio 3 | before | 1231x924 | 60.0 | 0.84 | 2.67 |
+| | default (cap 2) | 1624x1218 | 60.1 | 0.84 | 3.16 |
+| | smooth / sharp / no msaa / no mips | 1624x1218 | 60.0-60.1 | 0.66-0.82 | 2.61-3.10 |
 
-¹ The first run of the new programs in a profile with an empty GPU shader cache: the window includes the compile of the mip and 3-point variants (`programs ... ms to build` in the overlay: about 2.2 s for the default set against 0.7 s for the old one; 0.1-0.15 s once the browser has cached them, which is every later row). Draw time and fps are the same as before in the cached rows. The scene's display-list time (1.3-1.4 ms) and draw calls (146-147) do not change.
+**Shader build time** (the overlay's `programs ... ms to build`, which counts the time the page's thread spends compiling and linking; a fresh Chrome profile, so nothing cached, one configuration per run, desktop ratio 1, `--configs before` and `--configs after-default`): 624 ms before, 681 ms with the new default. A first version that built the mip-level programs at first use took 2.2 s. Now a program with mip levels is started in the background (KHR_parallel_shader_compile when the browser has it; otherwise one per task) and the draws use the same program without mip levels until it is ready, so the first frames cost what the old renderer cost and the mip levels appear a few frames later. A mip program that fails to build leaves its draws on the program without mip levels (logged). A table row after the first in a run reuses the profile's program cache, so build times in later rows (40-100 ms) say nothing about a cold start. The scene's display-list time (about 1 ms) and draw calls (146-147) do not change.
 
 - On this GPU nothing reaches the frame budget (GPU 4.5 ms against 16.7 ms), so the numbers say the cost is small here, not that it is small on a phone. A real phone is not measured; `scaleCap`, `anisotropy` and `msaa` are the levers if one is too slow.
-- The first visit stalls for about two seconds while the shaders build (about three times the old build); a later visit is cached. The tap and level loop has a single filter call to keep the build time down (a version with separate calls per level and tap built far slower in the first measurement: over 1 s of submit time per frame in its window).
+- The tap and level loop has a single filter call to keep the build time down (a version with separate calls per level and tap built far slower: over 1 s of submit time per frame in its window).
+- Until a mip program is ready, distant tiling textures shimmer as before; on a browser without parallel compilation this lasts one task per program.
 - Mip levels are averages of non-premultiplied RGBA, so a cut-out texture (leaves, grates) can lose or darken its edge with distance; not seen in the forest scene, not checked elsewhere.
 - Not checked: other scenes, a real touch device, any effect that reads a colour image back as a texture.
 

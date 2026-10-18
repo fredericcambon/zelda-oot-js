@@ -1,4 +1,4 @@
-// `npx tsx tools/gfx/browser-bench.ts [--out out/tex-filter] [--chrome <path>] [--seconds 8]`: measures the debug overlay's frame rate and
+// `npx tsx tools/gfx/browser-bench.ts [--out out/tex-filter] [--chrome <path>] [--seconds 8] [--screens a,b] [--configs a,b]`: measures the debug overlay's frame rate and
 // draw times in headless Chrome for several graphics settings, on a desktop and a phone-sized emulated screen, and writes a
 // picture of the 3D canvas for each run. The game is put in the scene of the first save state (key 6, `~/.zelda-oot-js/saves`)
 // and runs in the 60 Hz mode. Needs `dist/` from `npm run port`. Pictures come from the ROM, so they stay under `out/`.
@@ -14,6 +14,8 @@ const { values } = parseArgs({
     port: { type: 'string', default: process.env.PORT ?? '5299' },
     chrome: { type: 'string', default: 'C:/Program Files/Google/Chrome/Application/chrome.exe' },
     seconds: { type: 'string', default: '8' },
+    screens: { type: 'string', default: '' },
+    configs: { type: 'string', default: '' },
   },
 });
 const port = Number(values.port);
@@ -131,6 +133,7 @@ async function run(cdp: Cdp, screen: Screen, config: Config, outDir: string, sec
       return undefined;
     });
     await sleep(500);
+    for (const type of ['keyDown', 'keyUp']) await call('Input.dispatchKeyEvent', { type, key: 'm', code: 'KeyM', text: type === 'keyDown' ? 'm' : undefined });
     for (const type of ['keyDown', 'keyUp']) await call('Input.dispatchKeyEvent', { type, key: '6', code: 'Digit6', text: type === 'keyDown' ? '6' : undefined });
     await sleep(4000);
     const samples: Sample[] = [];
@@ -159,7 +162,7 @@ try {
   const debugPort = port + 1;
   const chrome = spawn(values.chrome!, [
     '--headless=new', `--remote-debugging-port=${debugPort}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check',
-    '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required', 'about:blank',
+    '--ignore-gpu-blocklist', '--mute-audio', '--autoplay-policy=no-user-gesture-required', 'about:blank',
   ], { stdio: 'ignore' });
   children.push(chrome);
   const wsUrl = await waitFor('Chrome', async () => ((await (await fetch(`http://127.0.0.1:${debugPort}/json/version`)).json()) as { webSocketDebuggerUrl: string }).webSocketDebuggerUrl);
@@ -168,7 +171,8 @@ try {
   mkdirSync(outDir, { recursive: true });
   console.log('| screen | settings | 3D image | fps | shader build ms | display lists ms | submit ms | GPU ms | draw calls | GPU |');
   console.log('|---|---|---|---|---|---|---|---|---|---|');
-  for (const screen of SCREENS) for (const config of [before(screen), ...CONFIGS]) console.log(await run(cdp, screen, config, outDir, Number(values.seconds)));
+  const only = (list: string) => (name: string) => list === '' || list.split(',').includes(name);
+  for (const screen of SCREENS.filter((x) => only(values.screens!)(x.name))) for (const config of [before(screen), ...CONFIGS].filter((x) => only(values.configs!)(x.name))) console.log(await run(cdp, screen, config, outDir, Number(values.seconds)));
   cdp.close();
 } finally {
   for (const c of children) if (c.pid) spawn('taskkill', ['/pid', String(c.pid), '/t', '/f'], { stdio: 'ignore' });

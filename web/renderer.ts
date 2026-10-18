@@ -37,6 +37,15 @@ interface Program {
   uniforms: Map<string, WebGLUniformLocation | null>;
 }
 
+/** A program that has been sent to the driver and not yet checked. */
+interface Building {
+  program: WebGLProgram;
+  stages: { shader: WebGLShader; source: string }[];
+}
+
+/** `COMPLETION_STATUS_KHR` of the KHR_parallel_shader_compile extension. */
+const COMPLETION_STATUS_KHR = 0x91b1;
+
 interface GpuTexture {
   texture: WebGLTexture;
   width: number;
@@ -98,6 +107,10 @@ export class Renderer {
   private readonly gpuTimer: GpuTimer;
   private presentGpuMs = 0;
   private readonly programs = new Map<string, Program>();
+  private readonly building = new Map<string, Building>();
+  private readonly parallel: boolean;
+  /** Mip-level programs that may still be built on the calling thread in this task, when the browser cannot build in parallel. */
+  private syncMipBudget = 0;
   private readonly presentProgram: Program;
   private readonly buffer: WebGLBuffer;
   private readonly vao: WebGLVertexArrayObject;
@@ -117,6 +130,7 @@ export class Renderer {
     this.gl = gl;
     this.settings = { ...settings };
     this.gpuTimer = new GpuTimer(gl);
+    this.parallel = gl.getExtension('KHR_parallel_shader_compile') !== null;
     this.presentProgram = this.link(PRESENT_VERTEX, PRESENT_FRAGMENT);
     this.buffer = gl.createBuffer()!;
     this.vao = gl.createVertexArray()!;
@@ -202,6 +216,7 @@ export class Renderer {
     this.collectGpu();
     this.gpuTimer.begin('task');
     s.tasks++;
+    this.syncMipBudget = 1;
     s.drawCalls = 0;
     s.unmergedDrawCalls = 0;
     s.commands = result.commands;
@@ -446,10 +461,10 @@ export class Renderer {
     const gl = this.gl;
     const state = run.state;
     const spec = specOf(state, { filter: this.settings.filter, mip: this.settings.mipmaps && run.triangles });
-    const program = this.program(spec);
+    const { program, spec: used } = this.program(spec);
     gl.useProgram(program.gl);
-    this.applyRaster(state, run.triangles, spec);
-    this.applyUniforms(program, state, run.triangles, spec.mip);
+    this.applyRaster(state, run.triangles, used);
+    this.applyUniforms(program, state, run.triangles, used.mip);
     gl.drawArrays(gl.TRIANGLES, first, count);
     this.stats.drawCalls++;
   }
@@ -535,32 +550,80 @@ export class Renderer {
 
   // ---- Programs and textures ---------------------------------------------------------------------------------------
 
-  private link(vertex: string, fragment: string): Program {
+  /** Compiles and links without waiting for the result; `finish` checks it. */
+  private start(vertex: string, fragment: string): Building {
     const gl = this.gl;
     const compile = (type: number, source: string) => {
       const s = gl.createShader(type)!;
       gl.shaderSource(s, source);
       gl.compileShader(s);
-      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(`shader compile failed: ${gl.getShaderInfoLog(s)}\n${source}`);
-      return s;
+      return { shader: s, source };
     };
+    const stages = [compile(gl.VERTEX_SHADER, vertex), compile(gl.FRAGMENT_SHADER, fragment)];
     const program = gl.createProgram()!;
-    gl.attachShader(program, compile(gl.VERTEX_SHADER, vertex));
-    gl.attachShader(program, compile(gl.FRAGMENT_SHADER, fragment));
+    for (const { shader } of stages) gl.attachShader(program, shader);
     gl.linkProgram(program);
+    return { program, stages };
+  }
+
+  private finish({ program, stages }: Building): Program {
+    const gl = this.gl;
+    for (const { shader, source } of stages) {
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(`shader compile failed: ${gl.getShaderInfoLog(shader)}
+${source}`);
+    }
     if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(`shader link failed: ${gl.getProgramInfoLog(program)}`);
     return { gl: program, uniforms: new Map() };
   }
 
-  private program(spec: ShaderSpec): Program {
+  private link(vertex: string, fragment: string): Program {
+    return this.finish(this.start(vertex, fragment));
+  }
+
+  /**
+   * The program for a spec. A mip-level program is slow to build, so the first frames draw with the same program without mip
+   * levels while the full one builds in the background (in parallel when the browser can, else one per task).
+   */
+  private program(spec: ShaderSpec): { program: Program; spec: ShaderSpec } {
     const key = specKey(spec);
     let p = this.programs.get(key);
-    if (!p) {
-      const started = performance.now();
-      p = this.link(VERTEX_SHADER, fragmentSource(spec));
-      this.stats.compileMs += performance.now() - started;
-      this.programs.set(key, p);
+    if (p) return { program: p, spec };
+    if (spec.mip) {
+      const full = this.mipProgram(spec, key);
+      return full ? { program: full, spec } : this.program({ ...spec, mip: false });
     }
+    const started = performance.now();
+    p = this.link(VERTEX_SHADER, fragmentSource(spec));
+    this.stats.compileMs += performance.now() - started;
+    this.programs.set(key, p);
+    return { program: p, spec };
+  }
+
+  /** The finished program, or null while it is still building or waits for its turn. */
+  private mipProgram(spec: ShaderSpec, key: string): Program | null {
+    const gl = this.gl;
+    let building = this.building.get(key);
+    if (!building) {
+      if (!this.parallel && this.syncMipBudget <= 0) return null;
+      this.syncMipBudget--;
+      const started = performance.now();
+      building = this.start(VERTEX_SHADER, fragmentSource(spec));
+      this.stats.compileMs += performance.now() - started;
+      this.building.set(key, building);
+    }
+    if (this.parallel && !gl.getProgramParameter(building.program, COMPLETION_STATUS_KHR)) return null;
+    this.building.delete(key);
+    const started = performance.now();
+    let p: Program;
+    try {
+      p = this.finish(building);
+    } catch (err) {
+      // A variant that does not build leaves the draws on the program without mip levels.
+      console.error(err);
+      p = this.program({ ...spec, mip: false }).program;
+    }
+    this.stats.compileMs += performance.now() - started;
+    this.programs.set(key, p);
     return p;
   }
 
