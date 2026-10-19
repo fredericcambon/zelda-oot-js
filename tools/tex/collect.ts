@@ -84,6 +84,16 @@ export const GROUP_NEW_SHARE = 0.5;
 /** In a churning group, pixels seen in at most this many frames belong to a texture that changes. */
 export const SHORT_LIVED_FRAMES = 5;
 
+export interface GroupStats {
+  group: string;
+  present: number;
+  withNew: number;
+}
+
+export function isChurning(g: { present: number; withNew: number }): boolean {
+  return g.present >= GROUP_MIN_FRAMES && g.withNew / g.present >= GROUP_NEW_SHARE;
+}
+
 export class TextureCollector {
   private readonly entries = new Map<string, Entry>();
   private readonly hashOfId = new Map<number, string>();
@@ -92,6 +102,9 @@ export class TextureCollector {
   private readonly groupOf = new Map<string, string>();
   private frame = 0;
   private scene = -1;
+
+  /** `known`: hashes seen by earlier collectors of the same run; a texture among them is not new pixels for the churn rule. */
+  constructor(private readonly known: ReadonlySet<string> = new Set()) {}
 
   /** Starts the next frame (graphics task). */
   nextFrame(scene: number): void {
@@ -155,7 +168,7 @@ export class TextureCollector {
           };
           this.entries.set(hash, e);
           this.groupOf.set(hash, group);
-          g.newThisFrame = true;
+          if (!this.known.has(hash)) g.newThisFrame = true;
         }
         const s = edgeOf(tile.maskS, tile.cmS), t = edgeOf(tile.maskT, tile.cmT);
         e.pictureHashes.add(this.pictureOfId.get(image.id)!);
@@ -175,12 +188,14 @@ export class TextureCollector {
   }
 
   /** The textures with their final classification, their pixels by hash, and the groups that churn. */
-  finish(): { records: TextureRecord[]; pixels: Map<string, Uint8Array>; churningGroups: { group: string; present: number; withNew: number }[] } {
+  finish(): { records: TextureRecord[]; pixels: Map<string, Uint8Array>; churningGroups: GroupStats[]; groups: GroupStats[] } {
     this.finishFrame();
     const churning = new Set<string>();
-    const churningGroups: { group: string; present: number; withNew: number }[] = [];
+    const churningGroups: GroupStats[] = [];
+    const groups: GroupStats[] = [];
     for (const [group, g] of this.groups) {
-      if (g.present >= GROUP_MIN_FRAMES && g.withNew / g.present >= GROUP_NEW_SHARE) {
+      groups.push({ group, present: g.present, withNew: g.withNew });
+      if (isChurning(g)) {
         churning.add(group);
         churningGroups.push({ group, present: g.present, withNew: g.withNew });
       }
@@ -197,6 +212,6 @@ export class TextureCollector {
       records.push(record);
       pixels.set(hash, e.rgba);
     }
-    return { records, pixels, churningGroups };
+    return { records, pixels, churningGroups, groups };
   }
 }

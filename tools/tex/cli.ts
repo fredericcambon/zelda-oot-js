@@ -3,7 +3,7 @@ import { parseArgs } from 'node:util';
 import { dump } from './dump.ts';
 import { defaultPython, defaultToolDir, upscale } from './upscale.ts';
 
-const USAGE = `usage: tex dump [--dist dist] [--out out/texdump]
+const USAGE = `usage: tex dump [--dist dist] [--out out/texdump] [--all [--frames 600] [--entrances 238,626] [--fresh] [--hang 120]]
        tex upscale [--dump out/texdump] [--out out/texpack] [--tool <dir>] [--python <exe>] [--variants a,b,c,d] [--pad 16] [--limit N]
        tex compare [--out out/tex-compare] [--pack out/texpack] [--variants a,b,c,d] [--chrome <path>]`;
 
@@ -22,9 +22,25 @@ async function main(argv: string[]): Promise<number> {
       limit: { type: 'string' },
       pack: { type: 'string', default: 'out/texpack' },
       chrome: { type: 'string', default: 'C:/Program Files/Google/Chrome/Application/chrome.exe' },
+      all: { type: 'boolean', default: false },
+      worker: { type: 'boolean', default: false },
+      hang: { type: 'string', default: '120' },
+      fresh: { type: 'boolean', default: false },
+      frames: { type: 'string', default: '600' },
+      entrances: { type: 'string' },
       port: { type: 'string', default: process.env.PORT ?? '5399' },
     },
   });
+  if (command === 'dump' && values.all) {
+    const { dumpAll, superviseDumpAll } = await import('./dump-all.ts');
+    const options = { dist: values.dist!, out: values.out ?? 'out/texdump', frames: Number(values.frames), entrances: values.entrances?.split(',').map(Number) };
+    if (values.worker) await dumpAll(options);
+    else {
+      const forward = ['dist', 'out', 'frames', 'entrances'].flatMap((k) => (values[k as 'dist'] === undefined ? [] : [`--${k}`, values[k as 'dist']!]));
+      await superviseDumpAll({ ...options, fresh: values.fresh, hangSeconds: Number(values.hang), workerArgs: forward });
+    }
+    return 0;
+  }
   if (command === 'dump') {
     await dump({ dist: values.dist!, out: values.out ?? 'out/texdump' });
     return 0;
