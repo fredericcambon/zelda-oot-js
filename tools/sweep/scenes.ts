@@ -15,6 +15,9 @@ import { ENTRANCE_COUNT, ENTRANCE_TABLE, playState, requestEntrance, SCENE_RECOR
 
 /** Frames drawn before a dumped frame, so that its colour image is complete. */
 const DRAW_LEAD = 8;
+/** The title card record of the play context starts at +0x1D4C; its byte +0xB counts the frames before the card fades in (docs/re/title-cards.md). */
+const CARD_DELAY_AT = 0x1d4c + 0xb;
+
 /** Retraces at the end of a run in which a scene must have drawn something. */
 const BLANK_WINDOW = 30;
 /** The game under player control in Link's house: the earliest point from which the scripted new game leaves a plain play state. */
@@ -90,6 +93,8 @@ export interface SweepOptions {
   /** Where the dumped frames go; none are drawn when unset. */
   dumpDir?: string;
   dumpsPerScene: number;
+  /** When set, the picture shown `frame` frames after each entrance is taken is written to `dir` as `<entrance>.png`, at half size, with the title card held back. */
+  thumbs?: { dir: string; frame: number };
   log: (message: string) => void;
   /** Called after each entrance with the report so far. */
   onProgress?: (report: SceneSweepReport) => void;
@@ -171,6 +176,12 @@ class Session {
     new DataView(ram.buffer, ram.byteOffset, ram.byteLength).setUint32(addr & 0x7fffff, value >>> 0);
   };
 
+  /** Writes a byte of guest memory. */
+  write8 = (addr: number, value: number): void => {
+    const ram = this.game.ram();
+    new DataView(ram.buffer, ram.byteOffset, ram.byteLength).setUint8(addr & 0x7fffff, value);
+  };
+
   begin(): Collector {
     this.collector.current = new Collector();
     return this.collector.current;
@@ -197,6 +208,20 @@ function primitives(result: DisplayListResult): number {
   let n = 0;
   for (const b of result.batches) n += b.kind === 'triangles' ? b.positions.length / 12 : 1;
   return n;
+}
+
+/** A 2 x 2 box average of an RGBA image of WIDTH x HEIGHT. */
+function halve(img: Uint8Array): Uint8Array {
+  const out = new Uint8Array((WIDTH / 2) * (HEIGHT / 2) * 4);
+  for (let y = 0; y < HEIGHT / 2; y++) {
+    for (let x = 0; x < WIDTH / 2; x++) {
+      for (let c = 0; c < 4; c++) {
+        const at = (dy: number, dx: number) => img[((2 * y + dy) * WIDTH + 2 * x + dx) * 4 + c]!;
+        out[(y * (WIDTH / 2) + x) * 4 + c] = (at(0, 0) + at(0, 1) + at(1, 0) + at(1, 1) + 2) >> 2;
+      }
+    }
+  }
+  return out;
 }
 
 /** Pixels that differ from the most frequent colour: a blank or flat frame has none. */
@@ -303,8 +328,14 @@ export async function sweepScenes(opts: SweepOptions): Promise<SceneSweepReport>
     if (wantDumps) dumped.set(info.scene, opts.dumpsPerScene);
     const result: EntranceResult = { ...base, forced };
     let lastImage: Uint8Array | undefined;
+    const thumbFrame = opts.thumbs?.frame ?? 0;
     for (let k = 1; k <= opts.frames; k++) {
-      collector.draw = dumpFrames.some((f) => k > f - DRAW_LEAD && k <= f);
+      collector.draw = dumpFrames.some((f) => k > f - DRAW_LEAD && k <= f) || (thumbFrame > 0 && k > thumbFrame - DRAW_LEAD && k <= thumbFrame);
+      // Keeping the delay at its maximum keeps the title card from fading in over the picture.
+      if (thumbFrame > 0) {
+        const here = playState(session.game.rd32);
+        if (here) session.write8(here.context + CARD_DELAY_AT, 0xff);
+      }
       const r = await session.game.frame();
       result.frames = k;
       if (r.fatal) {
@@ -315,6 +346,13 @@ export async function sweepScenes(opts: SweepOptions): Promise<SceneSweepReport>
       if (!r.alive) {
         result.status = 'halted';
         break;
+      }
+      if (k === thumbFrame && opts.thumbs) {
+        const img = session.soft.image(session.game.framebuffer());
+        if (img && playState(session.game.rd32)?.scene === table[forced + session.game.rd32(SETUP_VARIANT)]?.scene) {
+          mkdirSync(resolve(opts.thumbs.dir), { recursive: true });
+          writeFileSync(join(resolve(opts.thumbs.dir), `${String(entrance).padStart(4, '0')}.png`), encodePng(WIDTH / 2, HEIGHT / 2, halve(img)));
+        }
       }
       if (dumpFrames.includes(k)) {
         const img = session.soft.image(session.game.framebuffer());

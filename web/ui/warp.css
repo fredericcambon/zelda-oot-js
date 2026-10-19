@@ -1,6 +1,7 @@
 .warp .place { display: flex; align-items: center; gap: 8px; }
-.warp .place img { flex: none; width: 144px; height: 24px; background: #000; border-radius: 2px; image-rendering: pixelated; }
-.warp .place .names { min-width: 0; }
+.warp .place .thumb { flex: none; width: 96px; height: 72px; background: #111; border-radius: 2px; }
+.warp .place .card { display: block; width: 144px; height: 24px; background: #000; border-radius: 2px; image-rendering: pixelated; }
+.warp .place .names { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .warp .place .yours { font-style: italic; }
 .warp .place .yours::after { content: ' (yours)'; color: #999; font-style: normal; font-size: 11px; }
 .warp .place .ids { font-size: 11px; color: #999; }

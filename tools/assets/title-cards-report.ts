@@ -1,11 +1,12 @@
 // Lists which scenes have a title card and which of them the game can draw (docs/re/title-cards.md), and writes one sheet of
 // the cards to out/title-cards/ (git-ignored): `OOT_ROM=<rom> npx tsx tools/assets/title-cards-report.ts`.
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { CARD_HEIGHT, CARD_WIDTH, ENTRANCE_SHOWS_CARD, readTitleCards, SCENE_RECORDS, scenesWithCard } from '../../web/inspect/title-cards.ts';
 import { encodePng } from '../gfx/png.ts';
 import { readFile } from '../rom/extract.ts';
 import { locateFileTable } from '../rom/filetable.ts';
 import { ENTRANCE_COUNT, ENTRANCE_TABLE, SCENE_TABLE } from '../headless/state.ts';
+import { SCENE_COUNT } from '../../web/inspect/warp.ts';
 
 const path = process.env.OOT_ROM;
 if (!path) throw new Error('set OOT_ROM to the ROM path');
@@ -36,6 +37,17 @@ for (const scene of withFile) {
   const mine = entrances.filter((e) => e.scene === scene);
   console.log(`${scene} | ${cards.file(scene)} | ${mine.filter((e) => e.flags & ENTRANCE_SHOWS_CARD).length} / ${mine.length}`);
 }
+
+// What each entrance of the Warp list can show: the destination scene's card, and the picture the sweep took there (dist/warp-thumbs).
+const valid = entrances.filter((e) => e.scene < SCENE_COUNT);
+const hasCard = (e: { scene: number }) => shown.has(e.scene);
+const hasPicture = (e: { entry: number }) => existsSync(`dist/warp-thumbs/${String(e.entry).padStart(4, '0')}.png`);
+const cardOnly = valid.filter((e) => hasCard(e) && !hasPicture(e));
+const pictureOnly = valid.filter((e) => !hasCard(e) && hasPicture(e));
+const both = valid.filter((e) => hasCard(e) && hasPicture(e));
+const neither = valid.filter((e) => !hasCard(e) && !hasPicture(e));
+console.log(`entrances ${entrances.length}; valid ${valid.length}; with a card ${valid.filter(hasCard).length}; with a picture ${valid.filter(hasPicture).length}; both ${both.length}, card only ${cardOnly.length}, picture only ${pictureOnly.length}, neither ${neither.length}`);
+if (neither.length > 0) console.log(`neither: ${neither.map((e) => e.entry).join(', ')}`);
 
 // One row per scene with a card, English picture.
 const rows = withFile.length;

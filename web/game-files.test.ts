@@ -92,3 +92,16 @@ describe('game files', () => {
     }
   });
 });
+
+describe('warp pictures', () => {
+  it('serves numbered pngs from dist/warp-thumbs and nothing else under it', async () => {
+    mkdirSync(join(dist, 'warp-thumbs'), { recursive: true });
+    writeFileSync(join(dist, 'warp-thumbs', '0238.png'), new Uint8Array([1, 2, 3]));
+    writeFileSync(join(dist, 'warp-thumbs', 'x.png'), new Uint8Array([1]));
+    const ok = await get('/warp-thumbs/0238.png');
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get('content-type')).toBe('image/png');
+    expect((await get('/warp-thumbs/0239.png')).status).toBe(404);
+    expect((await get('/warp-thumbs/x.png')).status).toBe(404);
+  });
+});
