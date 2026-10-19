@@ -1,10 +1,12 @@
 // Test harness: assembles snippets, recompiles them to C, builds them with Emscripten, runs them in
 // Node and returns the final CPU and memory state of each snippet.
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { assemble, parseReg } from './asm.ts';
 import { recompileUnit } from './emit.ts';
+import { Cache, defaultCacheDir, defaultMaxBytes, hashFile, hashKey } from '../port/cache.ts';
+import { emscriptenVersion } from '../port/build.ts';
 import { repoRoot as root, type Toolchain } from './toolchain.ts';
 
 
@@ -180,6 +182,26 @@ function runnerSource(snips: Snippet[], symbols: number[][]): string {
   return out.join('\n');
 }
 
+const RUNNER_OUTPUTS = ['runner.cjs', 'runner.wasm'];
+
+/** Builds `runner.c` in `workDir`, or restores the build from the shared cache keyed by every source it includes, the flags and the compiler release. */
+function compileRunner(tc: Toolchain, workDir: string): void {
+  const flags = ['-O1', '-ffp-contract=off', '-Wall', '-Wno-unused-label', '-Wno-unused-variable', `-I${join(root, 'runtime')}`, '-sENVIRONMENT=node', '-sEXIT_RUNTIME=1'];
+  const sources = readdirSync(workDir).filter((f) => f.endsWith('.c')).sort();
+  const headers = readdirSync(join(root, 'runtime')).filter((f) => f.endsWith('.h')).sort();
+  const key = hashKey(
+    'harness', emscriptenVersion(tc), ...flags, '--',
+    ...sources.map((f) => `${f}=${hashFile(join(workDir, f))}`), ...headers.map((f) => `${f}=${hashFile(join(root, 'runtime', f))}`),
+  );
+  const cache = new Cache(defaultCacheDir(), defaultMaxBytes());
+  if (cache.restore('harness', key, workDir)) return;
+  const build = spawnSync(tc.python, [tc.emcc, ...flags, 'runner.c', '-o', 'runner.cjs'], { cwd: workDir, env: tc.env, encoding: 'utf8' });
+  if (build.status !== 0) throw new Error(`emcc failed:
+${build.stderr}
+${build.stdout}`);
+  cache.store('harness', key, workDir, RUNNER_OUTPUTS);
+}
+
 export function runSnippets(snips: Snippet[], tc: Toolchain, workDir: string): Result[] {
   rmSync(workDir, { recursive: true, force: true });
   mkdirSync(workDir, { recursive: true });
@@ -199,12 +221,7 @@ export function runSnippets(snips: Snippet[], tc: Toolchain, workDir: string): R
   });
   writeFileSync(join(workDir, 'runner.c'), runnerSource(snips, symbols));
 
-  const build = spawnSync(
-    tc.python,
-    [tc.emcc, '-O1', '-ffp-contract=off', '-Wall', '-Wno-unused-label', '-Wno-unused-variable', `-I${join(root, 'runtime')}`, '-sENVIRONMENT=node', '-sEXIT_RUNTIME=1', 'runner.c', '-o', 'runner.cjs'],
-    { cwd: workDir, env: tc.env, encoding: 'utf8' },
-  );
-  if (build.status !== 0) throw new Error(`emcc failed:\n${build.stderr}\n${build.stdout}`);
+  compileRunner(tc, workDir);
   const run = spawnSync(process.execPath, ['runner.cjs'], { cwd: workDir, encoding: 'utf8', maxBuffer: 1 << 28 });
   if (run.status !== 0) throw new Error(`runner failed (${run.status}):\n${run.stderr}\n${run.stdout.slice(0, 2000)}`);
 

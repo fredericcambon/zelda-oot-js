@@ -55,3 +55,31 @@ describe('inventory', () => {
     expect(inventorySnapshot(bridge).frozen).toEqual([]);
   });
 });
+
+describe('edits beyond editRecord', () => {
+  it('sets heart pieces, upgrade levels and magic, and reads them back', () => {
+    const { bridge, at } = setup();
+    editContext(bridge, [['heartPieces', '3'], ['upgrade.1', '4'], ['upgrade.0', '2'], ['magicSize', '2'], ['magic', '90']]);
+    const fields = inventorySnapshot(bridge).fields!;
+    expect(fields.heartPieces).toBe(3);
+    expect(fields.upgrades).toEqual([2, 4, 0, 0]);
+    expect([fields.level32, fields.flag3A, fields.flag3C, fields.byte33]).toEqual([2, 1, 1, 90]);
+    expect(at(0xa4)).toBe(0x30);
+    editContext(bridge, [['magicSize', '1']]);
+    expect(inventorySnapshot(bridge).fields).toMatchObject({ level32: 1, flag3C: 0, byte33: 0x30 });
+  });
+
+  it('owns and gives up an equipment column', () => {
+    const { bridge } = setup();
+    editContext(bridge, [['own.2.1', '1']]);
+    expect((inventorySnapshot(bridge).fields!.nibbleGroups as Record<string, { word9C: number }>).equip2!.word9C & 2).toBe(2);
+    editContext(bridge, [['own.2.1', '0']]);
+    expect((inventorySnapshot(bridge).fields!.nibbleGroups as Record<string, { word9C: number }>).equip2!.word9C & 2).toBe(0);
+  });
+
+  it('refuses out-of-range values', () => {
+    const { bridge } = setup();
+    expect(() => editContext(bridge, [['heartPieces', '9']])).toThrow(Refused);
+    expect(() => editContext(bridge, [['magic', '200']])).toThrow(Refused);
+  });
+});

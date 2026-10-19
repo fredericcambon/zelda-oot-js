@@ -44,6 +44,15 @@ describe('actor snapshot', () => {
     expect(snap.groups[1]!.rows.map((r) => [r.id, r.distance])).toEqual([[0x11, 50], [0x25, 500]]);
   });
 
+  it('reads the spawn parameter, the object slot and the distance across x and z', () => {
+    const { mem } = world();
+    mem.write32(0x80201200 + 0x1c, 0x1234fe00 >>> 0);
+    const row = readSnapshot(mem, undefined).groups[1]!.rows[0]!;
+    expect(row.param).toBe(0x1234);
+    expect(row.objectSlot).toBe(-2);
+    expect(row.flat).toBe(50);
+  });
+
   it('has no distances without Link', () => {
     const snap = readSnapshot(world(false).mem, undefined);
     expect(snap.link).toBeNull();

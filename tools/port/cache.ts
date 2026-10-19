@@ -8,6 +8,9 @@ import { dirname, join, relative, resolve } from 'node:path';
 
 export const DEFAULT_MAX_GB = 10;
 
+/** Folders of the cache directory that belong to other tools (test states, vitest's timing cache) and that eviction leaves alone. */
+const UNMANAGED = new Set(['intro-state', 'vitest']);
+
 export function defaultCacheDir(): string {
   return process.env.OOT_CACHE_DIR || join(homedir(), '.zelda-oot-js', 'cache');
 }
@@ -177,6 +180,7 @@ export class Cache {
     const entries: { path: string; bytes: number; used: number }[] = [];
     if (!existsSync(this.dir)) return 0;
     for (const kind of readdirSync(this.dir)) {
+      if (UNMANAGED.has(kind)) continue;
       const kindDir = join(this.dir, kind);
       if (kind === 'tmp') {
         for (const t of readdirSync(kindDir)) {

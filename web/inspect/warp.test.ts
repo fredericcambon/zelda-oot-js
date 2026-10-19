@@ -3,7 +3,7 @@ import { guestRam } from '../../tools/headless/load-save.ts';
 import { ENTRANCE_COUNT, ENTRANCE_INDEX, ENTRANCE_TABLE, SCENE_RECORD_SIZE, SCENE_TABLE, SETUP_VARIANT, setupVariantFor } from '../../tools/headless/state.ts';
 import { Bridge } from './bridge.ts';
 import { Refused } from './queue.ts';
-import { entranceName, loadBookmarks, loadSceneLabels, readEntrances, readLive, saveBookmarks, saveSceneLabels, search, warpTo } from './warp.ts';
+import { entranceName, loadBookmarks, thumbUrl, loadSceneLabels, readEntrances, readLive, saveBookmarks, saveSceneLabels, search, warpTo } from './warp.ts';
 
 const memory = () => {
   const m = new Map<string, string>();
@@ -29,7 +29,7 @@ describe('entrances', () => {
   it('reads the scene and spawn, and flags scenes past the table', () => {
     const rows = readEntrances(world().mem);
     expect(rows).toHaveLength(ENTRANCE_COUNT);
-    expect(rows[5]).toEqual({ entry: 5, scene: 0x55, spawn: 3, valid: true });
+    expect(rows[5]).toEqual({ entry: 5, scene: 0x55, spawn: 3, flags: 0, valid: true });
     expect(rows[6]!.valid).toBe(false);
   });
 
@@ -42,6 +42,10 @@ describe('entrances', () => {
     expect(search(rows, '')).toHaveLength(ENTRANCE_COUNT);
   });
 
+  it('names the picture file of an entrance by its number, four digits', () => {
+    expect(thumbUrl(238)).toBe('/warp-thumbs/0238.png');
+  });
+
   it('names an entrance by its numbers only', () => {
     expect(entranceName(0x55, 0xee)).toBe('scene 0x55 / entrance 0x0EE');
   });
@@ -49,7 +53,7 @@ describe('entrances', () => {
 
 describe('live state', () => {
   it('gives the scene and the entry it was loaded from', () => {
-    expect(readLive(world().mem)).toMatchObject({ scene: 0x55, entry: 5 });
+    expect(readLive(world().mem)).toMatchObject({ scene: 0x55, entry: 5, language: 0 });
   });
 
   it('has no entry when the table names another scene for it', () => {

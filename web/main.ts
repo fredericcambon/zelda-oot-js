@@ -14,7 +14,10 @@ import { formatBreakdown } from '../tools/gfx/profile.ts';
 import { fetchWasm, preloadModule } from './wasm.ts';
 import { mark, timingLines } from './timing.ts';
 import { FramePacer, loadHz, saveHz, type Hz } from './mode.ts';
-import { AutoStart, fileSelectReached, guestRam } from '../tools/headless/load-save.ts';
+import { AutoStart, fileSelectReached, guestRam, loadRecordIntoPlay, unsafeReason } from '../tools/headless/load-save.ts';
+import { playState } from '../tools/headless/state.ts';
+import { parseBootParams, type BootParams } from './boot-params.ts';
+import { getRecord } from '../tools/saves/image.ts';
 import { backToFileSelect, loadSaveFile, loadSlotIntoPlay, type SaveTarget } from './save-actions.ts';
 import { pickSaveFile } from './save-picker.ts';
 import { EMPTY_INVENTORY, editContext, inventorySnapshot, sameInventory, toggleFreeze } from './inspect/inventory.ts';
@@ -23,6 +26,7 @@ import { applyCheats, loadCheats, parseCode, saveCheats, type Cheat } from './in
 import { loadLightIds, saveLightIds, toggleId } from './inspect/light-labels.ts';
 import { EMPTY_ACTORS, goToActor, sameSnapshot as sameActors, snapshot as actorsSnapshot } from './inspect/actors.ts';
 import { EMPTY_MEMORY, MemoryModel, parseAddress } from './inspect/memory.ts';
+import { labels } from './ui/labels.ts';
 import { mountUi } from './ui/panel.ts';
 import { Store } from './ui/store.ts';
 import { isTyping } from './ui/typing.ts';
@@ -496,9 +500,108 @@ async function boot(): Promise<void> {
     applyTuning();
     setStatus('Running');
     void loop();
+    if (!captureMode) void applyBootParams(parseBootParams(location.search));
   } catch (err) {
     setStatus(err instanceof Error ? err.message : String(err), true);
   }
+}
+
+/** Runs `run` between two frames and resolves with the message it gives, or the failure. */
+function betweenFrames(run: () => Promise<string> | string): Promise<string> {
+  return new Promise((resolve) => {
+    bridge.queue.push(async () => {
+      try {
+        const message = await run();
+        resolve(message);
+        return message;
+      } catch (err) {
+        const message = `Failed: ${err instanceof Error ? err.message : String(err)}`;
+        resolve(message);
+        return message;
+      }
+    });
+  });
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+const BOOT_WAIT_MS = 60_000;
+
+/** Waits until the game can be changed between frames; false when it did not within BOOT_WAIT_MS. */
+async function untilSettled(): Promise<boolean> {
+  for (let waited = 0; waited < BOOT_WAIT_MS; waited += 100) {
+    if (!bridge.unsafeReason()) return true;
+    await sleep(100);
+  }
+  return false;
+}
+
+const SETTLE_FRAMES = 1500;
+
+/** Runs frames back to back, with no input and no picture, until `done` holds; false when it does not within SETTLE_FRAMES. */
+async function runUntil(g: Game, done: () => boolean): Promise<boolean> {
+  g.setPad({ buttons: 0, x: 0, y: 0 });
+  for (let i = 0; i < SETTLE_FRAMES && !done(); i++) await g.frame();
+  return done();
+}
+
+/** Puts a record of the save memory in play without the title or the file select: runs to the title's demo scene, loads the record into the save context there and runs until the scene is settled. */
+async function enterFile(g: Game, record: Uint8Array, slot: number): Promise<string> {
+  const mem = () => guestRam(g.ram());
+  if (!(await runUntil(g, () => playState((a) => mem().rd32(a)) !== undefined))) return 'Could not enter the save file: the game did not reach a scene';
+  const { scene } = loadRecordIntoPlay(mem(), record, slot, true);
+  if (!(await runUntil(g, () => unsafeReason(mem()) === undefined))) return 'Could not enter the save file: the scene did not settle';
+  return `Entered save file ${slot + 1} (scene ${scene})`;
+}
+
+/** Applies the URL parameters in order: save state, save file, warp. A parameter that cannot be applied is reported and the game keeps running. */
+async function applyBootParams(params: BootParams): Promise<void> {
+  const problems = [...params.problems];
+  const report = () => {
+    if (problems.length > 0) showNotice(problems.join('; '));
+  };
+  report();
+  let entered = false;
+  if (params.state !== undefined) {
+    const slot = params.state;
+    const target = states;
+    if (!target) {
+      problems.push('Save states are not available');
+    } else {
+      const message = await betweenFrames(async () => {
+        await target.select(slot - target.slot);
+        store.set({ slot: target.slot });
+        return target.load();
+      });
+      showNotice(message);
+      entered = message.startsWith('Loaded');
+      if (!entered) problems.push(message);
+    }
+  }
+  if (params.file !== undefined) {
+    const file = params.file;
+    const g = game;
+    if (!g) return;
+    const record = getRecord(g.saveMemory.read(), file - 1);
+    if (!record) {
+      problems.push(`Save file ${file} is empty`);
+    } else {
+      const message = await betweenFrames(() => enterFile(g, record, file - 1));
+      showNotice(message);
+      entered = message.startsWith('Entered');
+      if (!entered) problems.push(message);
+    }
+  }
+  if (params.warp !== undefined) {
+    const entrance = params.warp;
+    if ((params.state !== undefined || params.file !== undefined) && !entered) {
+      problems.push(`Warp to ${entrance} skipped: no scene was entered`);
+    } else if (!(await untilSettled())) {
+      problems.push(`Warp to ${entrance} skipped: the game is not in a scene`);
+    } else {
+      bridge.queue.push(() => warpTo(bridge, entrance), 'Warp failed');
+    }
+  }
+  report();
 }
 
 function setCheats(cheats: Cheat[]): void {
@@ -622,7 +725,7 @@ const actions: UiActions = {
     store.set({ lightIds });
     showNotice(lightIds.includes(id) ? `Actors with id 0x${id.toString(16)} light up (point lights must be on)` : `Actors with id 0x${id.toString(16)} no longer light up`);
   },
-  goToActor: (addr) => bridge.queue.push(() => goToActor(bridge, addr), 'Go to failed'),
+  goToActor: (addr) => bridge.queue.push(() => goToActor(bridge, addr, (id) => labels.get('actor', id) ?? `actor ${id}`), 'Go to failed'),
   viewRecord(addr) {
     memoryModel.setStart(addr);
     updateMemory(performance.now(), true);

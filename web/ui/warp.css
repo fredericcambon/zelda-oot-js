@@ -1,0 +1,13 @@
+.warp .scene { margin-top: 10px; }
+.warp .scene h4 { margin: 0 0 4px; font-size: 13px; }
+.warp .arrival { display: flex; align-items: flex-start; gap: 8px; padding: 4px 0; border-top: 1px solid #2a2a2a; }
+.warp .thumb { flex: none; width: 96px; height: 72px; background: #111; border-radius: 2px; }
+.warp .card { display: block; width: 144px; height: 24px; margin: 2px 0 4px; background: #000; border-radius: 2px; image-rendering: pixelated; }
+.warp .names { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.warp .title { font-size: 13px; }
+.warp .yours { font-style: italic; }
+.warp .yours::after { content: ' (yours)'; color: #999; font-style: normal; font-size: 11px; }
+.warp .ids { font-size: 11px; color: #999; font-weight: normal; }
+.warp .variants { gap: 4px; margin-top: 2px; }
+.warp .variants button { padding: 2px 6px; font-size: 11px; }
+.warp .more summary { font-size: 11px; color: #999; cursor: pointer; }
