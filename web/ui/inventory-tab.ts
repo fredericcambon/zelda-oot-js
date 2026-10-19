@@ -5,7 +5,7 @@ import { ITEM_SLOT_OF_ID } from '../../tools/saves/record.ts';
 import { itemIconIndex, questIconIndex } from '../inspect/icons.ts';
 import type { Fields } from '../inspect/inventory.ts';
 import { useIcons, type Icons } from './icons.ts';
-import { BUTTON_ITEMS, countName, EQUIP_ROWS, FIELD_NAMES, questBitName, slotName } from './inventory-names.ts';
+import { BUTTON_ITEMS, countName, type FieldName, EQUIP_ROWS, FIELD_NAMES, questBitName, slotName } from './inventory-names.ts';
 import { useLabels } from './label-edit.ts';
 import type { TabProps } from './types.ts';
 import { Button, NumberEdit } from './widgets.ts';
@@ -192,11 +192,14 @@ export function InventoryTab({ state: s, actions: a }: TabProps): VNode {
   const tokens = f.bitsA4.includes(23);
   const tokenIcon = icons.quest(questIconIndex(23)!);
   const held = (key: string) => frozen.includes(key);
-  const raw = (key: string, value: number | string, hint: string): VNode => html`<tr key=${key} title=${tip(key, hint)}>
+  const raw = (key: string, value: number | string, n: string | FieldName): VNode => {
+    const { hint, observed } = typeof n === 'string' ? { hint: n, observed: true } : n;
+    return html`<tr key=${key} class=${observed ? '' : 'unproven'} title=${tip(key, observed ? hint : `${hint}\n(not proven by observation)`)}>
     <td>${key}</td>
     <td><${NumberEdit} id=${`inv-raw-${key}`} value=${String(value)} width=${64} onApply=${(t: string) => edit(key, t.trim() === '' ? 'none' : t.trim())} /></td>
     <td><${Button} class="hold" pressed=${held(key)} title="Rewrite this value before every frame" onClick=${() => a.toggleFreeze(key)}>${held(key) ? 'Held' : 'Hold'}<//></td>
   </tr>` as VNode;
+  };
   const choose = (p: Page) => {
     shownPage = p;
     setPage(p);
@@ -256,14 +259,14 @@ export function InventoryTab({ state: s, actions: a }: TabProps): VNode {
     <details class="raw" id="inv-advanced">
       <summary>Advanced: raw fields</summary>
       <table class="slots"><tbody>
-        ${raw('hearts', f.hearts, FIELD_NAMES.hearts.hint)}
-        ${raw('health', f.health, FIELD_NAMES.health.hint)}
-        ${raw('count34', f.count34, FIELD_NAMES.count34.hint)}
-        ${raw('limit34', f.limit34, FIELD_NAMES.limit34.hint)}
-        ${raw('countD0', f.countD0, FIELD_NAMES.countD0.hint)}
+        ${raw('hearts', f.hearts, FIELD_NAMES.hearts)}
+        ${raw('health', f.health, FIELD_NAMES.health)}
+        ${raw('count34', f.count34, FIELD_NAMES.count34)}
+        ${raw('limit34', f.limit34, FIELD_NAMES.limit34)}
+        ${raw('countD0', f.countD0, FIELD_NAMES.countD0)}
         ${raw('heartPieces', f.heartPieces, 'Bits 28 to 31 of the quest word')}
-        ${f.items.map((id, i) => raw(`items.${i}`, itemText(id), slotName(i).hint))}
-        ${f.counts8C.map((v, i) => raw(`counts8C.${i}`, v, countName(i).hint))}
+        ${f.items.map((id, i) => raw(`items.${i}`, itemText(id), slotName(i)))}
+        ${f.counts8C.map((v, i) => raw(`counts8C.${i}`, v, countName(i)))}
         <tr><td>name</td><td colspan="2">${f.name}</td></tr>
         <tr><td>scene</td><td colspan="2" title=${tip('scene', FIELD_NAMES.scene.hint)}>${hex(f.scene)}</td></tr>
         <tr><td>magic</td><td colspan="2" title=${FIELD_NAMES.byte33.hint}>size ${f.level32}, fill ${f.byte33}, flags ${f.flag3A} ${f.flag3C}</td></tr>

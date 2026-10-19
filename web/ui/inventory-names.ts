@@ -31,7 +31,7 @@ export const EQUIP_ROWS = ['Swords', 'Shields', 'Tunics', 'Boots'];
 
 export const FIELD_NAMES = {
   hearts: seen('Heart containers', 'The hearts drawn at the top left; setting it fills the health to match'),
-  health: seen('Health', 'Hearts left, in sixteenths of a heart'),
+  health: seen('Health', 'Hearts left; shown and edited in hearts, so 2.5 is two and a half hearts'),
   count34: seen('Rupees', 'The number next to the green gem at the bottom left'),
   limit34: seen('Wallet size', '0 holds 99 rupees, 1 holds 200, 2 and 3 hold 500; the counter turns green when it is full'),
   countD0: seen('Spider token count', 'The number next to the spider icon on the Quest Status page (the icon needs quest icon 23)'),
@@ -40,7 +40,7 @@ export const FIELD_NAMES = {
   flag3A: seen('Has magic meter', 'The magic bar appears once this is set'),
   flag3C: seen('Double magic', 'With the meter, the bar is long when this is set'),
   name: neutral('File name', 'The name typed when the file was made'),
-  scene: neutral('Scene', 'The scene the file resumes in; the game has no name table for scenes, so label it yourself'),
+  scene: neutral('Scene', 'The scene the file resumes in; no name for it is proven here, so label it yourself'),
   bytes68: seen('Buttons', 'The items on the B and C buttons'),
   equip: seen('Equipment', 'The equipment page: one row per group, three columns'),
   bitsA4: seen('Quest icons', 'Each number lights one icon on the Quest Status page'),
