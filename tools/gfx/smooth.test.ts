@@ -20,7 +20,7 @@ const SCRIPT = parseInput(readFileSync(new URL('../headless/newgame.input', impo
 /** The cutscene that follows the entrance is skipped with A taps; then Link walks forward, right, back and left. */
 const CUTSCENE_TAPS = parseInput('tap A 100 4000 40 3', 'tap');
 const WALKING_FROM = 2450;
-const WALKING_UNTIL = 2570;
+const WALKING_UNTIL = 2620;
 const WALK = parseInput('2450 NONE 0 70\n2500 NONE 70 0\n2550 NONE 0 -70\n2600 NONE -70 0\n2650 NONE 0 70\n2700 NONE', 'walk');
 
 interface GameCore extends OotCore, SmoothCore {
