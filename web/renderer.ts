@@ -35,6 +35,18 @@ export interface RenderStats {
   compileMs: number;
   textures: number;
   targets: number;
+  /** Draws of the last task that wanted a mip-level program and drew with the one without (the mip variant is not usable yet, or did not build). */
+  mipFallbackDraws: number;
+  /** Times a mip variant went from unusable to usable (once per variant: the choice does not alternate). */
+  programSwitches: number;
+  /** Mip variants that did not build; each is reported once and stays on the program without mip levels. */
+  mipFailures: number;
+  /** Textures uploaded in the last task, and over the run; every upload builds the mip levels once. */
+  uploads: number;
+  totalUploads: number;
+  /** Only with `trackTextureBuilds`: uploads of a picture that had been uploaded before, and the most uploads of one picture. */
+  reuploads: number;
+  maxUploadsOfOne: number;
 }
 
 interface Program {
@@ -60,6 +72,10 @@ interface GpuTexture {
   scale: number;
   /** Hash of the decoded texture, when it was looked up in the pack. */
   hash?: string;
+  /** Hash of the picture a texture made from the decoded image holds; textures are shared by it (`byContent`). */
+  content?: string;
+  /** Decoded-image ids that use this texture. */
+  refs: number;
 }
 
 interface Target {
@@ -108,7 +124,7 @@ const physical = (addr: number): number => addr & 0x1fffffff;
 
 export class Renderer {
   cullMode: CullMode = 'normal';
-  readonly stats: RenderStats = { tasks: 0, commands: 0, batches: 0, triangles: 0, rects: 0, drawCalls: 0, unmergedDrawCalls: 0, unknown: 0, problems: [], programs: 0, compileMs: 0, textures: 0, targets: 0 };
+  readonly stats: RenderStats = { tasks: 0, commands: 0, batches: 0, triangles: 0, rects: 0, drawCalls: 0, unmergedDrawCalls: 0, unknown: 0, problems: [], programs: 0, compileMs: 0, textures: 0, targets: 0, mipFallbackDraws: 0, programSwitches: 0, mipFailures: 0, uploads: 0, totalUploads: 0, reuploads: 0, maxUploadsOfOne: 0 };
 
   private readonly gl: WebGL2RenderingContext;
   /** Called with the GPU milliseconds of each finished game frame (its task plus the presents that followed). */
@@ -121,6 +137,13 @@ export class Renderer {
   private readonly parallel: boolean;
   /** Mip-level programs that may still be built on the calling thread in this task, when the browser cannot build in parallel. */
   private syncMipBudget = 0;
+  /** The task from which a built mip variant is used: a variant finished while a task is drawn waits for the next, so no task draws one layer with it and another without. */
+  private readonly mipUsableFrom = new Map<string, number>();
+  /** Mip variants that failed to build. */
+  private readonly mipFailed = new Set<string>();
+  /** Counts the uploads of each picture (by its hash) for the debug overlay; off by default, hashing every upload costs. */
+  trackTextureBuilds = false;
+  private readonly uploadCounts = new Map<string, number>();
   private readonly presentProgram: Program;
   private readonly fx: PostFx;
   private taskId = 0;
@@ -134,6 +157,8 @@ export class Renderer {
   private samples = 0;
   private readonly targets = new Map<number, Target>();
   private readonly textureCache = new Map<number, GpuTexture>();
+  /** Textures of the decoded images by the hash of their picture: the interpreter numbers an image afresh when its caches turn over, and the same picture must not be uploaded and have its mip levels built again. */
+  private readonly byContent = new Map<string, GpuTexture>();
   private readonly white: GpuTexture;
   private lastResult: DisplayListResult | null = null;
   /** While recording (for tools/tex/compare.ts): per task, the textures it drew as `<hash><state>`, state `+` replaced, `~` in the pack but not yet loaded, `-` not in the pack. */
@@ -341,6 +366,8 @@ export class Renderer {
     this.lastResult = result;
     this.taskId++;
     this.syncMipBudget = 1;
+    s.mipFallbackDraws = 0;
+    s.uploads = 0;
     s.drawCalls = 0;
     s.unmergedDrawCalls = 0;
     s.commands = result.commands;
@@ -825,17 +852,20 @@ ${source}`);
   }
 
   /**
-   * The program for a spec. A mip-level program is slow to build, so the first frames draw with the same program without mip
-   * levels while the full one builds in the background (in parallel when the browser can, else one per task).
+   * The program for a spec. A mip-level program is slow to build, so until it is usable the draws use the same program without mip levels (built
+   * in parallel when the browser can, else one per task). The choice is made once per task for every draw: a variant that finishes during a task is
+   * used from the next one, and a variant that does not build stays on the program without mip levels for good.
    */
   private program(spec: ShaderSpec): { program: Program; spec: ShaderSpec } {
     const key = specKey(spec);
+    if (spec.mip) {
+      const full = this.mipFailed.has(key) ? null : this.mipProgram(spec, key);
+      if (full) return { program: full, spec };
+      this.stats.mipFallbackDraws++;
+      return this.program({ ...spec, mip: false });
+    }
     let p = this.programs.get(key);
     if (p) return { program: p, spec };
-    if (spec.mip) {
-      const full = this.mipProgram(spec, key);
-      return full ? { program: full, spec } : this.program({ ...spec, mip: false });
-    }
     const started = performance.now();
     p = this.link(VERTEX_SHADER, fragmentSource(spec));
     this.stats.compileMs += performance.now() - started;
@@ -843,9 +873,11 @@ ${source}`);
     return { program: p, spec };
   }
 
-  /** The finished program, or null while it is still building or waits for its turn. */
+  /** The mip variant when it is usable in this task, else null: it is not built yet, still building, waiting for its turn, finished in this task, or failed. */
   private mipProgram(spec: ShaderSpec, key: string): Program | null {
     const gl = this.gl;
+    const done = this.programs.get(key);
+    if (done) return (this.mipUsableFrom.get(key) ?? 0) <= this.taskId ? done : null;
     let building = this.building.get(key);
     if (!building) {
       if (!this.parallel && this.syncMipBudget <= 0) return null;
@@ -858,17 +890,17 @@ ${source}`);
     if (this.parallel && !gl.getProgramParameter(building.program, COMPLETION_STATUS_KHR)) return null;
     this.building.delete(key);
     const started = performance.now();
-    let p: Program;
     try {
-      p = this.finish(building);
+      this.programs.set(key, this.finish(building));
+      this.mipUsableFrom.set(key, this.taskId + 1);
+      this.stats.programSwitches++;
     } catch (err) {
-      // A variant that does not build leaves the draws on the program without mip levels.
-      console.error(err);
-      p = this.program({ ...spec, mip: false }).program;
+      this.mipFailed.add(key);
+      this.stats.mipFailures++;
+      console.error(`the mip-level variant of a shader did not build; its draws stay without mip levels:`, err);
     }
     this.stats.compileMs += performance.now() - started;
-    this.programs.set(key, p);
-    return p;
+    return null;
   }
 
   private uniform(p: Program, name: string): WebGLUniformLocation | null {
@@ -891,17 +923,31 @@ ${source}`);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, mipmaps ? gl.NEAREST_MIPMAP_NEAREST : gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     if (mipmaps) gl.generateMipmap(gl.TEXTURE_2D);
-    return { texture, width, height, mipmapped: mipmaps, scale };
+    return { texture, width, height, mipmapped: mipmaps, scale, refs: 1 };
+  }
+
+  private countUpload(image: DecodedTexture, replaced: boolean): void {
+    this.stats.uploads++;
+    this.stats.totalUploads++;
+    if (!this.trackTextureBuilds) return;
+    const key = hashImage(image) + (replaced ? '+pack' : '');
+    const n = (this.uploadCounts.get(key) ?? 0) + 1;
+    this.uploadCounts.set(key, n);
+    if (n > 1) this.stats.reuploads++;
+    if (n > this.stats.maxUploadsOfOne) this.stats.maxUploadsOfOne = n;
   }
 
   private dropTexture(id: number, tex: GpuTexture): void {
-    this.gl.deleteTexture(tex.texture);
     this.textureCache.delete(id);
+    if (--tex.refs > 0) return;
+    this.gl.deleteTexture(tex.texture);
+    if (tex.content !== undefined && this.byContent.get(tex.content) === tex) this.byContent.delete(tex.content);
   }
 
   private clearTextures(): void {
-    for (const t of this.textureCache.values()) this.gl.deleteTexture(t.texture);
+    for (const t of new Set(this.textureCache.values())) this.gl.deleteTexture(t.texture);
     this.textureCache.clear();
+    this.byContent.clear();
   }
 
   /**
@@ -919,10 +965,21 @@ ${source}`);
       const hash = pack ? hashImage(image) : undefined;
       const replacement = pack && hash ? pack.lookup(hash) : null;
       const k = replacement ? scaleOf(image, replacement) : 0;
-      tex = replacement && k > 0
-        ? this.upload(replacement.width, replacement.height, replacement, this.settings.mipmaps, k)
-        : this.upload(image.width, image.height, this.settings.filter === 'n64' && isLowContrast(image) ? softened(image) : image.rgba);
-      tex.hash = hash;
+      if (replacement && k > 0) {
+        tex = this.upload(replacement.width, replacement.height, replacement, this.settings.mipmaps, k);
+        this.countUpload(image, true);
+      } else {
+        const content = hash ?? hashImage(image);
+        tex = this.byContent.get(content);
+        if (tex) tex.refs++;
+        else {
+          tex = this.upload(image.width, image.height, this.settings.filter === 'n64' && isLowContrast(image) ? softened(image) : image.rgba);
+          tex.content = content;
+          this.byContent.set(content, tex);
+          this.countUpload(image, false);
+        }
+      }
+      tex.hash ??= hash;
       this.textureCache.set(image.id, tex);
     }
     return tex;
