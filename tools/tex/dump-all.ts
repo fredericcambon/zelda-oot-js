@@ -1,4 +1,4 @@
-// `npm run tex -- dump --all [--dist dist] [--out out/texdump] [--frames 600] [--entrances 238,626] [--fresh]`: the texture dump of the whole game. For every
+// `npm run tex -- dump --all [--dist dist] [--out <cache>/tex/<rom>/dump] [--frames 600] [--entrances 238,626] [--fresh]`: the texture dump of the whole game. For every
 // scene and spawn the entrance table names (the first entry of each pair), as child and as adult, by day and by night, it forces the entrance in the
 // scripted new game (as the scene sweep does, tools/sweep/scenes.ts), lets the scene load and its actors and animated textures run, then walks Link
 // round a circle of headings so that the camera, which trails him, turns with him. Each visit is saved to `<out>/visits/<key>.json` when it ends, so

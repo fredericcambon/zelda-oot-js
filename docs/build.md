@@ -55,6 +55,8 @@ The cache lives in `~/.zelda-oot-js/cache` (next to the shared saves folder); `O
 
 To clear it, delete the folder (`rm -rf ~/.zelda-oot-js/cache`; keep the sibling `saves/` folder). To clear one kind, delete `<cache>/<kind>/`.
 
+`<cache>/tex/<ROM SHA-1>/` is not a cache kind: it holds the texture trial's dump and packs (`docs/texture-pack.md`), which take hours to rebuild, so eviction skips it and the size cap does not count it. Clearing the whole cache deletes it too.
+
 ## Test suite timings
 
 `npm test` with the ROM (24 logical cores). `tools/recomp/global-setup.ts` analyses and recompiles the game once into `out/test-base/`, then compiles and links through the shared cache, side by side: the `-O2` game, the `-DOOT_COVERAGE` game of the sweep suite, and the same `-O2` objects linked at `-O1` for the cross-build state test (`tools/recomp/test-base.ts`). The suites read these builds back and build nothing: no suite compiles, so no cap on parallel compiles is needed. The `port` test runs one port against the shared cache, asserts that it hits at every step and compares its files with the shared build's.

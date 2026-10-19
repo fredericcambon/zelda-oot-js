@@ -1,4 +1,4 @@
-// `npm run tex -- compare [--out out/tex-compare] [--pack out/texpack] [--places hyrule-field,market,...]`: opens the page in headless Chrome with the game in
+// `npm run tex -- compare [--out out/tex-compare] [--pack <cache>/tex/<rom>/pack] [--places hyrule-field,market,...]`: opens the page in headless Chrome with the game in
 // a place (save state 1, then a warp to the place's entrance; Kokiri Forest is the state itself), walks Link and, at each view, freezes the game on one frame
 // and draws that frame with the original textures and with each variant of the pack. In every place a moving capture counts the textures drawn and those
 // with an entry. Writes `<place>-N-<view>-<original|a|b|c|d>.png`, `moving-<place>.json`, a sheet of the textures drawn per place (`sheet-<place>-N.png`: the
@@ -19,8 +19,8 @@ import { VARIANTS, type PackStats } from './upscale.ts';
 export interface CompareOptions {
   out: string;
   pack: string;
-  /** The dump the pack was made from (`out/texdump`): the textures it knows tell the moving capture which misses are new. */
-  dump?: string;
+  /** The dump the pack was made from (`<cache>/tex/<rom>/dump`): the textures it knows tell the moving capture which misses are new. */
+  dump: string;
   /** Variants of the pack to capture (default: all that exist). */
   variants?: string[];
   /** Names of `PLACES` to capture (default: every place but Kokiri Forest, which the trial covered). */
@@ -165,7 +165,7 @@ interface VariantInfo {
   seams: { wrapping: number; worse: number };
 }
 
-export async function compare({ out, pack, dump = 'out/texdump', variants: wanted, places, chrome, port, log = console.log }: CompareOptions): Promise<void> {
+export async function compare({ out, pack, dump, variants: wanted, places, chrome, port, log = console.log }: CompareOptions): Promise<void> {
   const variants = VARIANTS.filter((v) => (!wanted || wanted.includes(v.name)) && existsSync(join(pack, v.name, 'index.json'))).map((v) => v.name);
   if (variants.length === 0) throw new Error(`no texture pack at ${pack}: run npm run tex -- dump, then npm run tex -- upscale`);
   const info: VariantInfo[] = variants.map((name) => ({ name, ...(JSON.parse(readFileSync(join(pack, name, 'index.json'), 'utf8')) as Omit<VariantInfo, 'name'>) }));

@@ -8,8 +8,8 @@ import { dirname, join, relative, resolve } from 'node:path';
 
 export const DEFAULT_MAX_GB = 10;
 
-/** Folders of the cache directory that belong to other tools (test states, vitest's timing cache) and that eviction leaves alone. */
-const UNMANAGED = new Set(['intro-state', 'vitest']);
+/** Folders of the cache directory that belong to other tools (test states, vitest's timing cache, the texture trial's files) and that eviction leaves alone. */
+const UNMANAGED = new Set(['intro-state', 'vitest', 'tex']);
 
 export function defaultCacheDir(): string {
   return process.env.OOT_CACHE_DIR || join(homedir(), '.zelda-oot-js', 'cache');
