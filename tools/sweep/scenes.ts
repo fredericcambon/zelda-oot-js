@@ -271,7 +271,7 @@ function nonFlatPixels(img: Uint8Array): number {
 }
 
 /** The entrance table of the game's memory: scene and spawn of each entry. */
-function readEntrances(game: Game): { scene: number; spawn: number }[] {
+export function readEntrances(game: Game): { scene: number; spawn: number }[] {
   return Array.from({ length: ENTRANCE_COUNT }, (_, i) => {
     const word = game.rd32(ENTRANCE_TABLE + i * 4);
     return { scene: (word << 0) >> 24, spawn: (word << 8) >> 24 };
@@ -279,7 +279,7 @@ function readEntrances(game: Game): { scene: number; spawn: number }[] {
 }
 
 /** Records of the scene table that name a file range inside the cartridge; the table ends at the first that does not. */
-function countSceneRecords(game: Game): number {
+export function countSceneRecords(game: Game): number {
   let n = 0;
   for (;; n++) {
     const start = game.rd32(SCENE_TABLE + n * SCENE_RECORD_SIZE);
