@@ -155,21 +155,27 @@ Pixel mode adds about 4-5% draw calls (runs split on light sets) and up to 0.4 m
 
 ## 8. Point lights (port-made)
 
-An optional effect (`pointLights`, default off, `pointLightStrength` 0 to 100, default 50; Graphics tab, key Y; stored in `oot.gfx`). The game has no point lights (section 3), so everything below is new content; sources are listed in `docs/re/actors.md` ("Light sources").
+An optional effect (`pointLights`, default off, `pointLightStrength` 0 to 100, default 50; Graphics tab, key Y; stored in `oot.gfx`). The shading is new content; the sources and their lit state come from the game's own registry of point lights (`docs/re/actors.md`, "Light sources"), plus the actors the user marks in the Actors tab.
 
 How it works:
 - **Camera.** While `gfx_set_camera_output` is on, `dl.c` keeps up to three perspective projections of the run (`GfxCameraResult`) and tags every triangle's normal word with the slot of the projection its vertices were transformed under (`1 * per-pixel flag + 2 * slot`; orthographic draws get slot 0). The web side takes the slot with most vertices as the scene camera.
-- **Position per pixel.** The fragment shader rebuilds the world position from its window position, depth and 1 / w with the inverse of that projection, the draw's viewport rectangle and the vertex shader's x/y scale (`POINT_LIGHT_GLSL`, checked against the forward projection in `web/point-lights.test.ts`). The normal is the face normal from the screen derivatives of that position, turned towards the eye, so baked geometry without normals gets lit and per-pixel lighting is not required (it works with either lighting mode).
-- **Lights.** Position: the actor's world position plus 20 units. Colour (1, 0.5, 0.18), reach 160 units (Link is about 60 high), falloff `(1 - d / reach)^2`, facing term `0.35 + 0.65 * max(n.L, 0)` and none behind the surface; the light is added to the shade colour, so the texture modulates it. Flicker: two sines within about 0.85 to 1.15 per light, phase by index. At most 8 lights per frame, the nearest to the eye (those behind it last).
+- **Position per pixel.** The fragment shader rebuilds the world position from its window position, depth and 1 / w with the inverse of that projection, the draw's viewport rectangle and the vertex shader's x/y scale (`POINT_LIGHT_GLSL`, checked against the forward projection in `web/point-lights.test.ts`). The normal is the face normal from the screen derivatives of that position, turned towards the eye, so baked geometry without normals is lit and per-pixel lighting is not required (it works with either lighting mode).
+- **Lights.** Each frame the page reads the game's registry (burning point lights; the white fairy lights are left out) and the marked actors. Colour (1, 0.5, 0.18), reach 160 units (Link is about 60 high), falloff `(1 - d / reach)^2`, facing term `0.35 + 0.65 * max(n.L, 0)` and none behind the surface; the light is added to the shade colour, so the texture modulates it. Brightness: the game's flame colour (it varies from frame to frame, 0x82 to 0xEF) mapped to 0.6 to 1.0, so the flicker is the game's own; a marked actor flickers with two sines within about 0.85 to 1.15. At most 8 lights per frame, the nearest to the eye (those behind it last).
 - **Walls.** Nothing blocks a light between a source and a surface; the facing test and the short reach are all that limit it, so a thin wall can pass light to the other side.
 - **Which draws.** Triangles under the scene camera that write depth (opaque and cut-out). Translucent draws (flames, sparks, water) are left alone: lit, their quads showed as boxes. A draw whose combiner does not use the shade colour shows no light.
-- **Following a source.** Positions are read from the actor lists at each drawn task, so a moving source's light follows it; the picture in between smoothed frames uses the last read.
+- **Programs.** A second set of shader variants for the opaque draws, compiled on first use; while one compiles its draws are skipped (one capture run on the loaded machine showed 257 draw calls against 400 and 24 fps; two reruns did not).
 
-Captures (`tools/gfx/point-light-states.ts`, `point-light-capture.ts`; pictures in `out/point-lights/`, 3x scale canvas of 913x685, per-pixel lighting on, bloom/AO/sharpening off, headless Chrome on the GPU, mean of 10 samples; one run each):
+Captures (`tools/gfx/point-light-states.ts`, `point-light-capture.ts`; pictures `out/point-lights/<scene>-{off,on}.png`, canvas 913x685 (2.85x), per-pixel lighting on in both, bloom/AO/sharpening off, headless Chrome on the GPU (ANGLE D3D11) with another heavy job running on the machine, mean of 10 samples; the last full run, the Fire Temple row from a rerun of it alone):
 
 | scene | point lights | display lists ms | submit ms | CPU ms | GPU ms | draw calls | displayed fps |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Fire Temple first room, Link at the torches | off | 5.56 | 2.74 | 9.79 | 2.77 | 403 | 119.9 |
-| same | on | 6.01 | 3.38 | 10.79 | 2.67 | 396 | 120.0 |
+| Fire Temple first room, Link at the torches (3 lights) | off | 7.68 | 5.18 | 14.91 | 2.70 | 402 | 120.0 |
+| same | on | 7.95 | 6.29 | 16.19 | 2.78 | 400 | 120.0 |
+| Scene 63, corridor with two torches (2 lights) | off | 8.39 | 6.49 | 16.50 | 3.10 | 521 | 118.0 |
+| same | on | 8.53 | 9.92 | 20.12 | 2.99 | 518 | 119.9 |
+| Treasure Box Shop interior (2 lights) | off | 7.75 | 6.12 | 15.56 | 2.97 | 505 | 120.0 |
+| same | on | 7.93 | 7.59 | 17.17 | 3.04 | 502 | 119.7 |
+| Scene 90 (Gerudo Valley) at night, Link beside the torch (1 light) | off | 17.74 | 11.61 | 31.25 | 2.70 | 1005 | 117.6 |
+| same | on | 16.98 | 13.14 | 31.98 | 3.32 | 967 | 115.4 |
 
-The page ran at the display's 120 Hz in both. The Kakariko-at-night and interior-with-a-fire captures are missing: no fire actor was found there (see actors.md).
+The page held the display's 120 Hz (at least 115 fps) in every row. Point lights add 1 to 3.6 ms of CPU. The Kakariko-at-night capture was not made: Kakariko has no registered light (actors.md); the night capture is Gerudo Valley, the dungeon room with torches is the Fire Temple and scene 63, the interior with a fire the Treasure Box Shop.

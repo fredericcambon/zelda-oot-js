@@ -88,7 +88,7 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
     // Point lights: the interpreter reports the camera, and the torches of the scene come from the actor lists.
     const lights = renderer.options.pointLights;
     mod._gfx_set_camera_output(lights ? 1 : 0);
-    if (lights) renderer.setPointSources(lightSources((addr) => mod._oot_rd32(addr) >>> 0));
+    if (lights) renderer.setPointSources(lightSources((addr) => mod._oot_rd32(addr) >>> 0, renderer.markedLightIds));
   };
   const guestRam = () => mod.HEAPU8.subarray(mod._oot_rdram(), mod._oot_rdram() + RDRAM_SIZE);
   // The module's start-up promise never settles when the hook below fails, so the failure is raced against it.

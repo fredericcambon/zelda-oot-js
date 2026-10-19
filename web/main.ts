@@ -20,6 +20,7 @@ import { pickSaveFile } from './save-picker.ts';
 import { EMPTY_INVENTORY, editContext, inventorySnapshot, sameInventory, toggleFreeze } from './inspect/inventory.ts';
 import { Bridge, readEntrances, sameSnapshot, snapshot, warpTo } from './inspect/index.ts';
 import { applyCheats, loadCheats, parseCode, saveCheats, type Cheat } from './inspect/cheats.ts';
+import { loadLightIds, saveLightIds, toggleId } from './inspect/light-labels.ts';
 import { EMPTY_ACTORS, goToActor, sameSnapshot as sameActors, snapshot as actorsSnapshot } from './inspect/actors.ts';
 import { EMPTY_MEMORY, MemoryModel, parseAddress } from './inspect/memory.ts';
 import { mountUi } from './ui/panel.ts';
@@ -92,6 +93,7 @@ const store = new Store<UiState>({
   lightingMode: gfx.lightingMode,
   pointLights: gfx.pointLights,
   pointLightStrength: gfx.pointLightStrength,
+  lightIds: loadLightIds(),
   strength: readTuning(STRENGTH_KEY, 0, 100, 50),
   span: readTuning(SPAN_KEY, 25, 100, 50),
   bootHz,
@@ -146,6 +148,8 @@ try {
 }
 // The handle tools use to read renderer facts from the page (the fit of the occlusion's projection, the settings).
 if (location.hash === '#debug') (globalThis as { ootRenderer?: unknown }).ootRenderer = renderer;
+
+renderer.markedLightIds = new Set(store.get().lightIds);
 
 let game: Game | null = null;
 let saves: SaveSync | null = null;
@@ -611,6 +615,13 @@ const actions: UiActions = {
   },
   toggleCheat: (id) => setCheats(store.get().cheats.map((c) => (c.id === id ? { ...c, enabled: !c.enabled } : c))),
   removeCheat: (id) => setCheats(store.get().cheats.filter((c) => c.id !== id)),
+  toggleLightActor(id) {
+    const lightIds = toggleId(store.get().lightIds, id);
+    saveLightIds(lightIds);
+    renderer.markedLightIds = new Set(lightIds);
+    store.set({ lightIds });
+    showNotice(lightIds.includes(id) ? `Actors with id 0x${id.toString(16)} light up (point lights must be on)` : `Actors with id 0x${id.toString(16)} no longer light up`);
+  },
   goToActor: (addr) => bridge.queue.push(() => goToActor(bridge, addr), 'Go to failed'),
   viewRecord(addr) {
     memoryModel.setStart(addr);

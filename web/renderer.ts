@@ -310,6 +310,9 @@ export class Renderer {
     this.pointSources = sources;
   }
 
+  /** Ids of the actors the user marked as light sources (the game reads their positions for the frames drawn from now on). */
+  markedLightIds: ReadonlySet<number> = new Set();
+
   /** Applies new options; unless only the post-processing changed, the colour images and the cached textures are dropped and rebuilt as the game draws. */
   setSettings(settings: GfxSettings): void {
     const effectsOnly = (Object.keys(settings) as (keyof GfxSettings)[]).every((k) => k === 'lightingMode' || k.startsWith('pointLight') || k.startsWith('ao') || k.startsWith('bloom') || k.startsWith('sharpen') || settings[k] === this.settings[k]);
@@ -853,7 +856,7 @@ export class Renderer {
     const pos = new Float32Array(32), color = new Float32Array(32);
     this.pointLights.forEach((p, i) => {
       pos.set([p.x, p.y, p.z, POINT_LIGHT_RADIUS], i * 4);
-      const k = gain * flicker(i, seconds);
+      const k = gain * (p.level ?? flicker(i, seconds));
       color.set([POINT_LIGHT_COLOR[0] * k, POINT_LIGHT_COLOR[1] * k, POINT_LIGHT_COLOR[2] * k, 0], i * 4);
     });
     gl.uniformMatrix4fv(this.uniform(program, 'uInvCamera'), false, Float32Array.from(camera.inverse));

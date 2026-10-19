@@ -9,7 +9,7 @@ import { buildGames, loadBase } from '../recomp/test-base.ts';
 import { bootGame } from '../headless/boot.ts';
 import { readActors } from '../headless/actors.ts';
 import { padAt, parseInput } from '../headless/input.ts';
-import { ENTRANCE_COUNT, ENTRANCE_TABLE, playState, requestEntrance } from '../headless/state.ts';
+import { ACTOR_POSITION, ENTRANCE_COUNT, ENTRANCE_TABLE, TIME_OF_DAY, playState, requestEntrance } from '../headless/state.ts';
 import { CONTROL_FRAME, SCRIPT } from '../headless/headless-support.ts';
 import { encodePng } from './png.ts';
 import { HEIGHT, SoftRenderer, WIDTH } from './raster.ts';
@@ -66,7 +66,7 @@ let drawing = false;
 const fire: { x: number; y: number }[] = [];
 const isFire = (b: { state: { primColor: { r: number; g: number; b: number }; envColor: { r: number; g: number; b: number } } }): boolean => {
   const p = b.state.primColor, e = b.state.envColor;
-  return p.r > 200 && p.g > 100 && p.b < 120 && e.r > 150 && e.g < 120 && e.b < 60;
+  return p.r > 180 && p.g > 60 && p.b < 140 && e.r > 120 && e.b < 100;
 };
 
 async function fresh() {
@@ -102,24 +102,60 @@ async function fresh() {
 }
 
 let game = await fresh();
+if (process.env.ENTRANCES) {
+  const bySceneNumber = new Map<number, number[]>();
+  for (let e = 0; e < ENTRANCE_COUNT; e++) {
+    const scene = game.rd32(ENTRANCE_TABLE + e * 4) >>> 24;
+    bySceneNumber.set(scene, [...(bySceneNumber.get(scene) ?? []), e]);
+  }
+  for (const [scene, entries] of bySceneNumber) console.log(`entrances of scene ${scene}: ${entries.join(' ')}`);
+  process.exit(0);
+}
 for (const arg of positionals) {
+  // <scene>[@<entrance>][:<frames>][n]: the entrance table entry to load (default the first naming the scene); a trailing n sets the time of day to night first.
   const [sceneText, framesText] = arg.split(':');
-  const scene = Number(sceneText), frames = Number(framesText ?? 300);
+  const night = /n$/.test(arg);
+  const [sceneOnly, entranceText] = sceneText!.split('@');
+  const scene = Number(sceneOnly), frames = Number((framesText ?? '300').replace(/n$/, ''));
   soft = new SoftRenderer();
   seen.camera = undefined;
   fire.length = 0;
   if (!playState(game.rd32)) game = await fresh();
-  let entry = -1;
+  let entry = entranceText === undefined ? -1 : Number(entranceText);
   for (let e = 0; e < ENTRANCE_COUNT && entry < 0; e++) if (game.rd32(ENTRANCE_TABLE + e * 4) >>> 24 === scene) entry = e;
   if (entry < 0) throw new Error(`no entrance names scene ${scene}`);
   const ram = game.ram();
   const dv = new DataView(ram.buffer, ram.byteOffset, ram.byteLength);
+  if (night) dv.setUint32(TIME_OF_DAY & 0x7fffff, (dv.getUint32(TIME_OF_DAY & 0x7fffff) & 0xffff) >>> 0);
   requestEntrance(game.rd32, (addr, value) => dv.setUint32(addr & 0x7fffff, value >>> 0), playState(game.rd32)!, entry);
   for (let k = 1; k <= frames; k++) {
     drawing = k > frames - 12;
     const pad = padAt(TAP_A, k);
     game.setPad(pad.buttons, pad.x, pad.y);
     await game.frame();
+  }
+  // GOTO=<id>:<n>: then put Link at the n-th actor of that id (hex), as the Actors tab's "Go to" does, and run GOFRAMES more frames.
+  if (process.env.GOTO) {
+    const [idText, nText] = process.env.GOTO.split(':');
+    const now = playState(game.rd32)!;
+    const target = readActors(game.rd32, now).flatMap((l) => l.actors).filter((x) => x.id === parseInt(idText!, 16))[Number(nText ?? 0)];
+    if (target) {
+      const word = (n: number) => { const v = new DataView(new ArrayBuffer(4)); v.setFloat32(0, n); return v.getUint32(0); };
+      const link = readActors(game.rd32, now).flatMap((l) => l.actors).find((x) => x.id === 0 && x.category === 2)!;
+      for (const base of [ACTOR_POSITION, 0x38]) {
+        dv.setUint32((link.addr + base) & 0x7fffff, word(target.position.x + 50));
+        dv.setUint32((link.addr + base + 4) & 0x7fffff, word(target.position.y));
+        dv.setUint32((link.addr + base + 8) & 0x7fffff, word(target.position.z));
+      }
+    } else console.log('  GOTO: no such actor');
+    seen.camera = undefined;
+    fire.length = 0;
+    const more = Number(process.env.GOFRAMES ?? 200);
+    for (let k = 1; k <= more; k++) {
+      drawing = k > more - 12;
+      game.setPad(0, 0, 0);
+      await game.frame();
+    }
   }
   const play = playState(game.rd32);
   console.log(`scene ${scene} entrance ${entry}: play scene ${play?.scene}`);
@@ -147,6 +183,42 @@ for (const arg of positionals) {
     }
     console.log(`  fire-coloured batches: ${fire.length}; nearest actor ids (within 40 px): ${[...near].map(([id, n]) => `${id.toString(16)}x${n}`).join(' ')}`);
   }
+  // FINDPTR=<addr>[,<addr>...]: every word of guest memory equal to the address, with the three words that follow it, to follow pointers back to their owners.
+  if (process.env.FINDPTR) {
+    const mem = game.ram();
+    const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+    for (const target of process.env.FINDPTR.split(',').map((t) => parseInt(t, 16) >>> 0)) {
+      for (let at = 0; at + 16 <= 0x800000; at += 4) {
+        if (view.getUint32(at) !== target) continue;
+        console.log(`  ptr ${target.toString(16)} found at ${(0x80000000 + at).toString(16)}: ${[-2, -1, 0, 1, 2, 3].map((k) => (view.getUint32(at + 4 * k) >>> 0).toString(16).padStart(8, '0')).join(' ')}`);
+      }
+    }
+  }
+  // DUMPMEM=<addr>:<words>: words of guest memory, eight to a line.
+  if (process.env.DUMPMEM) {
+    const [at, n] = process.env.DUMPMEM.split(':');
+    for (let i = 0; i < Number(n); i += 8) console.log(`  mem ${(parseInt(at!, 16) + i * 4).toString(16)}: ${Array.from({ length: 8 }, (_, k) => (game.rd32(parseInt(at!, 16) + (i + k) * 4) >>> 0).toString(16).padStart(8, '0')).join(' ')}`);
+  }
+  // LIGHTS=1: the used nodes of the pool at 0x80119B68 (32 nodes of {info, next, prev}) and the first twelve bytes of each info.
+  if (process.env.LIGHTS) {
+    for (let i = 0; i < 32; i++) {
+      const node = 0x80119b68 + i * 12, info = game.rd32(node) >>> 0;
+      if (info === 0) continue;
+      const bytes = Array.from({ length: 3 }, (_, k) => (game.rd32(info + 4 * k) >>> 0).toString(16).padStart(8, '0')).join(' ');
+      const owner = lists.flatMap((l) => l.actors).filter((x) => x.addr <= info && info < x.addr + 0x400).sort((x, y) => y.addr - x.addr)[0];
+      console.log(`  light node ${node.toString(16)} info ${info.toString(16)}: ${bytes} owner ${owner ? `id ${owner.id.toString(16)} cat ${owner.category} at ${owner.addr.toString(16)}, info at +${(info - owner.addr).toString(16)}` : 'none'}`);
+    }
+  }
+  if (process.env.DUMP && cam) {
+    // DUMP=<id>: for each record with that id, the fire-coloured batches within 30 px of its projected position and the words of the record after the common fields.
+    for (const l of lists) for (const a of l.actors) {
+      if (a.id !== parseInt(process.env.DUMP, 16)) continue;
+      const p = project(cam.matrix, a.position);
+      const near = p ? fire.filter((f) => Math.hypot(f.x - p[0], f.y - p[1]) < 30).length : -1;
+      const words = Array.from({ length: 56 }, (_, i) => (game.rd32(a.addr + 0x128 + i * 4) >>> 0).toString(16).padStart(8, '0'));
+      console.log(`  dump ${a.addr.toString(16)} pos ${a.position.x.toFixed(0)},${a.position.y.toFixed(0)},${a.position.z.toFixed(0)} fire-near ${near} params ${(game.rd32(a.addr + 0x1c) >>> 0).toString(16)}: ${words.join(' ')}`);
+    }
+  }
   if (cam) {
     for (const l of lists) for (const a of l.actors) {
       const s = project(cam.matrix, a.position);
@@ -157,6 +229,6 @@ for (const arg of positionals) {
       for (const [dx, dy] of [[0, 0], [1, 0], [0, 1], [1, 1]] as const) out.set([255, 0, 255, 255], ((Math.round(y * SCALE) + dy) * WIDTH * SCALE + Math.round(x * SCALE) + dx) * 4);
     }
   } else console.log('  no camera projection reported');
-  writeFileSync(join(values.out!, `scene-${scene}.png`), encodePng(WIDTH * SCALE, HEIGHT * SCALE, out));
-  writeFileSync(join(values.out!, `scene-${scene}-plain.png`), encodePng(WIDTH, HEIGHT, img));
+  writeFileSync(join(values.out!, `scene-${scene}${process.env.GOTO ? `-go${process.env.GOTO.replace(':', '-')}` : ''}.png`), encodePng(WIDTH * SCALE, HEIGHT * SCALE, out));
+  writeFileSync(join(values.out!, `scene-${scene}${process.env.GOTO ? `-go${process.env.GOTO.replace(':', '-')}` : ''}-plain.png`), encodePng(WIDTH, HEIGHT, img));
 }

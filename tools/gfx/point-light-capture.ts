@@ -17,7 +17,7 @@ const { values } = parseArgs({
 });
 const port = Number(values.port);
 const url = `http://localhost:${port}/?bench#debug`;
-const SCENES = [{ name: 'fire-temple', slot: 1 }];
+const SCENES = [{ name: 'fire-temple', slot: 1 }, { name: 'torch-corridor', slot: 2 }, { name: 'treasure-shop', slot: 3 }, { name: 'gerudo-valley-night', slot: 4 }];
 const MODES = ['off', 'on'];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -132,7 +132,7 @@ try {
   mkdirSync(outDir, { recursive: true });
   console.log('| scene | point lights | game code ms | display lists ms | submit ms | GPU ms | CPU ms | draw calls | displayed fps | canvas |');
   console.log('|---|---|---|---|---|---|---|---|---|---|');
-  for (const scene of SCENES) for (const mode of MODES) console.log(await run(cdp, scene, mode, outDir, Number(values.seconds)));
+  for (const scene of SCENES.filter((s) => !process.env.ONLY || process.env.ONLY.split(',').includes(s.name))) for (const mode of MODES) console.log(await run(cdp, scene, mode, outDir, Number(values.seconds)));
   cdp.close();
 } finally {
   for (const c of children) if (c.pid) spawn('taskkill', ['/pid', String(c.pid), '/t', '/f'], { stdio: 'ignore' });

@@ -6,13 +6,18 @@ import { playState } from '../tools/headless/state.ts';
 import { MAX_POINT_LIGHTS } from './shader.ts';
 
 /**
- * Actor ids treated as light sources. Id 0x0008 (category 7) is the flame of the three wall torches at the top of the stairs in the Fire Temple's
- * first room, observed with the Actors tab's data: the three records stand at (-105, 260, -145), (0, 280, -140) and (105, 260, -145), and a
- * flame is drawn at each projected position (docs/re/actors.md, "Light sources"). Whether a record is lit is not proven, so every instance lights.
+ * The game's own registry of point lights (docs/re/actors.md, "Light sources"): a pool of 32 nodes of three words {info, next, prev} at `LIGHT_NODES`;
+ * a node in use has a non-zero info pointer. An info is `{type (byte), pad, x, y, z (s16 each), colour r, g, b (bytes), a byte, radius (s16)}` for a point
+ * light (type 2, observed on torches and lamps at their flame). A torch that is not burning has a zero colour (observed in Goron City, scene 98).
  */
-export const LIGHT_ACTOR_IDS: ReadonlySet<number> = new Set([0x0008]);
+export const LIGHT_NODES = 0x80119b68;
+export const LIGHT_NODE_COUNT = 32;
+const LIGHT_NODE_SIZE = 12;
+const POINT_TYPE = 2;
+/** The brightest flame colour channel seen on a torch (0xEF); the game varies it from frame to frame, which is the flicker. */
+const FLAME_PEAK = 0xef;
 
-/** Reach of a light in world units (Link stands about 60 high), and its height above the actor's origin. */
+/** Reach of a light in world units (Link stands about 60 high), and the height above an actor's origin of a light the user marked. */
 export const POINT_LIGHT_RADIUS = 160;
 export const POINT_LIGHT_LIFT = 20;
 /** Colour of the flame light (linear 0..1), and the contribution at strength 50 in the middle of the light. */
@@ -23,6 +28,8 @@ export interface PointLight {
   x: number;
   y: number;
   z: number;
+  /** The brightness the game gives the light (about 0.5 to 1), which varies with its own flicker; absent for lights the port flickers itself. */
+  level?: number;
 }
 
 /** Inverse of a 4x4 matrix stored as sixteen values (row-major or column-major alike: the inverse of the transpose is the transpose of the inverse); null when singular. */
@@ -85,10 +92,10 @@ export const clipW = (m: ArrayLike<number>, p: PointLight): number => p.x * m[3]
 export function pickLights(sources: readonly PointLight[], camera: FrameCamera): PointLight[] {
   const [ex, ey, ez] = camera.eye;
   const score = (p: PointLight) => Math.hypot(p.x - ex, p.y - ey, p.z - ez) + (clipW(camera.matrix, p) > 0 ? 0 : 1e6);
-  return sources.map((p) => ({ p, s: score(p) })).sort((a, b) => a.s - b.s).slice(0, MAX_POINT_LIGHTS).map(({ p }) => ({ x: p.x, y: p.y + POINT_LIGHT_LIFT, z: p.z }));
+  return sources.map((p) => ({ p, s: score(p) })).sort((a, b) => a.s - b.s).slice(0, MAX_POINT_LIGHTS).map(({ p }) => p);
 }
 
-/** Brightness factor of the light at index `i` at `seconds`: two incommensurate sines with a phase of its own, within about 0.85 to 1.15. */
+/** Brightness factor of a light the port flickers (index `i`) at `seconds`: two incommensurate sines with a phase of its own, within about 0.85 to 1.15. */
 export function flicker(i: number, seconds: number): number {
   const phase = i * 2.399;
   return 1 + 0.09 * Math.sin(seconds * 11.3 + phase) + 0.06 * Math.sin(seconds * 17.9 + phase * 1.7 + 1.3);
@@ -102,9 +109,34 @@ export function reconstruct(inverse: ArrayLike<number>, viewport: readonly [numb
   return [h[0]! / h[3]!, h[1]! / h[3]!, h[2]! / h[3]!];
 }
 
-/** The world positions of the light-source actors alive in the scene; none while no scene is loaded. */
-export function lightSources(rd32: (addr: number) => number): PointLight[] {
-  const play = playState(rd32);
-  if (!play) return [];
-  return readActors(rd32, play).flatMap((list) => list.actors.filter((a) => LIGHT_ACTOR_IDS.has(a.id)).map((a) => a.position));
+const s16 = (v: number) => (v << 16) >> 16;
+
+/**
+ * The burning flames of the scene as the game registers them: point lights with a non-zero colour and a positive radius, other than white ones (the fairies
+ * and wisps register white lights; observed in scenes 38, 60, 85). Its own brightness (the colour) becomes `level`.
+ */
+export function gameLights(rd32: (addr: number) => number): PointLight[] {
+  const lights: PointLight[] = [];
+  const inRam = (a: number) => a >= 0x80000000 && a < 0x80800000;
+  for (let i = 0; i < LIGHT_NODE_COUNT; i++) {
+    const info = rd32(LIGHT_NODES + i * LIGHT_NODE_SIZE) >>> 0;
+    if (!inRam(info)) continue;
+    const w0 = rd32(info) >>> 0, w1 = rd32(info + 4) >>> 0, w2 = rd32(info + 8) >>> 0, w3 = rd32(info + 12) >>> 0;
+    if (w0 >>> 24 !== POINT_TYPE) continue;
+    const r = w2 >>> 24, g = (w2 >>> 16) & 0xff, b = (w2 >>> 8) & 0xff, radius = s16(w3 >>> 16);
+    const peak = Math.max(r, g, b);
+    if (peak === 0 || radius <= 0 || Math.min(r, g, b) * 5 > peak * 4) continue;
+    lights.push({ x: s16(w0 & 0xffff), y: s16(w1 >>> 16), z: s16(w1 & 0xffff), level: 0.6 + 0.4 * Math.min(1.2, peak / FLAME_PEAK) });
+  }
+  return lights;
 }
+
+/** Actors the user marked as light sources, by id: every record with such an id lights, a little above its origin (its lit state is unknown). */
+export function markedLights(rd32: (addr: number) => number, ids: ReadonlySet<number>): PointLight[] {
+  const play = playState(rd32);
+  if (!play || ids.size === 0) return [];
+  return readActors(rd32, play).flatMap((list) => list.actors.filter((a) => ids.has(a.id)).map((a) => ({ x: a.position.x, y: a.position.y + POINT_LIGHT_LIFT, z: a.position.z })));
+}
+
+/** The light sources of the scene: the game's own flames and the actors the user marked. */
+export const lightSources = (rd32: (addr: number) => number, marked: ReadonlySet<number>): PointLight[] => [...gameLights(rd32), ...markedLights(rd32, marked)];

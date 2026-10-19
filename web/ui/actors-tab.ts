@@ -26,6 +26,7 @@ export function ActorsTab({ state: s, actions: a }: TabProps): VNode {
           <td class="actor-pos note">${fixed(r.position.x)}, ${fixed(r.position.y)}, ${fixed(r.position.z)}<div>${r.distance === null ? '' : `${fixed(r.distance)} from Link`}</div></td>
           <td class="row">
             <${Button} class="actor-go" disabled=${!link || isLink(r)} title=${isLink(r) ? 'This is Link' : 'Put Link next to this actor'} onClick=${() => a.goToActor(r.addr)}>Go to<//>
+            <${Button} class="actor-light" pressed=${s.lightIds.includes(r.id)} title="Treat every actor with this id as a point-light source (Graphics tab: point lights)" onClick=${() => a.toggleLightActor(r.id)}>Light<//>
             <${Button} class="actor-view" title="Show the record in the Memory tab" onClick=${() => a.viewRecord(r.addr)}>Record<//>
           </td>
         </tr>`)}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { defaultSettings } from './gfx-settings.ts';
-import { eyeOf, flicker, frameCamera, invert4, LIGHT_ACTOR_IDS, pickLights, reconstruct } from './point-lights.ts';
+import { eyeOf, flicker, frameCamera, invert4, gameLights, LIGHT_NODES, pickLights, reconstruct } from './point-lights.ts';
 import { MAX_POINT_LIGHTS, POINT_LIGHT_GLSL } from './shader.ts';
 
 // A perspective projection with a view matrix multiplied in, as the game leaves it (row vectors): a camera at (100, 200, 300) looking along -z.
@@ -71,7 +71,26 @@ describe('point lights', () => {
     const s = defaultSettings(false);
     expect(s.pointLights).toBe(false);
     expect(s.pointLightStrength).toBe(50);
-    expect(LIGHT_ACTOR_IDS.has(8)).toBe(true);
     expect(POINT_LIGHT_GLSL).toContain('uPointCount');
+  });
+
+  it('reads the burning point lights of the game registry and skips the others', () => {
+    const words = new Map<number, number>();
+    const info = (at: number, type: number, x: number, y: number, z: number, rgb: number, radius: number) => {
+      words.set(at, ((type << 24) | (x & 0xffff)) >>> 0);
+      words.set(at + 4, (((y & 0xffff) << 16) | (z & 0xffff)) >>> 0);
+      words.set(at + 8, (rgb << 8) >>> 0);
+      words.set(at + 12, ((radius & 0xffff) << 16) >>> 0);
+    };
+    const node = (i: number, at: number) => words.set(LIGHT_NODES + i * 12, at);
+    info(0x801e0000, 2, -105, 300, -145, 0x987700, 200);
+    info(0x801e0010, 2, 10, 20, 30, 0x000000, -1);
+    info(0x801e0020, 2, 10, 20, 30, 0xffffff, 200);
+    info(0x801e0030, 0, 10, 20, 30, 0x987700, 200);
+    [0x801e0000, 0x801e0010, 0x801e0020, 0x801e0030].forEach((at, i) => node(i + 3, at));
+    const lights = gameLights((addr) => words.get(addr) ?? 0);
+    expect(lights).toHaveLength(1);
+    expect(lights[0]).toMatchObject({ x: -105, y: 300, z: -145 });
+    expect(lights[0]!.level).toBeGreaterThan(0.6);
   });
 });
