@@ -13,9 +13,6 @@ void main() {
 
 /** Levels of the blur chain, each half the size of the one above (the first is half the scene). */
 const LEVELS = 4;
-/** Pixels dimmer than this (luma) add nothing to the bloom; at 1.0 and above they add everything. */
-const THRESHOLD_LOW = 0.6;
-const THRESHOLD_HIGH = 1.0;
 /** Share of the blurred highlights added at a bloom strength of 100. */
 const BLOOM_GAIN = 1.0;
 /** Weight of the neighbours in the sharpening at a strength of 100 (-0.2 is the strongest the filter stays stable at). */
@@ -31,10 +28,12 @@ out vec4 outColor;
 const BRIGHT_FRAGMENT = `${HEADER}
 uniform sampler2D uSrc;
 uniform vec2 uTexel;
+// Pixels below uEdge.x add nothing to the bloom and pixels above uEdge.y add everything; between them the share rises smoothly.
+uniform vec2 uEdge;
 vec3 bright(vec2 uv) {
   vec3 c = texture(uSrc, uv).rgb;
   float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
-  return c * smoothstep(${THRESHOLD_LOW.toFixed(2)}, ${THRESHOLD_HIGH.toFixed(2)}, l);
+  return c * smoothstep(uEdge.x, uEdge.y, l);
 }
 void main() {
   outColor = vec4((bright(vUv + uTexel * vec2(-1.0, -1.0)) + bright(vUv + uTexel * vec2(1.0, -1.0)) + bright(vUv + uTexel * vec2(-1.0, 1.0)) + bright(vUv + uTexel * vec2(1.0, 1.0))) * 0.25, 1.0);
@@ -144,7 +143,7 @@ export class PostFx {
     gl.disable(gl.POLYGON_OFFSET_FILL);
     gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
     gl.colorMask(true, true, true, true);
-    if (bloom) this.blur(scene, width, height, progs);
+    if (bloom) this.blur(scene, width, height, progs, settings);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, width, height);
     gl.disable(gl.BLEND);
@@ -164,9 +163,12 @@ export class PostFx {
   }
 
   /** Fills `levels[0]` (half the scene's size) with the blurred highlights of the scene. */
-  private blur(scene: WebGLTexture, width: number, height: number, progs: NonNullable<PostFx['programs']>): void {
+  private blur(scene: WebGLTexture, width: number, height: number, progs: NonNullable<PostFx['programs']>, settings: GfxSettings): void {
     const gl = this.gl;
     this.allocate(width, height);
+    // The radius is the number of levels blurred and added back, one to LEVELS.
+    const used = 1 + Math.round((settings.bloomRadius / 100) * (LEVELS - 1));
+    const knee = settings.bloomKnee / 100, threshold = settings.bloomThreshold / 100;
     const pass = (program: Program, src: WebGLTexture, srcW: number, srcH: number, into: Level): void => {
       gl.bindFramebuffer(gl.FRAMEBUFFER, into.framebuffer);
       gl.viewport(0, 0, into.width, into.height);
@@ -177,12 +179,14 @@ export class PostFx {
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     };
     gl.disable(gl.BLEND);
+    gl.useProgram(progs.bright.program);
+    gl.uniform2f(this.uniform(progs.bright, 'uEdge'), Math.max(0, threshold - knee / 2), Math.max(threshold + knee / 2, 0.001));
     pass(progs.bright, scene, width, height, this.levels[0]!);
-    for (let i = 1; i < LEVELS; i++) pass(progs.down, this.levels[i - 1]!.texture, this.levels[i - 1]!.width, this.levels[i - 1]!.height, this.levels[i]!);
+    for (let i = 1; i < used; i++) pass(progs.down, this.levels[i - 1]!.texture, this.levels[i - 1]!.width, this.levels[i - 1]!.height, this.levels[i]!);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE);
     // The texel of the upsample is half a texel of the smaller level.
-    for (let i = LEVELS - 1; i > 0; i--) pass(progs.up, this.levels[i]!.texture, this.levels[i]!.width * 2, this.levels[i]!.height * 2, this.levels[i - 1]!);
+    for (let i = used - 1; i > 0; i--) pass(progs.up, this.levels[i]!.texture, this.levels[i]!.width * 2, this.levels[i]!.height * 2, this.levels[i - 1]!);
     gl.disable(gl.BLEND);
   }
 

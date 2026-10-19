@@ -77,7 +77,7 @@ interface Target {
 }
 
 /** What a renderer made without settings uses: no multisampling, no mip levels. */
-const PLAIN: GfxSettings = { filter: 'n64', msaa: false, scaleCap: 0, mipmaps: false, anisotropy: 1, cutout: 'hard', bloom: false, bloomStrength: 0, sharpen: false, sharpenStrength: 0 };
+const PLAIN: GfxSettings = { filter: 'n64', msaa: false, scaleCap: 0, mipmaps: false, anisotropy: 1, cutout: 'hard', bloom: false, bloomStrength: 0, bloomThreshold: 80, bloomKnee: 40, bloomRadius: 100, sharpen: false, sharpenStrength: 0 };
 const MSAA_SAMPLES = 4;
 
 /**

@@ -26,6 +26,12 @@ export interface GfxSettings {
   bloom: boolean;
   /** Strength of the bloom, 0 to 100. */
   bloomStrength: number;
+  /** Brightness (luma, 0 to 100 for 0 to 1) above which pixels bloom. */
+  bloomThreshold: number;
+  /** Width of the soft edge around the threshold, 0 to 100 for 0 to 1; 0 is a hard cut. */
+  bloomKnee: number;
+  /** How far the glow spreads, 0 to 100: the number of blur levels. */
+  bloomRadius: number;
   /** Contrast-adaptive sharpening of the 3D scene (never the HUD). */
   sharpen: boolean;
   /** Strength of the sharpening, 0 to 100. */
@@ -46,6 +52,9 @@ export const defaultSettings = (mobile: boolean): GfxSettings => ({
   cutout: 'smooth',
   bloom: true,
   bloomStrength: 30,
+  bloomThreshold: 80,
+  bloomKnee: 40,
+  bloomRadius: 100,
   sharpen: true,
   sharpenStrength: 30,
 });
@@ -73,6 +82,9 @@ export function parseSettings(text: string | null, mobile: boolean): GfxSettings
   if (typeof raw.bloom === 'boolean') settings.bloom = raw.bloom;
   if (typeof raw.sharpen === 'boolean') settings.sharpen = raw.sharpen;
   if (isStrength(raw.bloomStrength)) settings.bloomStrength = raw.bloomStrength;
+  if (isStrength(raw.bloomThreshold)) settings.bloomThreshold = raw.bloomThreshold;
+  if (isStrength(raw.bloomKnee)) settings.bloomKnee = raw.bloomKnee;
+  if (isStrength(raw.bloomRadius)) settings.bloomRadius = raw.bloomRadius;
   if (isStrength(raw.sharpenStrength)) settings.sharpenStrength = raw.sharpenStrength;
   return settings;
 }

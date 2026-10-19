@@ -46,7 +46,10 @@ export function GraphicsTab({ state: s, actions: a }: TabProps): VNode {
     <section>
       <h3>Bloom</h3>
       <${Button} id="bloom-toggle" pressed=${s.bloom} title="A soft glow around the bright parts of the 3D scene, never the HUD (B)" onClick=${() => a.setBloom(!s.bloom)}>Bloom: ${s.bloom ? 'on' : 'off'}<//>
-      <${Slider} id="bloom-strength" label="strength" title="How much glow is added (, and .)" min=${0} max=${100} value=${s.bloomStrength} onInput=${a.setBloomStrength} />
+      <${Slider} id="bloom-strength" label="intensity" title="How much glow is added (, and .)" min=${0} max=${100} value=${s.bloomStrength} onInput=${a.setBloomStrength} />
+      <${Slider} id="bloom-threshold" label="threshold" title="Brightness above which pixels glow (less: more of the picture glows)" min=${0} max=${100} value=${s.bloomThreshold} onInput=${a.setBloomThreshold} />
+      <${Slider} id="bloom-knee" label="soft knee" title="How gradually pixels start to glow around the threshold (0: a hard cut)" min=${0} max=${100} value=${s.bloomKnee} onInput=${a.setBloomKnee} />
+      <${Slider} id="bloom-radius" label="radius" title="How far the glow spreads" min=${0} max=${100} value=${s.bloomRadius} onInput=${a.setBloomRadius} />
     </section>
     <section>
       <h3>Sharpening</h3>

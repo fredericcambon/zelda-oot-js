@@ -14,6 +14,9 @@ export interface UiState {
   span: number;
   bloom: boolean;
   bloomStrength: number;
+  bloomThreshold: number;
+  bloomKnee: number;
+  bloomRadius: number;
   sharpen: boolean;
   sharpenStrength: number;
   bootHz: Hz;
@@ -60,6 +63,9 @@ export interface UiActions {
   setSpan(percent: number): void;
   setBloom(on: boolean): void;
   setBloomStrength(percent: number): void;
+  setBloomThreshold(percent: number): void;
+  setBloomKnee(percent: number): void;
+  setBloomRadius(percent: number): void;
   setSharpen(on: boolean): void;
   setSharpenStrength(percent: number): void;
   toggleHz(): void;

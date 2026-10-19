@@ -82,6 +82,9 @@ const store = new Store<UiState>({
   smooth: readSmooth(),
   bloom: gfx.bloom,
   bloomStrength: gfx.bloomStrength,
+  bloomThreshold: gfx.bloomThreshold,
+  bloomKnee: gfx.bloomKnee,
+  bloomRadius: gfx.bloomRadius,
   sharpen: gfx.sharpen,
   sharpenStrength: gfx.sharpenStrength,
   strength: readTuning(STRENGTH_KEY, 0, 100, 50),
@@ -260,7 +263,7 @@ const stepStrength = (value: number, up: boolean): number => Math.min(100, Math.
 // sharpening; , and . lower and raise the bloom strength, - and = the sharpening strength, in steps of 10.
 function changeGfx(change: Partial<GfxSettings>, text: string): void {
   gfx = { ...gfx, ...change };
-  store.set({ bloom: gfx.bloom, bloomStrength: gfx.bloomStrength, sharpen: gfx.sharpen, sharpenStrength: gfx.sharpenStrength });
+  store.set({ bloom: gfx.bloom, bloomStrength: gfx.bloomStrength, bloomThreshold: gfx.bloomThreshold, bloomKnee: gfx.bloomKnee, bloomRadius: gfx.bloomRadius, sharpen: gfx.sharpen, sharpenStrength: gfx.sharpenStrength });
   renderer.setSettings(gfx);
   if (!saveSettings(gfx)) showNotice('The browser did not keep the graphics settings');
   else showNotice(text);
@@ -497,6 +500,9 @@ const actions: UiActions = {
   },
   setBloom: (bloom) => changeGfx({ bloom }, `Bloom: ${bloom ? `on, ${gfx.bloomStrength}` : 'off'}`),
   setBloomStrength: (bloomStrength) => changeGfx({ bloom: true, bloomStrength }, `Bloom strength: ${bloomStrength}`),
+  setBloomThreshold: (bloomThreshold) => changeGfx({ bloom: true, bloomThreshold }, `Bloom threshold: ${bloomThreshold}`),
+  setBloomKnee: (bloomKnee) => changeGfx({ bloom: true, bloomKnee }, `Bloom soft knee: ${bloomKnee}`),
+  setBloomRadius: (bloomRadius) => changeGfx({ bloom: true, bloomRadius }, `Bloom radius: ${bloomRadius}`),
   setSharpen: (sharpen) => changeGfx({ sharpen }, `Sharpening: ${sharpen ? `on, ${gfx.sharpenStrength}` : 'off'}`),
   setSharpenStrength: (sharpenStrength) => changeGfx({ sharpen: true, sharpenStrength }, `Sharpening strength: ${sharpenStrength}`),
   toggleHz() {
