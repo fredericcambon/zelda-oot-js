@@ -6,6 +6,7 @@ import { Button } from './widgets.ts';
 import { useLabels } from './label-edit.ts';
 import { labels, MAX_LABEL } from './labels.ts';
 import { isLink, type ActorRow } from '../inspect/actors.ts';
+import { ACTOR_NAMES } from '../inspect/actor-names.ts';
 
 const hex = (n: number, digits: number) => n.toString(16).toUpperCase().padStart(digits, '0');
 const fixed = (n: number) => (Number.isFinite(n) ? n.toFixed(0) : '?');
@@ -56,10 +57,12 @@ export function ActorsTab({ state: s, actions: a }: TabProps): VNode {
       <table class="slots actor-table"><tbody>
         ${g.rows.map((r) => {
           const own = labels.get('actor', r.id);
+          const seen = ACTOR_NAMES[r.id];
+          const name = own ?? seen?.name ?? `Unknown actor (0x${hex(r.id, 4)})`;
           return html`<tr key=${r.addr} class="actor">
           <td class="actor-id">
-            <div class="actor-name">${own ?? `Actor 0x${hex(r.id, 4)}`}${own && html` <span class="note">(yours)</span>`}</div>
-            <div class="note">${own ? `id 0x${hex(r.id, 4)} · ` : ''}record ${hex(r.addr, 8)}</div>
+            <div class="actor-name" title=${own ? 'Your label' : seen?.note ?? 'No name is known for this id; label it to name it'}>${name}${own && html` <span class="note">(yours)</span>`}</div>
+            <div class="note">${own || seen ? `id 0x${hex(r.id, 4)} · ` : ''}record ${hex(r.addr, 8)}</div>
             <${LabelField} id=${r.id} />
           </td>
           <td class="actor-pos"><${Details} r=${r} /></td>

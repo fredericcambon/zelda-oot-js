@@ -32,6 +32,18 @@ The spawner is `0x8002573C(list, ctx, id, x, y, z, rot x, rot y, rot z, param)` 
 
 Other offsets of the record are not used here and have no proven meaning. Three triples of floats were seen in memory at `0x08`, `0x38` and `0x50`. Link's triple at `0x38` differs slightly from the one at `0x24` while he moves (observed), and "Go to" writes both.
 
+## Drawing
+
+- **The draw loop** is the walk at `0x8002514C`-`0x80025228` (`lw s0, 292(s0)` at 0x80025220 continues along the list): for each record it reads the init pointer at `+0x128` (`lw t1, 296(s0)`, 0x800251A0; a non-zero one skips the record) and the draw pointer at `+0x134` (`lw t2, 308(s0)`, 0x800251B0; a null one skips the record), tests flags in `+0x04`, and calls the routine at `0x800248AC` (`jal`, 0x80025214; a second call site at 0x80024F18 draws the ones the loop queued in an array).
+- **Per-actor draw** `0x800248AC(ctx, record)`: it builds the model matrix from the world position at `+0x24` (`lwc1 24($s0)`, 0x80024990; `jal 0x800ABB40`, 0x800249A0) and the scale at `+0x50` (`lwc1 80($s0)`, 0x800249A8; `jal 0x800AAF2C`), emits a matrix command into the display list pointer at `gfx + 0x2C0` (`sw` at 0x800249E4-0x800249E8) and calls the draw pointer: `lw t9, 308(s0)`, `jalr $ra, $t9` with `a0` the record and `a1` the context (0x80024AF0-0x80024AF8).
+- **Observed.** Writing 0 to `+0x134` of Link's record in his house makes him vanish from the picture; the picture lags the change by about four pictures (a frame is built and handed to the graphics task a few frames later), so the check takes several. `tools/actors/crops.ts` uses this: from one saved game state it takes the picture twice, once as it is and once with one record's draw pointer null, and what differs between them is that actor. No camera maths is needed. Actors that are off screen are put 100 units from Link for the picture; actors that draw nothing in either picture (invisible markers, for example) are not seen.
+
+## Names
+
+Actor ids have no name table in the ROM (the id indexes the table at `0x800E6480`, whose rows hold the code and object, not text). The names in `web/inspect/actor-names.ts` are what the picture shows, found with `npx tsx tools/actors/crops.ts`: for each distinct (id, category) pair of a scene it takes the picture with the actor drawn, with its draw pointer nulled (see "Drawing") and drawn again, and keeps the pixels that differ between the first two and not between the first and third. A contact sheet of each scene (`out/actors/scene-<n>/sheet-<k>.png`, tile numbers in `manifest.json`) shows the picture and, beside it, the actor's own pixels; the name was typed from them. Names describe the look ("Wooden sign", "Person in blue"), not the game's own name; an entry cites its scene and tile, and an id seen in several scenes lists each.
+
+Coverage of the first sample (Kokiri Forest scene 85, Market 32, Kakariko Village 82, Hyrule Field 81, Inside the Deku Tree 0, Lon Lon Ranch 99, each entered at the first entrance that shows the card, 2,410 frames of A taps after entering): 59 distinct ids were alive; 29 are named. The rest were not named: invisible in both pictures (not drawn), only partly in view, or too small or unclear to say what they are. Unnamed ids show as "Unknown actor (0x…)" in the Actors tab, where a user label can name them.
+
 ## Insert, remove, walk
 
 - **Insert** (0x800255C4, arguments: the array `a0`, the record `a1`, the category `a2`): stores the category, increments the totals and the list's count, links the new record in front of the old head (`sw a1, 288(v1)` on the old head, `sw v1, 292(a1)` on the new one) and makes it the head (`sw a1, 16(v0)`). New records go first.
