@@ -154,7 +154,11 @@ export function buildPlaces(entries: readonly TableEntry[], exits: ReadonlyMap<n
     count.set(entry.text, n);
     if (n > 1) entry.text = `${entry.text} (${n})`;
   }
-  const sceneName = (s: number) => names.get(s)!.text;
+  // A scene named after its neighbours reads as "a place off X" when it is the source of an arrival.
+  const sourceName = (s: number) => {
+    const n = names.get(s)!;
+    return n.kind === 'derived' ? `a place off ${n.text.slice('Off '.length)}` : n.text;
+  };
 
   // One arrival per scene and spawn, over all groups that land there.
   const arrivalRuns = new Map<string, { scene: number; spawn: number; runs: Run[] }>();
@@ -186,17 +190,17 @@ export function buildPlaces(entries: readonly TableEntry[], exits: ReadonlyMap<n
     arrivals.sort((a, b) => a.entries[0]! - b.entries[0]!);
     const { text, kind } = names.get(scene)!;
     for (const a of arrivals) {
-      const from = a.sources.map(sceneName);
+      const from = a.sources.map(sourceName);
       const shown = from.slice(0, 2).join(' / ') + (from.length > 2 ? ` +${from.length - 2}` : '');
       if (arrivals.length === 1) a.name = text;
-      else a.name = `${text} - ${from.length > 0 ? `from ${shown}` : `spawn ${a.spawn}`}`;
+      else a.name = `${text} - ${from.length > 0 ? `from ${shown}` : `other arrival ${a.spawn}`}`;
     }
     // Two arrivals of a scene that read the same must still be told apart.
     const seen = new Map<string, number>();
     for (const a of arrivals) {
       const n = (seen.get(a.name) ?? 0) + 1;
       seen.set(a.name, n);
-      if (n > 1) a.name = `${a.name} (spawn ${a.spawn})`;
+      if (n > 1) a.name = `${a.name} (arrival ${a.spawn})`;
     }
     groups.push({ scene, name: text, kind, arrivals });
   }

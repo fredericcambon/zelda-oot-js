@@ -43,7 +43,7 @@ describe('places', () => {
 
   it('names an arrival after the scenes whose exit lists lead to it', () => {
     const town = places.groups.find((g) => g.scene === 1)!;
-    expect(town.arrivals.map((a) => a.name)).toEqual(['Town - from Off Town', 'Town - from Off Town (spawn 1)']);
+    expect(town.arrivals.map((a) => a.name)).toEqual(['Town - from a place off Town', 'Town - from a place off Town (arrival 1)']);
     expect(places.rows).toBe(5);
   });
 

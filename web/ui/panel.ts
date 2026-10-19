@@ -10,6 +10,7 @@ import { InventoryTab } from './inventory-tab.ts';
 import { WarpTab } from './warp-tab.ts';
 import type { TabProps, UiActions, UiState } from './types.ts';
 import { keepFocus } from './widgets.ts';
+import './panel.css';
 
 interface TabDef {
   id: string;

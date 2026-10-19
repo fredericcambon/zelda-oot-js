@@ -1,6 +1,6 @@
 // What each title card says, typed from its English picture (row 0 of the card file, `readTitleCards(...).card(scene, 0)`;
 // `npx tsx tools/assets/title-cards-report.ts` writes the pictures to out/title-cards/). Keyed by file table index: scenes that
-// share a card file share the name (docs/re/title-cards.md, "Names").
+// share a card file share the name (docs/re/entrances.md, "Names"). File 937's picture reads "?", which is not a name, so it has no entry.
 export const CARD_NAMES: Readonly<Record<number, string>> = {
   881: 'Forest Temple',
   882: 'Shadow Temple',
@@ -58,5 +58,4 @@ export const CARD_NAMES: Readonly<Record<number, string>> = {
   934: 'Bottom of the Well',
   935: 'Desert Colossus',
   936: 'Bombchu Shop',
-  937: '?',
 };
