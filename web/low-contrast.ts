@@ -43,3 +43,23 @@ function scan({ width, height, rgba }: DecodedTexture): boolean {
   }
   return true;
 }
+
+/**
+ * The texels of the image smoothed by a [1 2 1] kernel along both axes (edges repeat their outermost texel). The sky's tiles carry noise that
+ * changes by a step from one texel to the next; bilinear turns it into a lattice of dots at the texel spacing, and the blur takes it out.
+ */
+export function softened({ width, height, rgba }: DecodedTexture): Uint8Array {
+  const pass = (src: Uint8Array, dx: number, dy: number): Uint8Array => {
+    const out = new Uint8Array(src.length);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const a = (Math.max(0, y - dy) * width + Math.max(0, x - dx)) * 4;
+        const b = (y * width + x) * 4;
+        const c = (Math.min(height - 1, y + dy) * width + Math.min(width - 1, x + dx)) * 4;
+        for (let k = 0; k < 4; k++) out[b + k] = (src[a + k]! + 2 * src[b + k]! + src[c + k]! + 2) >> 2;
+      }
+    }
+    return out;
+  };
+  return pass(pass(rgba, 1, 0), 0, 1);
+}

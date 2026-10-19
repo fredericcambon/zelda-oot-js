@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { DecodedTexture } from '../tools/gfx/types.ts';
-import { isLowContrast, MAX_STEP } from './low-contrast.ts';
+import { isLowContrast, MAX_STEP, softened } from './low-contrast.ts';
 
 let nextId = 1;
 
@@ -42,5 +42,15 @@ describe('isLowContrast', () => {
   it('gives the same answer again for the same image', () => {
     const t = image(2);
     expect(isLowContrast(t)).toBe(isLowContrast(t));
+  });
+});
+
+describe('softened', () => {
+  it('turns single-texel noise into a flat value and leaves a flat image alone', () => {
+    const t = checker();
+    const out = softened(t);
+    expect(Math.max(...Array.from({ length: 30 * 30 }, (_, i) => out[((i % 30 + 1) + (Math.floor(i / 30) + 1) * 32) * 4]!)) - Math.min(...Array.from({ length: 30 * 30 }, (_, i) => out[((i % 30 + 1) + (Math.floor(i / 30) + 1) * 32) * 4]!))).toBeLessThanOrEqual(1);
+    const flat = image(0);
+    expect(softened(flat)).toEqual(flat.rgba);
   });
 });

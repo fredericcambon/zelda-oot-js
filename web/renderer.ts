@@ -7,7 +7,7 @@ import { Geo } from '../tools/gfx/opcodes.ts';
 import { CycleType, cycleTypeOf, fragmentSource, OtherL, shiftScale, specKey, specOf, VERTEX_SHADER, type ShaderSpec } from './shader.ts';
 import { MAX_SCALE, type GfxSettings } from './gfx-settings.ts';
 import { texturesRead } from '../tools/tex/used.ts';
-import { isLowContrast } from './low-contrast.ts';
+import { isLowContrast, softened } from './low-contrast.ts';
 import { bindToggleKey, scaleOf, hashImage, pagePack, type TexPack } from './tex-pack.ts';
 
 export const SCREEN_W = 320;
@@ -800,7 +800,7 @@ ${source}`);
       const k = replacement ? scaleOf(image, replacement) : 0;
       tex = replacement && k > 0
         ? this.upload(replacement.width, replacement.height, replacement, this.settings.mipmaps, k)
-        : this.upload(image.width, image.height, image.rgba);
+        : this.upload(image.width, image.height, this.settings.filter === 'n64' && isLowContrast(image) ? softened(image) : image.rgba);
       tex.hash = hash;
       this.textureCache.set(image.id, tex);
     }
