@@ -73,7 +73,7 @@ export function sameSnapshot(a: WarpSnapshot, b: WarpSnapshot): boolean {
 
 const hex = (n: number, width: number) => `0x${n.toString(16).toUpperCase().padStart(width, '0')}`;
 
-/** Where the picture of the place an entrance leads to is served from, when `npm run sweep -- scenes --thumbs` has made it (web/game-files.ts). */
+/** Where the picture of the place an entrance leads to is served from: web/public/warp-thumbs, made by `npm run sweep -- scenes --thumbs` (docs/re/title-cards.md). */
 export const thumbUrl = (entry: number): string => `${import.meta.env.BASE_URL}warp-thumbs/${String(entry).padStart(4, '0')}.png`;
 
 /** The only name an entrance has: its numbers. */

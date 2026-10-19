@@ -38,10 +38,10 @@ for (const scene of withFile) {
   console.log(`${scene} | ${cards.file(scene)} | ${mine.filter((e) => e.flags & ENTRANCE_SHOWS_CARD).length} / ${mine.length}`);
 }
 
-// What each entrance of the Warp list can show: the destination scene's card, and the picture the sweep took there (dist/warp-thumbs).
+// What each entrance of the Warp list can show: the destination scene's card, and the picture the sweep took there (web/public/warp-thumbs).
 const valid = entrances.filter((e) => e.scene < SCENE_COUNT);
 const hasCard = (e: { scene: number }) => shown.has(e.scene);
-const hasPicture = (e: { entry: number }) => existsSync(`dist/warp-thumbs/${String(e.entry).padStart(4, '0')}.png`);
+const hasPicture = (e: { entry: number }) => existsSync(`web/public/warp-thumbs/${String(e.entry).padStart(4, '0')}.png`);
 const cardOnly = valid.filter((e) => hasCard(e) && !hasPicture(e));
 const pictureOnly = valid.filter((e) => !hasCard(e) && hasPicture(e));
 const both = valid.filter((e) => hasCard(e) && hasPicture(e));
