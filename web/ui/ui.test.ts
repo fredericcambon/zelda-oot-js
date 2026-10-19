@@ -16,12 +16,12 @@ describe('panel preferences', () => {
   const tabs = ['game', 'saves'];
 
   it('defaults when nothing is stored', () => {
-    expect(loadPrefs(tabs, memory())).toEqual({ width: DEFAULT_WIDTH, tab: 'game', collapsed: false });
+    expect(loadPrefs(tabs, memory())).toEqual({ width: DEFAULT_WIDTH, tab: 'game', collapsed: true });
   });
 
   it('round-trips and clamps the width', () => {
     const store = memory();
-    savePrefs({ width: 480, tab: 'saves', collapsed: true }, store);
+    savePrefs({ width: 480, tab: 'saves', collapsed: false }, store);
     expect(loadPrefs(tabs, store)).toEqual({ width: 480, tab: 'saves', collapsed: true });
     expect(clampWidth(10)).toBe(MIN_WIDTH);
     expect(clampWidth(9000)).toBe(MAX_WIDTH);
@@ -30,7 +30,7 @@ describe('panel preferences', () => {
   it('drops an unknown tab and survives damaged or blocked storage', () => {
     const store = memory();
     store.setItem('zelda-oot-js:panel', JSON.stringify({ tab: 'gone', width: 'wide' }));
-    expect(loadPrefs(tabs, store)).toEqual({ width: DEFAULT_WIDTH, tab: 'game', collapsed: false });
+    expect(loadPrefs(tabs, store)).toEqual({ width: DEFAULT_WIDTH, tab: 'game', collapsed: true });
     store.setItem('zelda-oot-js:panel', '{not json');
     expect(loadPrefs(tabs, store).tab).toBe('game');
     const blocked = { getItem: () => { throw new Error('blocked'); }, setItem: () => { throw new Error('blocked'); } };

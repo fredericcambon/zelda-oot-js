@@ -1,4 +1,4 @@
-// Where the docked panel was left: width, open tab and whether it is folded to the icon rail.
+// Where the panel was left: width and open tab. It is folded to the icon rail on every load.
 
 export const MIN_WIDTH = 280;
 export const MAX_WIDTH = 600;
@@ -30,12 +30,11 @@ export const clampWidth = (width: number): number => Math.min(MAX_WIDTH, Math.ma
 
 /** The stored preferences; anything missing or unreadable falls back to the default, and a tab that does not exist is dropped. */
 export function loadPrefs(tabs: readonly string[], store: PrefStore | null = defaultStore()): PanelPrefs {
-  const prefs: PanelPrefs = { width: DEFAULT_WIDTH, tab: tabs[0]!, collapsed: false };
+  const prefs: PanelPrefs = { width: DEFAULT_WIDTH, tab: tabs[0]!, collapsed: true };
   try {
     const raw = JSON.parse(store?.getItem(KEY) ?? 'null') as Partial<PanelPrefs> | null;
     if (typeof raw?.width === 'number' && Number.isFinite(raw.width)) prefs.width = clampWidth(raw.width);
     if (typeof raw?.tab === 'string' && tabs.includes(raw.tab)) prefs.tab = raw.tab;
-    if (typeof raw?.collapsed === 'boolean') prefs.collapsed = raw.collapsed;
   } catch {
     // Unreadable storage or a damaged value: the defaults stay.
   }
