@@ -74,7 +74,7 @@
 
       /* Touch devices: the picture fills the screen and the panel is a sheet. */
       html.touch { overscroll-behavior: none; }
-      html.touch body { height: 100dvh; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+      html.touch body { background: #111; height: 100dvh; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
       html.touch #main { display: block; inset: 0; height: 100dvh; }
       html.touch #stage { width: auto; touch-action: none; }
       html.touch canvas { width: 100vw; max-width: 100vw; }
@@ -82,7 +82,7 @@
       html.touch .keys { display: none; }
       html.touch .touch-only { display: block; }
       html.touch #menu-button { display: block; position: fixed; top: 8px; right: 8px; width: 44px; height: 44px; z-index: 5; padding: 0; font-size: 22px; line-height: 1; color: #fff; background: rgba(0, 0, 0, 0.55); border: 2px solid rgba(255, 255, 255, 0.4); border-radius: 8px; touch-action: manipulation; }
-      html.touch #dock { display: none; position: fixed; z-index: 4; left: 0; right: 0; bottom: 0; width: auto; height: 60dvh; border-left: 0; border-top: 1px solid #444; touch-action: pan-y; }
+      html.touch #dock { background: #181818; display: none; position: fixed; z-index: 4; top: auto; left: 0; right: 0; bottom: 0; width: auto; height: 60dvh; border-left: 0; border-top: 1px solid #444; touch-action: pan-y; }
       html.touch #dock.open { display: flex; }
       html.touch .tab button, html.touch .tabs button { min-height: 36px; }
       @media (orientation: landscape) {
