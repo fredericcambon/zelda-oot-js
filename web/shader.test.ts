@@ -86,6 +86,14 @@ describe('shader generation', () => {
     expect(specOf(state(), { filter: 'smooth' }).bilerp).toBe(false);
   });
 
+  it('swaps the 3-point filter for bilinear on a draw whose textures are soft gradients', () => {
+    const bilinear = state({ otherModeH: 2 << 12 });
+    const soft = specOf(bilinear, { smoothTexels: true });
+    expect([soft.bilerp, soft.smooth]).toEqual([true, true]);
+    expect(specKey(soft)).not.toBe(specKey(specOf(bilinear)));
+    expect(specOf(bilinear, { filter: 'sharp', smoothTexels: true }).bilerp).toBe(false);
+  });
+
   it('samples mip levels only when asked, never in copy mode', () => {
     const mipped = specOf(state({ otherModeH: 2 << 12 }), { mip: true });
     expect(fragmentSource(mipped)).toContain('#define MIP 1');
