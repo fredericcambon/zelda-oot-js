@@ -385,6 +385,7 @@ function updateOverlay(): void {
     ...(game ? formatBreakdown(game.profiler.breakdown()) : []),
     `unknown commands ${s.unknown}  problems ${s.problems.length}`,
     `programs ${s.programs} (${s.compileMs.toFixed(0)} ms to build)  textures ${s.textures}  colour images ${s.targets}`,
+    `mip programs: ${s.mipFallbackDraws} draws without them in the last task, ${s.programSwitches} variants switched on, ${s.mipFailures} failed  texture uploads (one mip build each): ${s.uploads} in the last task, ${s.totalUploads} in all, ${s.reuploads} of a picture seen before, most of one picture ${s.maxUploadsOfOne}`,
     game ? `video framebuffer 0x${game.framebuffer().toString(16)}` : '',
     `culling ${renderer.cullMode}  resolution ${renderer.resolutionScale.toFixed(2)}x (${canvas.width}x${canvas.height})  filter ${gfx.filter}  lighting ${gfx.lightingMode}  msaa ${renderer.msaaSamples || 'off'}  ao ${gfx.ao ? gfx.aoStrength : 'off'}  bloom ${gfx.bloom ? gfx.bloomStrength : 'off'}  sharpen ${gfx.sharpen ? gfx.sharpenStrength : 'off'}  mips ${gfx.mipmaps ? `on, ${gfx.anisotropy} taps` : 'off'}  cutout ${renderer.msaaSamples ? gfx.cutout : 'hard'}`,
     g ? `audio tasks ${g.audioTasks}  sound ${audio.state === 'running' ? `on, level ${audio.level().toFixed(3)}` : 'off: press a key'}` : '',
@@ -393,6 +394,7 @@ function updateOverlay(): void {
     g?.audioError ? `audio error: ${g.audioError}` : '',
     ...s.problems,
   ].filter(Boolean).join('\n');
+  renderer.trackTextureBuilds = !overlay.hidden;
   if (!overlay.hidden) overlay.textContent = text;
   if (showing) store.set({ debugText: text });
 }
