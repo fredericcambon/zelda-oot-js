@@ -1,10 +1,9 @@
 import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { bootGame } from '../tools/headless/boot.ts';
 import { guestRam, loadRecordIntoPlay, SAVE_CONTEXT, unsafeReason } from '../tools/headless/load-save.ts';
 import { linkPosition, playState } from '../tools/headless/state.ts';
-import { buildGame } from '../tools/saves/game.ts';
+import { buildGame } from '../tools/headless/headless-support.ts';
 import { blankImage, getRecord, putRecord } from '../tools/saves/image.ts';
 import { editRecord, newRecord } from '../tools/saves/record.ts';
 import { parseBootParams } from './boot-params.ts';
@@ -29,7 +28,7 @@ const rom = process.env.OOT_ROM;
 
 describe.skipIf(!rom || !existsSync(rom))('entering a file from the title demo scene', () => {
   it('puts each file of the save memory in play, and Link answers the stick', async () => {
-    const { moduleUrl, cartridge } = await buildGame(rom!, resolve('out', 'boot-params-boot'));
+    const { moduleUrl, cartridge } = await buildGame();
     const sram = blankImage();
     for (let i = 0; i < 3; i++) {
       const record = newRecord(`File${i + 1}`);

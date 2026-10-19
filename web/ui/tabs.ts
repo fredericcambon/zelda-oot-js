@@ -2,6 +2,7 @@ import { html } from 'htm/preact';
 import type { VNode } from 'preact';
 import { useEffect } from 'preact/hooks';
 import type { TabProps } from './types.ts';
+import { LabelsSection } from './label-edit.ts';
 import { Button, Slider } from './widgets.ts';
 
 export function GameTab({ state: s, actions: a }: TabProps): VNode {
@@ -21,6 +22,7 @@ export function GameTab({ state: s, actions: a }: TabProps): VNode {
         <${Button} id="fullscreen-toggle" onClick=${a.toggleFullscreen}>Fullscreen<//>
       </div>
     </section>
+    <${LabelsSection} />
     <section class="keys">
       <h3>Keys</h3>
       <p class="help">Arrows: stick · Enter: Start · X: A · Z: B · Shift: Z · Q/E: L/R · IJKL: C buttons · WASD: D-pad · or a gamepad</p>
@@ -55,6 +57,10 @@ export function GraphicsTab({ state: s, actions: a }: TabProps): VNode {
       <${Slider} id="bloom-threshold" label="threshold" title="Brightness above which pixels glow (less: more of the picture glows)" min=${0} max=${100} value=${s.bloomThreshold} onInput=${a.setBloomThreshold} />
       <${Slider} id="bloom-knee" label="soft knee" title="How gradually pixels start to glow around the threshold (0: a hard cut)" min=${0} max=${100} value=${s.bloomKnee} onInput=${a.setBloomKnee} />
       <${Slider} id="bloom-radius" label="radius" title="How far the glow spreads" min=${0} max=${100} value=${s.bloomRadius} onInput=${a.setBloomRadius} />
+    </section>
+    <section>
+      <h3>Lighting</h3>
+      <${Button} id="lighting-toggle" pressed=${s.lightingMode === 'pixel'} title="Experimental: light lit surfaces per pixel with the game's own lights instead of per vertex (P)" onClick=${() => a.setLightingMode(s.lightingMode === 'pixel' ? 'vertex' : 'pixel')}>Lighting: ${s.lightingMode}<//>
     </section>
     <section>
       <h3>Sharpening</h3>

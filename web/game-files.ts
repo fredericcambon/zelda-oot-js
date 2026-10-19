@@ -11,6 +11,13 @@ import { LOOPBACK } from './saves-endpoint.ts';
 const TYPES: Record<string, string> = { '/oot.js': 'text/javascript', '/oot.wasm': 'application/wasm', [`/${PACK_FILE}`]: 'application/octet-stream' };
 const LOCAL_ONLY = `/${PACK_FILE}`;
 
+/** Pictures of the places the entrances lead to, taken in the game by `npm run sweep -- scenes --thumbs` and kept in dist/warp-thumbs; like the pack they are for this machine only. */
+export const THUMBS_DIR = 'warp-thumbs';
+const THUMB_URL = new RegExp(`^/${THUMBS_DIR}/\\d{4}\\.png$`);
+
+const typeOf = (url: string): string | undefined => TYPES[url] ?? (THUMB_URL.test(url) ? 'image/png' : undefined);
+const localOnly = (url: string): boolean => url === LOCAL_ONLY || THUMB_URL.test(url);
+
 /** The recompiled game: built into dist/web beside the page, unlike the pack. */
 export const MODULE_URLS = ['/oot.js', '/oot.wasm'];
 
@@ -41,10 +48,10 @@ const matches = (header: string | undefined, etag: string) => header !== undefin
 export function serveGameFiles(dist: string) {
   return (req: IncomingMessage, res: ServerResponse, next: () => void): void => {
     const url = decodeURIComponent((req.url ?? '').split('?')[0]!);
-    const type = TYPES[url];
+    const type = typeOf(url);
     if (!type) return next();
-    // The pack is for this machine only: refuse it to any other host (`--host`).
-    if (url === LOCAL_ONLY && !LOOPBACK.has(req.socket.remoteAddress ?? '')) {
+    // The pack and the pictures are for this machine only: refuse them to any other host (`--host`).
+    if (localOnly(url) && !LOOPBACK.has(req.socket.remoteAddress ?? '')) {
       res.statusCode = 403;
       res.end('the game files are served to this machine only');
       return;

@@ -123,3 +123,32 @@ Next task (small and decisive): **per-pixel diffuse prototype**, one lit-draw pa
 2. `renderer.ts`/`shader.ts`: a `lightingMode` setting (`vertex` default, `pixel`); in pixel mode the shader replaces `shade.rgb` for lit batches by `ambient + sum colour · max(0, n·L')` with the exact scaling above, keeping alpha/fog from the vertex.
 3. Check: with normals un-interpolated (flat per-vertex test) the pixel result must equal the vertex colour within 2/255 (the same tolerance as the microcode comparison), then compare a forest and a house frame.
 4. Before that, trace where the light records are written (the scene header's light-settings entry is the candidate): search RAM at the forest for the bytes `32 32 5a`/`ff ff f0`, `69 5a 5a`, and find the writing code. Useful for point lights and day/night but not blocking.
+
+## 7. Per-pixel prototype (option A), measured
+
+Built as the optional `lightingMode` setting (`vertex` default, `pixel`; Graphics tab, key P; stored in `oot.gfx`). Numbers below come from `tools/gfx/px-light-states.ts` (new game to Link's house, entrance 238 for the forest after 2448 frames, entrance 626 for Link's house after 300), `px-light-capture.ts` (headless Chrome, software WebGL, the page at 960x720 with AO, bloom and sharpening off, 10 s each) and `px-light-count.ts` (20 frames, interpreter only). Pictures: `out/px-light/{forest,house}-{vertex,pixel}.png` and `-diff.png` (git-ignored).
+
+How it works:
+- `dl.c` (`gfx_set_pixel_lighting`, off by default; nothing extra is produced while off): a lit vertex keeps its model-space normal bytes and the id of its light set. The set holds the ambient colour, the light colours and the light vectors **in the vertices' model space, as `model_direction` leaves them**, so the 1.2x/dimming behaviour and the unnormalised normal (~119.5) carry over unchanged. It is a deviation from "normal rotated by the model-view": rotating the lights instead of the normals gives the same dot products, and the quantised vectors the vertex path uses. Equal sets are shared (last 16 compared), a batch is split when a triangle brings another set, and the web side merges draw runs only on equal sets (`web/batching.ts`).
+- Output per vertex: the normal bytes and a flag, packed as four signed bytes in one extra word (`web/renderer.ts`): vertex 10 words = 40 bytes in vertex mode (unchanged, the attribute is off and the interpreter emits nothing), 11 words = 44 bytes in pixel mode (+10%). Clipped triangles interpolate the normal and round it to bytes.
+- `web/shader.ts` `PIXEL_LIGHT_GLSL`: `ambient + sum floor(colour * clamp(2 n.L, 0, 32767) / 32768)`, capped at 255, with `n` interpolated screen-linearly like the colour. Alpha, fog, shade alpha and unlit draws stay on the vertex path (the vertex colour is still written and used there).
+- Exactness: with one normal at all three vertices the result equals the vertex colour within 2/255 (`web/pixel-light.test.ts`, four matrix scales including 0.01; the test evaluates a TypeScript twin of the GLSL, since the tests have no GL context; the GLSL itself is checked only by the captures).
+
+Which triangles stay on the vertex path (`GfxLightResult`, `RenderStats.lighting`):
+- Mixed: vertices lit with different light sets or not all lit. 17.8% of lit triangles in the forest and 20.9% in the house (counts over the 10 s runs), 18% and 20% in the 20-frame count. Not traced; they are most likely the skinned joints of Link, whose vertices come from different matrices (his normals live in different model spaces, so no single light set fits them), which fits the count scaling with a model that is on screen all the time. This is inferred, not proven.
+- Reversed (cosine below -0.5 between the sum of the vertex normals and the face normal from the model-space positions in drawing order, the research's 9.9% measure): forest 76 of 813,666 lit triangles (0.01%), house 8,228 of 729,349 (1.1%); 20-frame count 0 of 5,412 and 132 of 4,194 (3.1%).
+
+Rule kept: reversed triangles stay on the vertex path (`GFX_LIGHTS_PIXEL`; `GFX_LIGHTS_PIXEL_ALL` lights them per pixel). I could not show that they look broken: they are 0.01% to 3% of the lit triangles here, no artefact is visible in the two frames, and a run with them lit per pixel differs from the other only in noise of the animation (the two runs are not frame-locked). The rule stays because a reversed normal gives the same wrong lighting per pixel as per vertex, only sharper, so nothing is gained from it. The 9.9% of the research are spread over all scenes; these two scenes have far fewer.
+
+What it looks like: the scene geometry is within noise of vertex mode (mean difference 0.42/255 in the forest, 0.19/255 in the house, mostly animated sparkles and Link; 0.9% and 1.2% of the pixels differ by more than 8). On Link the faces show per-pixel terminators instead of Gouraud streaks (differences up to about 50/255 on his face, tunic and boots). This matches the research's expectation: with two nearly opposite lights few surfaces go to zero, so the gain is small.
+
+Cost (software WebGL in headless Chrome, so GPU times mean little, per game frame, mean of 10 samples; one run each, noise about 0.3 ms):
+
+| scene | mode | CPU ms | display lists ms | submit ms | draw calls |
+| --- | --- | --- | --- | --- | --- |
+| forest | vertex | 9.73 | 5.97 | 2.46 | 475 |
+| forest | pixel | 9.79 | 6.15 | 2.44 | 496 |
+| house | vertex | 6.21 | 3.54 | 1.85 | 371 |
+| house | pixel | 6.66 | 3.78 | 2.05 | 389 |
+
+Pixel mode adds about 4-5% draw calls (runs split on light sets) and up to 0.4 ms of CPU; vertex mode is the code of before (same vertex size, same programs, no extra output). Not measured on a real GPU.

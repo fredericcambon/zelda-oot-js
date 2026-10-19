@@ -31,6 +31,8 @@ const { values, positionals } = parseArgs({
     'start-frame': { type: 'string', default: String(DEFAULT_START_FRAME) },
     input: { type: 'string', default: 'tools/headless/newgame.input' },
     dump: { type: 'string' },
+    thumbs: { type: 'string' },
+    'thumb-frame': { type: 'string', default: '90' },
     'dumps-per-scene': { type: 'string', default: '2' },
     doc: { type: 'string', default: 'docs/re/gaps.md' },
   },
@@ -63,7 +65,7 @@ async function main(): Promise<number> {
     const save = (report: SceneSweepReport) => writeFileSync(scenesPath, JSON.stringify(report));
     const report = await sweepScenes({
       dist: values.dist!, entrances, ages: values.ages!.split(',') as Age[], frames: Number(values.frames), startFrame: Number(values['start-frame']), input: values.input!,
-      dumpDir: values.dump, dumpsPerScene: Number(values['dumps-per-scene']), log: (m) => console.log(m), onProgress: save,
+      dumpDir: values.dump, thumbs: values.thumbs ? { dir: values.thumbs, frame: Number(values['thumb-frame']) } : undefined, dumpsPerScene: Number(values['dumps-per-scene']), log: (m) => console.log(m), onProgress: save,
     });
     save(report);
     const bad = report.results.filter((r) => r.status === 'trap' || r.status === 'halted');

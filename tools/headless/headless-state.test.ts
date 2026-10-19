@@ -6,7 +6,8 @@ import { compressState, STATE_VERSION } from '../runtime/snapshot.ts';
 import { RDRAM_SIZE } from '../runtime/instance.ts';
 import { encodeThreads, parseThreads } from '../runtime/threads.ts';
 import { playState } from './state.ts';
-import { rom, HOUSE_SCENE, buildGame, buildVariant, sha, SAVE_FRAME, REPLAY_FRAMES, STATE_SIZE_LIMIT, reachSaveFrame, sections, withSection, startReplayable } from './headless-support.ts';
+import { introState, liveReference, loadIntro } from './intro-state.ts';
+import { rom, HOUSE_SCENE, buildGame, buildVariant, sha, SAVE_FRAME, REPLAY_FRAMES, STATE_SIZE_LIMIT, sections, withSection, startReplayable } from './headless-support.ts';
 
 describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
   it('saves a portable state and loads it into a fresh game, which replays the same frames, pictures, sound, position and memory', async () => {
@@ -14,10 +15,10 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
     const start = () => startReplayable(moduleUrl, cartridge);
 
     const first = await start();
-    await reachSaveFrame(first.game);
+    const intro = await introState();
+    const { state, sram: savedGames } = intro;
+    await loadIntro(first.game, intro);
     expect(playState((a) => first.game.rd32(a))?.scene).toBe(HOUSE_SCENE);
-    const state = first.game.saveState();
-    const savedGames = first.game.readSave();
     const expected = await first.play(SAVE_FRAME, SAVE_FRAME + REPLAY_FRAMES);
     // The walk moves Link and the pictures change, so the comparison below is not between constant frames.
     expect(new Set(expected.map((l) => l.split(' ')[1])).size).toBeGreaterThan(20);
@@ -38,6 +39,10 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
     expect(sha(second.game.ram())).toBe(sha(first.game.ram()));
     // Everything the state holds is the same after the replay, so nothing the game depends on was left out of it.
     expect(sha(second.game.saveState())).toBe(sha(first.game.saveState()));
+    // A game that played the intro from boot without loading anything holds the same after the same frames, so the state left nothing out.
+    const live = await liveReference();
+    expect(sha(second.game.ram())).toBe(live.ram);
+    expect(sha(second.game.saveState())).toBe(live.state);
 
     // The same game goes back too.
     await first.game.loadState(state);
@@ -58,8 +63,9 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
     const { moduleUrl, cartridge } = await buildGame();
     const start = () => startReplayable(moduleUrl, cartridge);
     const first = await start();
-    await reachSaveFrame(first.game);
-    const state = first.game.saveState();
+    const intro = await introState();
+    const { state } = intro;
+    await loadIntro(first.game, intro);
     const expected = await first.play(SAVE_FRAME, SAVE_FRAME + REPLAY_FRAMES);
 
     const third = await start();
@@ -93,9 +99,9 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
     expect(wasm(b.moduleUrl)).not.toBe(wasm(a.moduleUrl));
 
     const first = await startReplayable(a.moduleUrl, a.cartridge);
-    await reachSaveFrame(first.game);
-    const state = first.game.saveState();
-    const savedGames = first.game.readSave();
+    const intro = await introState();
+    const { state, sram: savedGames } = intro;
+    await loadIntro(first.game, intro);
     const expected = await first.play(SAVE_FRAME, SAVE_FRAME + REPLAY_FRAMES);
 
     const second = await startReplayable(b.moduleUrl, b.cartridge);
@@ -104,6 +110,9 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
     expect(await second.play(SAVE_FRAME, SAVE_FRAME + REPLAY_FRAMES)).toEqual(expected);
     expect(sha(second.game.ram())).toBe(sha(first.game.ram()));
     expect(sha(second.game.saveState())).toBe(sha(first.game.saveState()));
+    const live = await liveReference();
+    expect(sha(second.game.ram())).toBe(live.ram);
+    expect(sha(second.game.saveState())).toBe(live.state);
   }, 3_600_000);
 
   it('refuses to save a state while the game boots', async () => {

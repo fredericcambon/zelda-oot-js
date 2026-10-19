@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { buildGame } from '../headless/headless-support.ts';
 import { padAt, parseInput } from '../headless/input.ts';
 import { playState, requestEntrance } from '../headless/state.ts';
+import { introState, SAVE_FRAME } from '../headless/intro-state.ts';
+import { loadState, type StateCore } from '../runtime/snapshot.ts';
 import { startModule, type OotCore } from '../runtime/instance.ts';
 import { runDisplayList } from './c-dl.ts';
 import { isCamera, MatrixFlag, matchFrames, planMotion, readMatrices, type MotionMatrix } from './motion.ts';
@@ -18,7 +20,7 @@ const SCRIPT = parseInput(readFileSync(new URL('../headless/newgame.input', impo
 /** The cutscene that follows the entrance is skipped with A taps; then Link walks forward, right, back and left. */
 const CUTSCENE_TAPS = parseInput('tap A 100 4000 40 3', 'tap');
 const WALKING_FROM = 2450;
-const WALKING_UNTIL = 2800;
+const WALKING_UNTIL = 2620;
 const WALK = parseInput('2450 NONE 0 70\n2500 NONE 70 0\n2550 NONE 0 -70\n2600 NONE -70 0\n2650 NONE 0 70\n2700 NONE', 'walk');
 
 interface GameCore extends OotCore, SmoothCore {
@@ -88,7 +90,8 @@ describe.skipIf(!rom || !existsSync(rom))('pictures between game frames in Kokir
     });
     smooth.frames = new SmoothFrames(mod);
     const rd32 = (a: number) => mod._oot_rd32(a) >>> 0;
-    for (let k = 1; k <= CONTROL_FRAME; k++) {
+    await loadState(mod as unknown as StateCore, (await introState()).state);
+    for (let k = SAVE_FRAME + 1; k <= CONTROL_FRAME; k++) {
       frame = k;
       const pad = padAt(SCRIPT, k);
       mod._oot_pad_set(0, pad.buttons, pad.x, pad.y);
