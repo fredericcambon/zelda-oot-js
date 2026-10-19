@@ -23,6 +23,8 @@ export interface UiState {
   sharpen: boolean;
   sharpenStrength: number;
   lightingMode: LightingMode;
+  pointLights: boolean;
+  pointLightStrength: number;
   bootHz: Hz;
   wantedHz: Hz;
   muted: boolean;
@@ -74,6 +76,8 @@ export interface UiActions {
   setAoStrength(percent: number): void;
   setSharpen(on: boolean): void;
   setLightingMode(mode: LightingMode): void;
+  setPointLights(on: boolean): void;
+  setPointLightStrength(percent: number): void;
   setSharpenStrength(percent: number): void;
   toggleHz(): void;
   toggleMute(): void;

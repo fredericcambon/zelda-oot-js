@@ -152,3 +152,24 @@ Cost (software WebGL in headless Chrome, so GPU times mean little, per game fram
 | house | pixel | 6.66 | 3.78 | 2.05 | 389 |
 
 Pixel mode adds about 4-5% draw calls (runs split on light sets) and up to 0.4 ms of CPU; vertex mode is the code of before (same vertex size, same programs, no extra output). Not measured on a real GPU.
+
+## 8. Point lights (port-made)
+
+An optional effect (`pointLights`, default off, `pointLightStrength` 0 to 100, default 50; Graphics tab, key Y; stored in `oot.gfx`). The game has no point lights (section 3), so everything below is new content; sources are listed in `docs/re/actors.md` ("Light sources").
+
+How it works:
+- **Camera.** While `gfx_set_camera_output` is on, `dl.c` keeps up to three perspective projections of the run (`GfxCameraResult`) and tags every triangle's normal word with the slot of the projection its vertices were transformed under (`1 * per-pixel flag + 2 * slot`; orthographic draws get slot 0). The web side takes the slot with most vertices as the scene camera.
+- **Position per pixel.** The fragment shader rebuilds the world position from its window position, depth and 1 / w with the inverse of that projection, the draw's viewport rectangle and the vertex shader's x/y scale (`POINT_LIGHT_GLSL`, checked against the forward projection in `web/point-lights.test.ts`). The normal is the face normal from the screen derivatives of that position, turned towards the eye, so baked geometry without normals gets lit and per-pixel lighting is not required (it works with either lighting mode).
+- **Lights.** Position: the actor's world position plus 20 units. Colour (1, 0.5, 0.18), reach 160 units (Link is about 60 high), falloff `(1 - d / reach)^2`, facing term `0.35 + 0.65 * max(n.L, 0)` and none behind the surface; the light is added to the shade colour, so the texture modulates it. Flicker: two sines within about 0.85 to 1.15 per light, phase by index. At most 8 lights per frame, the nearest to the eye (those behind it last).
+- **Walls.** Nothing blocks a light between a source and a surface; the facing test and the short reach are all that limit it, so a thin wall can pass light to the other side.
+- **Which draws.** Triangles under the scene camera that write depth (opaque and cut-out). Translucent draws (flames, sparks, water) are left alone: lit, their quads showed as boxes. A draw whose combiner does not use the shade colour shows no light.
+- **Following a source.** Positions are read from the actor lists at each drawn task, so a moving source's light follows it; the picture in between smoothed frames uses the last read.
+
+Captures (`tools/gfx/point-light-states.ts`, `point-light-capture.ts`; pictures in `out/point-lights/`, 3x scale canvas of 913x685, per-pixel lighting on, bloom/AO/sharpening off, headless Chrome on the GPU, mean of 10 samples; one run each):
+
+| scene | point lights | display lists ms | submit ms | CPU ms | GPU ms | draw calls | displayed fps |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Fire Temple first room, Link at the torches | off | 5.56 | 2.74 | 9.79 | 2.77 | 403 | 119.9 |
+| same | on | 6.01 | 3.38 | 10.79 | 2.67 | 396 | 120.0 |
+
+The page ran at the display's 120 Hz in both. The Kakariko-at-night and interior-with-a-fire captures are missing: no fire actor was found there (see actors.md).

@@ -35,3 +35,16 @@ Entrance 238 of scene 85, 2,410 frames after loading it (as in `headless-forest.
 **Go to.** Writing Link's `0x24` and `0x38` triples to 50 units in +x of an actor puts him there for actors that stand on ground the game accepts: of every fourth actor of the forest (about 22 tried, `actors-rom.test.ts`), more than two ended within 80 units of the actor and at least one was more than 300 units from where Link began. For others (observed: actors at height 0 below Link, or high in the air) Link returned within 8 frames to where he had been or to another place on the ground: the game moves him back when the spot has no floor. The check was not located; nothing here bypasses it.
 
 Category numbers are not named: no code here maps them to a meaning. Link is the single record of category 2 with id 0, as in `docs/re/newgame.md`.
+
+## Light sources
+
+Actors the port treats as point-light sources (`web/point-lights.ts`, `LIGHT_ACTOR_IDS`). The game has no such lights; this list is the port's own, and each entry needs an observation.
+
+| Id | Category | Observed | Evidence |
+| --- | --- | --- | --- |
+| `0x0008` | 7 | Fire Temple, first room (scene 4, entrance 357, 300 frames after loading it) | Three records, `0x801E50D0` at (105, 260, -145), `0x801E4F40` at (0, 280, -140), `0x801E4DB0` at (-105, 260, -145), rotation 0. With the projection the interpreter reports for the frame (below) each position falls on one of the three flames at the top of the stairs (`tools/gfx/point-light-probe.ts 4`, a picture with the id written at every actor's projected position). Of the 76 batches drawn with a fire colour (primitive colour orange, environment colour red) in the last 12 frames, 12 had id `0x0008` as the nearest actor within 40 pixels and 64 had id `0x0013` (category 5, two records near (228, 349, 245) and (-155, 372, 224): the flying fire creature seen at the top of the picture, not a torch). |
+
+- **Lit or not.** Whether a record is lit is not proven: nothing was found that differs between a burning and an unlit one, and only burning ones were seen. Every instance of the listed ids lights.
+- **Light position.** The actor's world position (`+0x24`), 20 units higher.
+- **Not found.** Probes of scenes 0, 1, 3, 5, 6, 7 (dungeon first rooms), 82 (Kakariko Village, by day), 98 and 40 found no other fire-coloured draw near an actor, so no source is listed for Kakariko or the interiors tried. The page can only light what this table lists; the Kakariko-at-night and interior-with-a-fire captures were not made for that reason.
+- **Projection used for the check.** The interpreter reports the perspective projection under which most vertices of a task were transformed (`gfx_camera_result`, `runtime/gfx/gfx.h`): the game multiplies the view matrix into the projection stack (`docs/re/gaps.md`, "view matrix multiplied into the projection"), and the room's own vertices are drawn with an identity model-view matrix (`docs/re/display-lists.md`), so `(x, y, z, 1)` times it is the clip-space position of a world position. Link's own record lands on Link in every frame probed (scenes 0, 1, 3, 4, 5, 7, 82).

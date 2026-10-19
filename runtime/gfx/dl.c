@@ -95,6 +95,8 @@ static VEC(GfxLightSet) out_light_sets;
 static VEC(uint32_t) out_batch_lights;
 static uint32_t pixel_mode, last_light_set, batch_light;
 static GfxLightResult light_result;
+static uint32_t camera_output;
+static GfxCameraResult camera_result;
 static VEC(GfxBatch) out_batches;
 static VEC(GfxState) out_states;
 static VEC(GfxTextureRef) out_textures;
@@ -138,6 +140,8 @@ typedef struct {
   // Pixel lighting only: model-space position, the normal bytes, and 1 + the index of the light set of a lit vertex (0 when unlit).
   double pos[3], normal[3];
   uint32_t light_set;
+  // Camera output only: 1 + the index of the perspective projection the vertex was transformed under, 0 for an orthographic one.
+  uint32_t camera;
 } Vertex;
 
 static uint32_t seg[16];
@@ -785,6 +789,24 @@ static void pop_matrix(uint32_t w1) {
 static VEC(double) vertex_trace;
 static int vertex_trace_on;
 
+// The slot of the perspective projection in force in the camera result (a new one takes the next slot while there is room), counting
+// `vertices` against it; 0 under an orthographic projection or when the slots are taken. The view matrix is multiplied into the
+// game's projection (docs/re/lighting.md, "Point lights"), so the projection is the world-to-clip transform of everything drawn under it.
+static uint32_t camera_of(int vertices) {
+  if (!perspective(proj)) return 0;
+  for (uint32_t i = 0; i < camera_result.count; i++) {
+    if (memcmp(camera_result.matrix[i], proj, sizeof proj) == 0) {
+      camera_result.vertices[i] += (uint32_t)vertices;
+      return i + 1;
+    }
+  }
+  if (camera_result.count == GFX_MAX_CAMERAS) return 0;
+  const uint32_t i = camera_result.count++;
+  memcpy(camera_result.matrix[i], proj, sizeof proj);
+  camera_result.vertices[i] = (uint32_t)vertices;
+  return i + 1;
+}
+
 static void load_vertices(uint32_t w0, uint32_t w1) {
   const int n = (int)((w0 >> 12) & 0xff);
   const int v0 = (int)((w0 >> 1) & 0x7f) - n;
@@ -800,6 +822,7 @@ static void load_vertices(uint32_t w0, uint32_t w1) {
     mvp_valid = 1;
   }
   const double *m = mvp;
+  const uint32_t camera = camera_output ? camera_of(n) : 0;
   if (motion_record) {
     uint32_t h = 2166136261u;
     for (size_t i = 0; i < (size_t)n * 16; i++) h = (h ^ ram[(size_t)addr + i]) * 16777619u;
@@ -830,6 +853,7 @@ static void load_vertices(uint32_t w0, uint32_t w1) {
     v->pos[1] = y;
     v->pos[2] = z;
     v->light_set = 0;
+    v->camera = camera;
     v->normal[0] = v->normal[1] = v->normal[2] = 0;
     double alpha = rd_u8(a + 15) / 255.0;
     double col[3];
@@ -965,6 +989,7 @@ static void interpolate(const Vertex *a, const Vertex *b, double t, Vertex *o) {
     o->normal[i] = a->normal[i] + (b->normal[i] - a->normal[i]) * t;
   }
   o->light_set = a->light_set;
+  o->camera = a->camera;
 }
 
 enum { MAX_POLYGON = 16 };
@@ -1009,9 +1034,9 @@ static void emit(const Vertex *v, int per_pixel) {
   for (int i = 0; i < 4; i++) VEC_PUSH(out_col, (float)v->color[i]);
   VEC_PUSH(out_uv, (float)v->s);
   VEC_PUSH(out_uv, (float)v->t);
-  if (!pixel_mode) return;
+  if (!pixel_mode && !camera_output) return;
   for (int i = 0; i < 3; i++) VEC_PUSH(out_nrm, per_pixel ? (float)v->normal[i] : 0.0f);
-  VEC_PUSH(out_nrm, per_pixel ? 1.0f : 0.0f);
+  VEC_PUSH(out_nrm, (per_pixel ? 1.0f : 0.0f) + 2.0f * (float)v->camera);
 }
 
 // Whether the normals of a triangle point out of its face: the cosine between the sum of the three normals and the face normal
@@ -1430,6 +1455,7 @@ static void reset(void) {
   batch_first = 0;
   batch_light = last_light_set = 0;
   memset(&light_result, 0, sizeof light_result);
+  camera_result.count = 0;
   out_nrm.n = out_light_sets.n = out_batch_lights.n = 0;
   out_pos.n = out_col.n = out_uv.n = 0;
   out_batches.n = out_states.n = out_textures.n = out_unknown.n = out_opcodes.n = 0;
@@ -1566,9 +1592,11 @@ const GfxResult *gfx_result(void) {
 }
 
 void gfx_set_pixel_lighting(uint32_t mode) { pixel_mode = mode <= GFX_LIGHTS_PIXEL_ALL ? mode : GFX_LIGHTS_OFF; }
+void gfx_set_camera_output(uint32_t on) { camera_output = on != 0; }
+const GfxCameraResult *gfx_camera_result(void) { return &camera_result; }
 
 const GfxLightResult *gfx_light_result(void) {
-  light_result.enabled = pixel_mode != 0;
+  light_result.enabled = pixel_mode != 0 || camera_output != 0;
   light_result.normals = out_nrm.v;
   light_result.light_set_count = (uint32_t)out_light_sets.n;
   light_result.light_sets = out_light_sets.v;

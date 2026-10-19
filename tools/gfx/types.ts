@@ -165,6 +165,15 @@ export interface DisplayListResult {
   problems: string[];
   /** With pixel lighting on: triangles lit, of those the ones whose normals disagree with their faces and the ones with vertices lit differently (mixed), and the ones left on the vertex path. */
   lighting?: { lit: number; reversed: number; mixed: number; vertexPath: number };
+  /** Perspective projections used by the run's vertex loads, in the order met; filled only while the camera output is on. */
+  cameras?: CameraProjection[];
+}
+
+/** A perspective projection of a run, as the game's matrices leave it with the view matrix multiplied in (runtime/gfx/gfx.h), and the vertices drawn under it. */
+export interface CameraProjection {
+  vertices: number;
+  /** Sixteen values, row-major for row vectors: a world position (x, y, z, 1) times it is the clip-space position of the vertex data. */
+  matrix: Float64Array;
 }
 
 export interface RunOptions {

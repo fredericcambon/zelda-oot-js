@@ -3,6 +3,7 @@
 import type { DecodedTexture, DisplayListResult, DrawState, LightSet, RectBatch, TriangleBatch } from '../tools/gfx/types.ts';
 import { mergeRuns, type DrawRun, type Run } from './batching.ts';
 import { GpuTimer } from './gpu-timer.ts';
+import { flicker, frameCamera, pickLights, POINT_LIGHT_COLOR, POINT_LIGHT_GAIN, POINT_LIGHT_RADIUS, type FrameCamera, type PointLight } from './point-lights.ts';
 import { Geo } from '../tools/gfx/opcodes.ts';
 import { CycleType, cycleTypeOf, fragmentSource, OtherL, shiftScale, specKey, specOf, VERTEX_SHADER, type ShaderSpec } from './shader.ts';
 import { MAX_SCALE, type GfxSettings } from './gfx-settings.ts';
@@ -83,7 +84,7 @@ interface Target {
 }
 
 /** What a renderer made without settings uses: no multisampling, no mip levels. */
-const PLAIN: GfxSettings = { filter: 'n64', msaa: false, scaleCap: 0, mipmaps: false, anisotropy: 1, cutout: 'hard', lightingMode: 'vertex', ao: false, aoStrength: 0, bloom: false, bloomStrength: 0, bloomThreshold: 80, bloomKnee: 40, bloomRadius: 100, sharpen: false, sharpenStrength: 0 };
+const PLAIN: GfxSettings = { filter: 'n64', msaa: false, scaleCap: 0, mipmaps: false, anisotropy: 1, cutout: 'hard', lightingMode: 'vertex', pointLights: false, pointLightStrength: 50, ao: false, aoStrength: 0, bloom: false, bloomStrength: 0, bloomThreshold: 80, bloomKnee: 40, bloomRadius: 100, sharpen: false, sharpenStrength: 0 };
 const MSAA_SAMPLES = 4;
 
 /**
@@ -147,6 +148,11 @@ export class Renderer {
   private vertices = new Float32Array(0);
   private vertexBytes = new Int8Array(0);
   private words = VERTEX_WORDS;
+  /** Torches and fires of the scene (world positions), the camera of the task being drawn, the lights picked for it and the viewport of the draw in progress. */
+  private pointSources: readonly PointLight[] = [];
+  private camera: FrameCamera | null = null;
+  private pointLights: PointLight[] = [];
+  private viewportRect: [number, number, number, number] = [0, 0, 1, 1];
 
   /** `texPack`: the replacement textures; by default the pack the page is served with, none where there is no page to ask (the tests). */
   constructor(readonly canvas: HTMLCanvasElement, scale = 1, settings: GfxSettings = PLAIN, readonly texPack: TexPack | null = pagePack()) {
@@ -177,7 +183,7 @@ export class Renderer {
   /** Points the vertex attributes at the buffer's layout for the lighting mode in force. */
   private layoutVertices(): void {
     const gl = this.gl;
-    this.words = this.settings.lightingMode === 'pixel' ? LIT_VERTEX_WORDS : VERTEX_WORDS;
+    this.words = this.settings.lightingMode === 'pixel' || this.settings.pointLights ? LIT_VERTEX_WORDS : VERTEX_WORDS;
     gl.bindVertexArray(this.vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
     const stride = this.words * 4;
@@ -299,9 +305,14 @@ export class Renderer {
     else gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, this.canvas.width, this.canvas.height);
   }
 
+  /** The light sources of the scene, as world positions, for the frames drawn from now on. */
+  setPointSources(sources: readonly PointLight[]): void {
+    this.pointSources = sources;
+  }
+
   /** Applies new options; unless only the post-processing changed, the colour images and the cached textures are dropped and rebuilt as the game draws. */
   setSettings(settings: GfxSettings): void {
-    const effectsOnly = (Object.keys(settings) as (keyof GfxSettings)[]).every((k) => k === 'lightingMode' || k.startsWith('ao') || k.startsWith('bloom') || k.startsWith('sharpen') || settings[k] === this.settings[k]);
+    const effectsOnly = (Object.keys(settings) as (keyof GfxSettings)[]).every((k) => k === 'lightingMode' || k.startsWith('pointLight') || k.startsWith('ao') || k.startsWith('bloom') || k.startsWith('sharpen') || settings[k] === this.settings[k]);
     this.settings = { ...settings };
     this.layoutVertices();
     // The effects act at present time only: the images and textures stay.
@@ -378,6 +389,8 @@ export class Renderer {
       s.lighting.mixed += result.lighting.mixed;
       s.lighting.vertexPath += result.lighting.vertexPath;
     }
+    this.camera = this.settings.pointLights ? frameCamera(result.cameras) : null;
+    this.pointLights = this.camera ? pickLights(this.pointSources, this.camera) : [];
     this.projection = occlusionOn(this.settings) ? fitProjection(result.batches) : null;
     try {
       this.drawRuns(mergeRuns(result.batches));
@@ -729,12 +742,13 @@ export class Renderer {
     const gl = this.gl;
     const state = run.state;
     const cutout = this.settings.cutout === 'smooth' && this.samples > 0 && run.triangles && (state.geometryMode & Geo.ZBUFFER) !== 0;
-    const spec = specOf(state, { filter: this.settings.filter, mip: this.settings.mipmaps && run.triangles, cutout, smoothTexels: this.softTextures(state), pixelLight: run.lights !== null });
+    const spec = specOf(state, { filter: this.settings.filter, mip: this.settings.mipmaps && run.triangles, cutout, smoothTexels: this.softTextures(state), pixelLight: run.lights !== null, pointLight: run.triangles && this.pointLights.length > 0 && (state.otherModeL & OtherL.Z_UPDATE) !== 0 });
     const { program, spec: used } = this.program(spec);
     gl.useProgram(program.gl);
     this.applyRaster(state, run.triangles, used);
     this.applyUniforms(program, state, run.triangles, used.mip);
     if (used.pixelLight && run.lights) this.applyLights(program, run.lights);
+    if (used.pointLight) this.applyPointLights(program);
     gl.drawArrays(gl.TRIANGLES, first, count);
     this.stats.drawCalls++;
   }
@@ -766,8 +780,9 @@ export class Renderer {
       const hw = Math.abs(vp.scale[0]) / 4, hh = Math.abs(vp.scale[1]) / 4;
       const cx = vp.trans[0] / 4, cy = vp.trans[1] / 4;
       const left = this.devX(cx - 2 * hw), top = this.devY(cy - 2 * hh), bottom = this.devY(cy + 2 * hh);
-      gl.viewport(left, this.canvas.height - bottom, this.devX(cx + 2 * hw) - left, bottom - top);
-    } else gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+      this.viewportRect = [left, this.canvas.height - bottom, this.devX(cx + 2 * hw) - left, bottom - top];
+    } else this.viewportRect = [0, 0, this.canvas.width, this.canvas.height];
+    gl.viewport(...this.viewportRect);
 
     if (spec.framebufferBlend) {
       gl.enable(gl.BLEND);
@@ -830,6 +845,24 @@ export class Renderer {
     gl.uniform4fv(u('uTexA'), a);
     gl.uniform4fv(u('uTexB'), m);
     gl.uniform4fv(u('uTexC'), c);
+  }
+
+  private applyPointLights(program: Program): void {
+    const gl = this.gl, camera = this.camera!;
+    const seconds = performance.now() / 1000, gain = (POINT_LIGHT_GAIN * this.settings.pointLightStrength) / 50;
+    const pos = new Float32Array(32), color = new Float32Array(32);
+    this.pointLights.forEach((p, i) => {
+      pos.set([p.x, p.y, p.z, POINT_LIGHT_RADIUS], i * 4);
+      const k = gain * flicker(i, seconds);
+      color.set([POINT_LIGHT_COLOR[0] * k, POINT_LIGHT_COLOR[1] * k, POINT_LIGHT_COLOR[2] * k, 0], i * 4);
+    });
+    gl.uniformMatrix4fv(this.uniform(program, 'uInvCamera'), false, Float32Array.from(camera.inverse));
+    gl.uniform3f(this.uniform(program, 'uEye'), ...camera.eye);
+    gl.uniform4f(this.uniform(program, 'uViewport'), ...this.viewportRect);
+    gl.uniform4fv(this.uniform(program, 'uPointPos'), pos);
+    gl.uniform4fv(this.uniform(program, 'uPointColor'), color);
+    gl.uniform1i(this.uniform(program, 'uPointCount'), this.pointLights.length);
+    gl.uniform1i(this.uniform(program, 'uCameraSlot'), camera.slot);
   }
 
   private applyLights(program: Program, lights: LightSet): void {

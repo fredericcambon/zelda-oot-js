@@ -2,7 +2,7 @@
 // the DisplayListResult of types.ts. Float arrays and decoded images are views into the module's memory, valid
 // until the next run (and not across a growth of the memory: read the result right after the run).
 import {
-  decodeCombine, type Batch, type DecodedTexture, type DisplayListResult, type DrawState, type LightSet, type RunOptions, type TileState,
+  decodeCombine, type Batch, type DecodedTexture, type DisplayListResult, type DrawState, type CameraProjection, type LightSet, type RunOptions, type TileState,
 } from './types.ts';
 
 /** The exports of the interpreter (runtime/gfx/dl.c). */
@@ -17,6 +17,8 @@ export interface GfxCore {
   /** Present in modules built with the pixel-lighting output (runtime/gfx/gfx.h). */
   _gfx_light_result?(): number;
   _gfx_set_pixel_lighting?(mode: number): void;
+  _gfx_set_camera_output?(on: number): void;
+  _gfx_camera_result?(): number;
 }
 
 /** The vertex trace of the interpreter, for tests (runtime/gfx/gfx.h). */
@@ -45,6 +47,7 @@ const TEXTURE_WORDS = 7;
 const UNKNOWN_WORDS = 3;
 const PROBLEM_BYTES = 160;
 const MAX_LIGHTS = 7;
+const MAX_CAMERAS = 3;
 const TILE_WORDS = 16;
 
 type Tuple17 = [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number];
@@ -129,7 +132,15 @@ export function readResult(core: GfxCore): DisplayListResult {
   const pairs = new Uint32Array(buffer, opcodesAt || 0, opcodeCount * 2);
   const opcodes = new Map<number, number>();
   for (let i = 0; i < opcodeCount; i++) opcodes.set(pairs[i * 2]!, pairs[i * 2 + 1]!);
-  return { batches, commands, opcodes, unknown, problems, ...(light && { lighting: light.counts }) };
+  return { batches, commands, opcodes, unknown, problems, ...(light && { lighting: light.counts }), cameras: readCameras(core, buffer) };
+}
+
+/** The perspective projections of the last run (empty unless the camera output is on). */
+function readCameras(core: GfxCore, buffer: ArrayBuffer): CameraProjection[] {
+  if (!core._gfx_camera_result) return [];
+  const at = core._gfx_camera_result();
+  const header = new Uint32Array(buffer, at, 1 + MAX_CAMERAS);
+  return Array.from({ length: header[0]! }, (_, i) => ({ vertices: header[1 + i]!, matrix: new Float64Array(buffer, at + 16 + i * 128, 16).slice() }));
 }
 
 const LIGHT_SET_WORDS = 1 + 3 + 3 * MAX_LIGHTS * 2;
