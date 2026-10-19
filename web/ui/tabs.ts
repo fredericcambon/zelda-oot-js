@@ -44,6 +44,11 @@ export function GraphicsTab({ state: s, actions: a }: TabProps): VNode {
       <${Slider} id="smooth-span" label="catch-up" title="How much of a game frame the motion takes to catch up (less: less delay)" min=${25} max=${100} value=${s.span} onInput=${a.setSpan} />
     </section>
     <section>
+      <h3>Ambient occlusion</h3>
+      <${Button} id="ao-toggle" pressed=${s.ao} title="Soft shadows in corners and under objects of the 3D scene, never the HUD or the sky (O)" onClick=${() => a.setAo(!s.ao)}>Ambient occlusion: ${s.ao ? 'on' : 'off'}<//>
+      <${Slider} id="ao-strength" label="strength" title="How dark the contact shadows get ([ and ])" min=${0} max=${100} value=${s.aoStrength} onInput=${a.setAoStrength} />
+    </section>
+    <section>
       <h3>Bloom</h3>
       <${Button} id="bloom-toggle" pressed=${s.bloom} title="A soft glow around the bright parts of the 3D scene, never the HUD (B)" onClick=${() => a.setBloom(!s.bloom)}>Bloom: ${s.bloom ? 'on' : 'off'}<//>
       <${Slider} id="bloom-strength" label="intensity" title="How much glow is added (, and .)" min=${0} max=${100} value=${s.bloomStrength} onInput=${a.setBloomStrength} />
