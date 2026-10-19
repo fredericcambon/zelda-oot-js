@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { bootGame } from '../headless/boot.ts';
 import { loadBase } from '../recomp/test-base.ts';
@@ -13,7 +13,7 @@ const TITLE_FROM = 300;
 const FADE_FROM = 255;
 
 describe.skipIf(!rom || !existsSync(rom))('display lists of the booted game', () => {
-  it('parses every graphics task of 600 frames with documented commands only', async () => {
+  it('boots from the built assets and parses every graphics task of 600 frames with documented commands only', async () => {
     const base = loadBase();
     expect(base.problems).toEqual([]);
 
@@ -21,7 +21,10 @@ describe.skipIf(!rom || !existsSync(rom))('display lists of the booted game', ()
     const flat: string[] = [];
     const totals = new DlTotals();
     let textured = 0;
-    const game = await bootGame(base.moduleUrl, new Uint8Array(readFileSync(rom!)), {
+    // The cartridge comes from the assets the build wrote, so the boot shows that they and the built game are enough: no ROM file is read.
+    const cartridge = base.cartridge();
+    expect(cartridge.length).toBe(statSync(rom!).size);
+    const game = await bootGame(base.moduleUrl, cartridge, {
       onGfxTask: (task) => {
         const r = task.displayList();
         for (const b of r.batches) if (b.state.textures[0]) textured++;

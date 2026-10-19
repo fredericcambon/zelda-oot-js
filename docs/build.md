@@ -57,7 +57,7 @@ To clear it, delete the folder (`rm -rf ~/.zelda-oot-js/cache`; keep the sibling
 
 ## Test suite timings
 
-`npm test` with the ROM (24 logical cores). `tools/recomp/global-setup.ts` analyses and recompiles the game once into `out/test-base/`, then compiles and links through the shared cache, side by side: the `-O2` game, the `-DOOT_COVERAGE` game of the sweep suite, and the same `-O2` objects linked at `-O1` for the cross-build state test (`tools/recomp/test-base.ts`). The suites read these builds back and build nothing: no suite compiles, so no cap on parallel compiles is needed. The second `port` test runs two ports against the shared cache and asserts that the second hits it at every step.
+`npm test` with the ROM (24 logical cores). `tools/recomp/global-setup.ts` analyses and recompiles the game once into `out/test-base/`, then compiles and links through the shared cache, side by side: the `-O2` game, the `-DOOT_COVERAGE` game of the sweep suite, and the same `-O2` objects linked at `-O1` for the cross-build state test (`tools/recomp/test-base.ts`). The suites read these builds back and build nothing: no suite compiles, so no cap on parallel compiles is needed. The `port` test runs one port against the shared cache, asserts that it hits at every step and compares its files with the shared build's.
 
 | Run | Before | After |
 | --- | --- | --- |
@@ -70,3 +70,28 @@ Two changes beyond the shared build account for most of the gain:
 - `headless.test.ts` is split into four files (`headless`, `headless-60hz`, `headless-state`, `headless-forest`, with the helpers in `headless-support.ts`) so that vitest runs them in parallel; each test is unchanged and boots its own game.
 
 The longest file warm is now `web/browser-saves.test.ts` (four tests in series, about 100 s together with the Chrome start-up) next to the 60 Hz headless test.
+
+## Test times
+
+Before: the 2026-10-19 full run, 82 files, about 1,870 s of CPU, 288 s wall, files running in parallel on a loaded machine. After: each file alone, files one after the other (`--no-file-parallelism`), so the two columns are not like for like; the whole-suite wall time is the one that Overseer's test check records, and `out/test-durations.json` (written by `tools/durations-reporter.ts` on every run) lets two runs be compared file by file.
+
+| Step | File | Before (s) | After (s) |
+| --- | --- | --- | --- |
+| Shared build instead of private builds | `saves/game` | 203 | 8 |
+| | `headless/load-save-rom` | 201 | 4 |
+| | `web/boot-params` | 162 | 1 |
+| Intro played once, then loaded as a state (`tools/headless/intro-state.ts`) | `headless-state` (includes the one replay from boot that makes the states) | 107 | 89 |
+| | `headless-forest` | 86 | 16 |
+| | `headless` (the third replay from boot became a load) | 62 | 18 |
+| | `headless-60hz` | 54 | unchanged: it runs at 60 Hz from boot, which a 50 Hz state cannot replace |
+| Boot tests merged | `gfx/frames` + `assets/boot` | 57 + 78 | 23 |
+| Single port run | `port/port` | 91 | 11 |
+| Smooth motion: 170 recorded frames | `gfx/smooth` | 264 | 70 |
+| Harness compile cached | `recomp/fpu` (second run) | 54 | 2 (7 s on a miss) |
+
+Notes:
+
+- The intro states are in `<cache>/intro-state/`, one file per build (the hash of `oot.wasm`, the controller script and the frames), made by the first suite that asks while the others wait on a lock file. They hold ROM-derived data and stay out of the repository. The sweep (`fromIntroState`) and the smooth-motion test load them too.
+- `gfx/smooth` records 170 frames, not 120: the game draws 20 frames per second, so 120 frames give about 40 comparisons and the kept `comparisons > 50` assert needs about 50.
+- The wall-clock asserts of the sweep (frames per second) and the port (seconds) only log their number now.
+- vitest's per-file timing cache is in `<cache>/vitest/`, so a fresh worktree starts its slowest files first. `npm run lint` keeps an ESLint cache in `node_modules/.cache/eslint/`, and `npm run build` no longer runs `tsc` (lint does).

@@ -8,6 +8,7 @@ import { readCartridge } from '../assets/write.ts';
 import type { DisplayListResult } from '../gfx/types.ts';
 import { encodePng } from '../gfx/png.ts';
 import { HEIGHT, SoftRenderer, WIDTH } from '../gfx/raster.ts';
+import { introState, loadIntro, SAVE_FRAME } from '../headless/intro-state.ts';
 import { bootGame, type CoverageSnapshot, type Game } from '../headless/boot.ts';
 import { padAt, parseInput, type InputScript } from '../headless/input.ts';
 import { Synth } from '../audio/synth.ts';
@@ -103,6 +104,8 @@ export interface SweepOptions {
   startFrame: number;
   /** The controller script that plays the new game up to the start frame. */
   input: string;
+  /** Starts from the saved intro state (tools/headless/intro-state.ts) instead of playing the frames before it; only valid when `input` is the new game's script. */
+  fromIntroState?: boolean;
   /** Where the dumped frames go; none are drawn when unset. */
   dumpDir?: string;
   dumpsPerScene: number;
@@ -186,6 +189,10 @@ class Session {
     });
     const session = new Session(game, collector, soft, total);
     let frame = 0;
+    if (opts.fromIntroState && opts.startFrame >= SAVE_FRAME) {
+      await loadIntro(game, await introState());
+      frame = SAVE_FRAME;
+    }
     while (frame < opts.startFrame) {
       frame++;
       const pad = padAt(script, frame);

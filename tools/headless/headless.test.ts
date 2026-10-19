@@ -13,6 +13,7 @@ import { HEIGHT, SoftRenderer, WIDTH } from '../gfx/raster.ts';
 import { bootGame } from './boot.ts';
 import { padAt } from './input.ts';
 import { FILE_SELECT_INIT_LINKED, FILE_SELECT_RECORD, RECORD, fileSelectLoaded, linkPosition, playState } from './state.ts';
+import { CHECKPOINTS, introState, loadIntro } from './intro-state.ts';
 import { rom, FRAMES, CONFIRM_FRAME, SCRIPT, DRAW_LEAD, TITLE_FRAME, FILE_LIST_FRAME, SAVED_BY_FRAME, NARRATION_FRAME, CASTLE_FRAME, FOREST_FRAME, HOUSE_CUTSCENE_FRAME, CONTROL_FRAME, WALKED_FORWARD_FRAME, WALKED_RIGHT_FRAME, HOUSE_SCENE, BACKGROUND_ADDRESS, BACKGROUND_SHA256, TITLE_AUDIO_FRAMES, COMPARE_FRAMES, buildGame, bootCapturing, differingPixels, nonFlatPixels, dump } from './headless-support.ts';
 
 describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
@@ -246,6 +247,12 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
           if (frame > target - DRAW_LEAD) results.push(copyResult(task.displayList()));
         },
       });
+      // Starts from the intro state taken just before `target`, so the full replay from boot is the one of the test above.
+      const from = [...CHECKPOINTS].reverse().find((f) => f <= target - DRAW_LEAD);
+      if (from !== undefined) {
+        await loadIntro(game, await introState(from));
+        frame = from;
+      }
       while (frame < target) {
         frame++;
         const pad = padAt(SCRIPT, frame);
