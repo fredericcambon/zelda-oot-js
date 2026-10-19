@@ -47,6 +47,10 @@ export interface ShaderSpec {
    * outputs the pixel colour and the weight of the pixel in alpha.
    */
   framebufferBlend: boolean;
+  /** Lit triangles take their shade colour from the lights and the interpolated normal (see `PIXEL_LIGHT_GLSL`). */
+  pixelLight: boolean;
+  /** Triangles under the frame's camera projection get the port's point lights (see `POINT_LIGHT_GLSL`). */
+  pointLight: boolean;
 }
 
 export const OtherL = {
@@ -81,10 +85,14 @@ export interface SpecOptions {
   cutout?: boolean;
   /** Four-texel bilinear in place of the 3-point filter for this draw, whose textures are soft gradients (`web/low-contrast.ts`). */
   smoothTexels?: boolean;
+  /** The draw carries a light set: its lit triangles are shaded per pixel. */
+  pixelLight?: boolean;
+  /** The draw is shaded with the frame's point lights where its vertices carry the camera's flag (opaque draws only: translucent flames and sparks would show their quads). */
+  pointLight?: boolean;
 }
 
 /** `filter` replaces what the draw asked for: `sharp` makes every texture nearest, `smooth` swaps the 3-point filter for bilinear. */
-export function specOf(state: DrawState, { filter = 'n64', mip = false, cutout = false, smoothTexels = false }: SpecOptions = {}): ShaderSpec {
+export function specOf(state: DrawState, { filter = 'n64', mip = false, cutout = false, smoothTexels = false, pixelLight = false, pointLight = false }: SpecOptions = {}): ShaderSpec {
   const type = cycleTypeOf(state.otherModeH);
   const cycles: 1 | 2 = type === CycleType.TWO ? 2 : 1;
   const [c0, c1] = state.combine.cycles;
@@ -109,12 +117,14 @@ export function specOf(state: DrawState, { filter = 'n64', mip = false, cutout =
     alphaFromCoverage,
     blend,
     framebufferBlend,
+    pixelLight: pixelLight && type !== CycleType.COPY,
+    pointLight: pointLight && type !== CycleType.COPY,
   };
 }
 
 /** Stable text for a spec, used as the program cache key. */
 export function specKey(s: ShaderSpec): string {
-  return JSON.stringify([s.cycles, s.copy, s.cycles === 2 ? s.rgb : s.rgb[0], s.cycles === 2 ? s.alpha : s.alpha[0], s.bilerp, s.smooth, s.mip, s.alphaCompare, s.cutout, s.coverageTimesAlpha, s.alphaFromCoverage, s.cycles === 2 ? s.blend : s.blend[0], s.framebufferBlend]);
+  return JSON.stringify([s.cycles, s.copy, s.cycles === 2 ? s.rgb : s.rgb[0], s.cycles === 2 ? s.alpha : s.alpha[0], s.bilerp, s.smooth, s.mip, s.alphaCompare, s.cutout, s.coverageTimesAlpha, s.alphaFromCoverage, s.cycles === 2 ? s.blend : s.blend[0], s.framebufferBlend, s.pixelLight, s.pointLight]);
 }
 
 // ---- Combiner -------------------------------------------------------------------------------------------------------
@@ -360,11 +370,72 @@ float wrapCoord(float v, float size, float period, float mode) {
 
 // ---- Programs -------------------------------------------------------------------------------------------------------
 
+export const MAX_LIGHTS = 7;
+
+/**
+ * The lighting of the game's vertex path (runtime/gfx/dl.c `light`) evaluated at a pixel: `n` is the interpolated normal in the bytes
+ * of the vertex data, the directions are the light vectors in the model's space and the colours bytes, so that the result equals the
+ * vertex colour wherever the normal is the same at the vertices. Each light's share is cut to whole 1/255 steps before the sum, as there.
+ */
+export const PIXEL_LIGHT_GLSL = `
+uniform vec3 uLightAmbient;
+uniform vec3 uLightColor[${MAX_LIGHTS}];
+uniform vec3 uLightDir[${MAX_LIGHTS}];
+uniform int uLightCount;
+vec3 pixelLight(vec3 n) {
+  vec3 c = uLightAmbient;
+  for (int i = 0; i < ${MAX_LIGHTS}; i++) {
+    if (i >= uLightCount) break;
+    float d = clamp(2.0 * dot(n, uLightDir[i]), 0.0, 32767.0);
+    c += floor(uLightColor[i] * d / 32768.0);
+  }
+  return min(c, 255.0) / 255.0;
+}`;
+
+export const MAX_POINT_LIGHTS = 8;
+
+/**
+ * Warm point lights added on top of the shade colour. The world position of the pixel comes back from its window position, its depth and 1 / w through
+ * the inverse of the projection the display lists were transformed under (the game's view matrix is part of it): `clip = (ndc.xy / xyScale, ndc.z, 1) * w`,
+ * `world = uInvCamera * clip`. The surface normal is the face normal from the screen derivatives of that position, turned towards the eye, so that baked
+ * geometry without normals is lit alike and a surface facing away from a light gets none of it. Nothing blocks the light between a source and a surface: a thin
+ * wall passes it, as the reach is short and the facing test is all there is.
+ */
+export const POINT_LIGHT_GLSL = `
+uniform mat4 uInvCamera;
+uniform vec3 uEye;
+uniform vec4 uViewport;
+uniform float uXyScale;
+uniform vec4 uPointPos[${MAX_POINT_LIGHTS}];
+uniform vec4 uPointColor[${MAX_POINT_LIGHTS}];
+uniform int uPointCount;
+uniform int uCameraSlot;
+vec3 pointLight() {
+  float w = 1.0 / gl_FragCoord.w;
+  vec2 ndc = (gl_FragCoord.xy - uViewport.xy) / uViewport.zw * 2.0 - 1.0;
+  vec4 h = uInvCamera * vec4(ndc / uXyScale * w, (gl_FragCoord.z * 2.0 - 1.0) * w, w);
+  vec3 world = h.xyz / h.w;
+  vec3 n = normalize(cross(dFdx(world), dFdy(world)));
+  if (dot(n, uEye - world) < 0.0) n = -n;
+  vec3 sum = vec3(0.0);
+  for (int i = 0; i < ${MAX_POINT_LIGHTS}; i++) {
+    if (i >= uPointCount) break;
+    vec3 to = uPointPos[i].xyz - world;
+    float d = length(to);
+    float reach = 1.0 - clamp(d / uPointPos[i].w, 0.0, 1.0);
+    float facing = dot(n, to / max(d, 1.0));
+    sum += uPointColor[i].rgb * (reach * reach * (facing > -0.05 ? 0.35 + 0.65 * max(facing, 0.0) : 0.0));
+  }
+  return sum;
+}`;
+
 export const VERTEX_SHADER = `#version 300 es
 layout(location = 0) in vec4 aPos;
 layout(location = 1) in vec4 aColor;
 layout(location = 2) in vec2 aUv;
+layout(location = 3) in vec4 aNormal;
 out vec4 vColor;
+out vec4 vNormal;
 out vec2 vUv;
 // 0.5 for triangles, whose viewport is twice the screen (renderer.ts); 1 for rectangles.
 uniform float uXyScale;
@@ -375,6 +446,7 @@ void main() {
   // perspective like the texture coordinates: scaled by w here, and by 1 / w of the pixel in the fragment shader, the
   // perspective-correct interpolation of GL gives the linear one.
   vColor = aColor * aPos.w;
+  vNormal = aNormal * aPos.w;
   vUv = aUv;
 }
 `;
@@ -403,6 +475,7 @@ ${spec.bilerp ? '#define BILERP 1' : ''}
 ${spec.bilerp && spec.smooth ? '#define SMOOTH 1' : ''}
 ${spec.mip ? '#define MIP 1' : ''}
 in vec4 vColor;
+in vec4 vNormal;
 in vec2 vUv;
 out vec4 outColor;
 uniform vec4 uPrim;
@@ -420,11 +493,18 @@ uniform vec4 uTexB[2];
 uniform vec4 uTexC[2];
 // most taps along the long axis of a footprint
 uniform float uAniso;
+${spec.pixelLight ? PIXEL_LIGHT_GLSL : ''}
+${spec.pointLight ? POINT_LIGHT_GLSL : ''}
 ${WRAP_FUNCTION}
 ${textureFunction(0)}
 ${textureFunction(1)}
 void main() {
   vec4 shade = vColor * gl_FragCoord.w;
+${spec.pixelLight || spec.pointLight ? `  vec4 nrm = vNormal * gl_FragCoord.w;
+  int flags = int(nrm.w + 0.5);` : ''}
+${spec.pixelLight ? '  if ((flags & 1) != 0) shade.rgb = pixelLight(nrm.xyz);' : ''}
+${spec.pointLight ? `  vec3 glow = pointLight();
+  if ((flags >> 1) == uCameraSlot) shade.rgb += glow;` : ''}
   float shadeAlpha = shade.a;
   vec4 t0 = sample0(vUv);
   vec4 t1 = sample1(vUv);

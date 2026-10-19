@@ -123,3 +123,59 @@ Next task (small and decisive): **per-pixel diffuse prototype**, one lit-draw pa
 2. `renderer.ts`/`shader.ts`: a `lightingMode` setting (`vertex` default, `pixel`); in pixel mode the shader replaces `shade.rgb` for lit batches by `ambient + sum colour · max(0, n·L')` with the exact scaling above, keeping alpha/fog from the vertex.
 3. Check: with normals un-interpolated (flat per-vertex test) the pixel result must equal the vertex colour within 2/255 (the same tolerance as the microcode comparison), then compare a forest and a house frame.
 4. Before that, trace where the light records are written (the scene header's light-settings entry is the candidate): search RAM at the forest for the bytes `32 32 5a`/`ff ff f0`, `69 5a 5a`, and find the writing code. Useful for point lights and day/night but not blocking.
+
+## 7. Per-pixel prototype (option A), measured
+
+Built as the optional `lightingMode` setting (`vertex` default, `pixel`; Graphics tab, key P; stored in `oot.gfx`). Numbers below come from `tools/gfx/px-light-states.ts` (new game to Link's house, entrance 238 for the forest after 2448 frames, entrance 626 for Link's house after 300), `px-light-capture.ts` (headless Chrome, software WebGL, the page at 960x720 with AO, bloom and sharpening off, 10 s each) and `px-light-count.ts` (20 frames, interpreter only). Pictures: `out/px-light/{forest,house}-{vertex,pixel}.png` and `-diff.png` (git-ignored).
+
+How it works:
+- `dl.c` (`gfx_set_pixel_lighting`, off by default; nothing extra is produced while off): a lit vertex keeps its model-space normal bytes and the id of its light set. The set holds the ambient colour, the light colours and the light vectors **in the vertices' model space, as `model_direction` leaves them**, so the 1.2x/dimming behaviour and the unnormalised normal (~119.5) carry over unchanged. It is a deviation from "normal rotated by the model-view": rotating the lights instead of the normals gives the same dot products, and the quantised vectors the vertex path uses. Equal sets are shared (last 16 compared), a batch is split when a triangle brings another set, and the web side merges draw runs only on equal sets (`web/batching.ts`).
+- Output per vertex: the normal bytes and a flag, packed as four signed bytes in one extra word (`web/renderer.ts`): vertex 10 words = 40 bytes in vertex mode (unchanged, the attribute is off and the interpreter emits nothing), 11 words = 44 bytes in pixel mode (+10%). Clipped triangles interpolate the normal and round it to bytes.
+- `web/shader.ts` `PIXEL_LIGHT_GLSL`: `ambient + sum floor(colour * clamp(2 n.L, 0, 32767) / 32768)`, capped at 255, with `n` interpolated screen-linearly like the colour. Alpha, fog, shade alpha and unlit draws stay on the vertex path (the vertex colour is still written and used there).
+- Exactness: with one normal at all three vertices the result equals the vertex colour within 2/255 (`web/pixel-light.test.ts`, four matrix scales including 0.01; the test evaluates a TypeScript twin of the GLSL, since the tests have no GL context; the GLSL itself is checked only by the captures).
+
+Which triangles stay on the vertex path (`GfxLightResult`, `RenderStats.lighting`):
+- Mixed: vertices lit with different light sets or not all lit. 17.8% of lit triangles in the forest and 20.9% in the house (counts over the 10 s runs), 18% and 20% in the 20-frame count. Not traced; they are most likely the skinned joints of Link, whose vertices come from different matrices (his normals live in different model spaces, so no single light set fits them), which fits the count scaling with a model that is on screen all the time. This is inferred, not proven.
+- Reversed (cosine below -0.5 between the sum of the vertex normals and the face normal from the model-space positions in drawing order, the research's 9.9% measure): forest 76 of 813,666 lit triangles (0.01%), house 8,228 of 729,349 (1.1%); 20-frame count 0 of 5,412 and 132 of 4,194 (3.1%).
+
+Rule kept: reversed triangles stay on the vertex path (`GFX_LIGHTS_PIXEL`; `GFX_LIGHTS_PIXEL_ALL` lights them per pixel). I could not show that they look broken: they are 0.01% to 3% of the lit triangles here, no artefact is visible in the two frames, and a run with them lit per pixel differs from the other only in noise of the animation (the two runs are not frame-locked). The rule stays because a reversed normal gives the same wrong lighting per pixel as per vertex, only sharper, so nothing is gained from it. The 9.9% of the research are spread over all scenes; these two scenes have far fewer.
+
+What it looks like: the scene geometry is within noise of vertex mode (mean difference 0.42/255 in the forest, 0.19/255 in the house, mostly animated sparkles and Link; 0.9% and 1.2% of the pixels differ by more than 8). On Link the faces show per-pixel terminators instead of Gouraud streaks (differences up to about 50/255 on his face, tunic and boots). This matches the research's expectation: with two nearly opposite lights few surfaces go to zero, so the gain is small.
+
+Cost (software WebGL in headless Chrome, so GPU times mean little, per game frame, mean of 10 samples; one run each, noise about 0.3 ms):
+
+| scene | mode | CPU ms | display lists ms | submit ms | draw calls |
+| --- | --- | --- | --- | --- | --- |
+| forest | vertex | 9.73 | 5.97 | 2.46 | 475 |
+| forest | pixel | 9.79 | 6.15 | 2.44 | 496 |
+| house | vertex | 6.21 | 3.54 | 1.85 | 371 |
+| house | pixel | 6.66 | 3.78 | 2.05 | 389 |
+
+Pixel mode adds about 4-5% draw calls (runs split on light sets) and up to 0.4 ms of CPU; vertex mode is the code of before (same vertex size, same programs, no extra output). Not measured on a real GPU.
+
+## 8. Point lights (port-made)
+
+An optional effect (`pointLights`, default off, `pointLightStrength` 0 to 100, default 50; Graphics tab, key Y; stored in `oot.gfx`). The shading is new content; the sources and their lit state come from the game's own registry of point lights (`docs/re/actors.md`, "Light sources"), plus the actors the user marks in the Actors tab.
+
+How it works:
+- **Camera.** While `gfx_set_camera_output` is on, `dl.c` keeps up to three perspective projections of the run (`GfxCameraResult`) and tags every triangle's normal word with the slot of the projection its vertices were transformed under (`1 * per-pixel flag + 2 * slot`; orthographic draws get slot 0). The web side takes the slot with most vertices as the scene camera.
+- **Position per pixel.** The fragment shader rebuilds the world position from its window position, depth and 1 / w with the inverse of that projection, the draw's viewport rectangle and the vertex shader's x/y scale (`POINT_LIGHT_GLSL`, checked against the forward projection in `web/point-lights.test.ts`). The normal is the face normal from the screen derivatives of that position, turned towards the eye, so baked geometry without normals is lit and per-pixel lighting is not required (it works with either lighting mode).
+- **Lights.** Each frame the page reads the game's registry (burning point lights; the white fairy lights are left out) and the marked actors. Colour (1, 0.5, 0.18), reach 160 units (Link is about 60 high), falloff `(1 - d / reach)^2`, facing term `0.35 + 0.65 * max(n.L, 0)` and none behind the surface; the light is added to the shade colour, so the texture modulates it. Brightness: the game's flame colour (it varies from frame to frame, 0x82 to 0xEF) mapped to 0.6 to 1.0, so the flicker is the game's own; a marked actor flickers with two sines within about 0.85 to 1.15. At most 8 lights per frame, the nearest to the eye (those behind it last).
+- **Walls.** Nothing blocks a light between a source and a surface; the facing test and the short reach are all that limit it, so a thin wall can pass light to the other side.
+- **Which draws.** Triangles under the scene camera that write depth (opaque and cut-out). Translucent draws (flames, sparks, water) are left alone: lit, their quads showed as boxes. A draw whose combiner does not use the shade colour shows no light.
+- **Programs.** A second set of shader variants for the opaque draws, compiled on first use; while one compiles its draws are skipped (one capture run on the loaded machine showed 257 draw calls against 400 and 24 fps; two reruns did not).
+
+Captures (`tools/gfx/point-light-states.ts`, `point-light-capture.ts`; pictures `out/point-lights/<scene>-{off,on}.png`, canvas 913x685 (2.85x), per-pixel lighting on in both, bloom/AO/sharpening off, headless Chrome on the GPU (ANGLE D3D11) with another heavy job running on the machine, mean of 10 samples; the last full run, the Fire Temple row from a rerun of it alone):
+
+| scene | point lights | display lists ms | submit ms | CPU ms | GPU ms | draw calls | displayed fps |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Fire Temple first room, Link at the torches (3 lights) | off | 7.68 | 5.18 | 14.91 | 2.70 | 402 | 120.0 |
+| same | on | 7.95 | 6.29 | 16.19 | 2.78 | 400 | 120.0 |
+| Scene 63, corridor with two torches (2 lights) | off | 8.39 | 6.49 | 16.50 | 3.10 | 521 | 118.0 |
+| same | on | 8.53 | 9.92 | 20.12 | 2.99 | 518 | 119.9 |
+| Treasure Box Shop interior (2 lights) | off | 7.75 | 6.12 | 15.56 | 2.97 | 505 | 120.0 |
+| same | on | 7.93 | 7.59 | 17.17 | 3.04 | 502 | 119.7 |
+| Scene 90 (Gerudo Valley) at night, Link beside the torch (1 light) | off | 17.74 | 11.61 | 31.25 | 2.70 | 1005 | 117.6 |
+| same | on | 16.98 | 13.14 | 31.98 | 3.32 | 967 | 115.4 |
+
+The page held the display's 120 Hz (at least 115 fps) in every row. Point lights add 1 to 3.6 ms of CPU. The Kakariko-at-night capture was not made: Kakariko has no registered light (actors.md); the night capture is Gerudo Valley, the dungeon room with torches is the Fire Temple and scene 63, the interior with a fire the Treasure Box Shop.

@@ -8,6 +8,7 @@ import { readCartridge } from '../assets/write.ts';
 import type { DisplayListResult } from '../gfx/types.ts';
 import { encodePng } from '../gfx/png.ts';
 import { HEIGHT, SoftRenderer, WIDTH } from '../gfx/raster.ts';
+import { introState, loadIntro, SAVE_FRAME } from '../headless/intro-state.ts';
 import { bootGame, type CoverageSnapshot, type Game } from '../headless/boot.ts';
 import { padAt, parseInput, type InputScript } from '../headless/input.ts';
 import { Synth } from '../audio/synth.ts';
@@ -103,6 +104,8 @@ export interface SweepOptions {
   startFrame: number;
   /** The controller script that plays the new game up to the start frame. */
   input: string;
+  /** Starts from the saved intro state (tools/headless/intro-state.ts) instead of playing the frames before it; only valid when `input` is the new game's script. */
+  fromIntroState?: boolean;
   /** Where the dumped frames go; none are drawn when unset. */
   dumpDir?: string;
   dumpsPerScene: number;
@@ -186,6 +189,10 @@ class Session {
     });
     const session = new Session(game, collector, soft, total);
     let frame = 0;
+    if (opts.fromIntroState && opts.startFrame >= SAVE_FRAME) {
+      await loadIntro(game, await introState());
+      frame = SAVE_FRAME;
+    }
     while (frame < opts.startFrame) {
       frame++;
       const pad = padAt(script, frame);
@@ -264,7 +271,7 @@ function nonFlatPixels(img: Uint8Array): number {
 }
 
 /** The entrance table of the game's memory: scene and spawn of each entry. */
-function readEntrances(game: Game): { scene: number; spawn: number }[] {
+export function readEntrances(game: Game): { scene: number; spawn: number }[] {
   return Array.from({ length: ENTRANCE_COUNT }, (_, i) => {
     const word = game.rd32(ENTRANCE_TABLE + i * 4);
     return { scene: (word << 0) >> 24, spawn: (word << 8) >> 24 };
@@ -272,7 +279,7 @@ function readEntrances(game: Game): { scene: number; spawn: number }[] {
 }
 
 /** Records of the scene table that name a file range inside the cartridge; the table ends at the first that does not. */
-function countSceneRecords(game: Game): number {
+export function countSceneRecords(game: Game): number {
   let n = 0;
   for (;; n++) {
     const start = game.rd32(SCENE_TABLE + n * SCENE_RECORD_SIZE);

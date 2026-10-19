@@ -8,6 +8,7 @@ import { RDRAM_SIZE, startModule } from '../tools/runtime/instance.ts';
 import type { AudioSink } from './audio.ts';
 import type { Hz } from './mode.ts';
 import type { PadState } from './input.ts';
+import { lightSources } from './point-lights.ts';
 import type { Renderer } from './renderer.ts';
 import type { SaveMemory } from './saves.ts';
 import { compress, decompress, type StateSource } from './savestate.ts';
@@ -17,6 +18,9 @@ import { loadState, saveState, type StateCore } from '../tools/runtime/snapshot.
 
 interface WebCore extends StateCore {
   _oot_reset(): void;
+  _oot_rd32(addr: number): number;
+  _gfx_set_pixel_lighting(mode: number): void;
+  _gfx_set_camera_output(on: number): void;
 }
 
 export interface Game {
@@ -78,6 +82,14 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
   let tuning = FULL_SMOOTHING;
   let drawn = '';
   let lastShown: number | null = null;
+  // 1: lit triangles come with normals and light sets for per-pixel shading (runtime/gfx/gfx.h).
+  const useLighting = () => {
+    mod._gfx_set_pixel_lighting(renderer.options.lightingMode === 'pixel' ? 1 : 0);
+    // Point lights: the interpreter reports the camera, and the torches of the scene come from the actor lists.
+    const lights = renderer.options.pointLights;
+    mod._gfx_set_camera_output(lights ? 1 : 0);
+    if (lights) renderer.setPointSources(lightSources((addr) => mod._oot_rd32(addr) >>> 0, renderer.markedLightIds));
+  };
   const guestRam = () => mod.HEAPU8.subarray(mod._oot_rdram(), mod._oot_rdram() + RDRAM_SIZE);
   // The module's start-up promise never settles when the hook below fails, so the failure is raced against it.
   let failInstantiation!: (err: unknown) => void;
@@ -106,6 +118,7 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
           return;
         }
         const t0 = performance.now();
+        useLighting();
         const result = runDisplayList(mod, data);
         const t1 = performance.now();
         renderer.drawTask(result);
@@ -171,6 +184,7 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
       if (token === drawn) return lastShown;
       const t0 = performance.now();
       try {
+        useLighting();
         const result = frames!.at(t);
         const t1 = performance.now();
         renderer.drawTask(result);

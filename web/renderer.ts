@@ -1,8 +1,9 @@
 // WebGL2 back end for the draw batches of tools/gfx/types.ts (produced by the interpreter in runtime/gfx/). Every colour image the game draws into is a 320x240 texture
 // keyed by its address, so double buffering behaves as on the console; the depth image is one shared buffer.
-import type { DecodedTexture, DisplayListResult, DrawState, RectBatch, TriangleBatch } from '../tools/gfx/types.ts';
+import type { DecodedTexture, DisplayListResult, DrawState, LightSet, RectBatch, TriangleBatch } from '../tools/gfx/types.ts';
 import { mergeRuns, type DrawRun, type Run } from './batching.ts';
 import { GpuTimer } from './gpu-timer.ts';
+import { flicker, frameCamera, pickLights, POINT_LIGHT_COLOR, POINT_LIGHT_GAIN, POINT_LIGHT_RADIUS, type FrameCamera, type PointLight } from './point-lights.ts';
 import { Geo } from '../tools/gfx/opcodes.ts';
 import { CycleType, cycleTypeOf, fragmentSource, OtherL, shiftScale, specKey, specOf, VERTEX_SHADER, type ShaderSpec } from './shader.ts';
 import { MAX_SCALE, type GfxSettings } from './gfx-settings.ts';
@@ -35,6 +36,20 @@ export interface RenderStats {
   compileMs: number;
   textures: number;
   targets: number;
+  /** Draws of the last task that wanted a mip-level program and drew with the one without (the mip variant is not usable yet, or did not build). */
+  mipFallbackDraws: number;
+  /** Times a mip variant went from unusable to usable (once per variant: the choice does not alternate). */
+  programSwitches: number;
+  /** Mip variants that did not build; each is reported once and stays on the program without mip levels. */
+  mipFailures: number;
+  /** Textures uploaded in the last task, and over the run; every upload builds the mip levels once. */
+  uploads: number;
+  totalUploads: number;
+  /** Only with `trackTextureBuilds`: uploads of a picture that had been uploaded before, and the most uploads of one picture. */
+  reuploads: number;
+  maxUploadsOfOne: number;
+  /** Pixel lighting: triangles lit, those among them with normals against their face, those with vertices lit differently, and those left on the vertex path, summed over the tasks drawn so far. */
+  lighting: { lit: number; reversed: number; mixed: number; vertexPath: number };
 }
 
 interface Program {
@@ -60,6 +75,10 @@ interface GpuTexture {
   scale: number;
   /** Hash of the decoded texture, when it was looked up in the pack. */
   hash?: string;
+  /** Hash of the picture a texture made from the decoded image holds; textures are shared by it (`byContent`). */
+  content?: string;
+  /** Decoded-image ids that use this texture. */
+  refs: number;
 }
 
 interface Target {
@@ -81,7 +100,7 @@ interface Target {
 }
 
 /** What a renderer made without settings uses: no multisampling, no mip levels. */
-const PLAIN: GfxSettings = { filter: 'n64', msaa: false, scaleCap: 0, mipmaps: false, anisotropy: 1, cutout: 'hard', ao: false, aoStrength: 0, bloom: false, bloomStrength: 0, bloomThreshold: 80, bloomKnee: 40, bloomRadius: 100, sharpen: false, sharpenStrength: 0 };
+const PLAIN: GfxSettings = { filter: 'n64', msaa: false, scaleCap: 0, mipmaps: false, anisotropy: 1, cutout: 'hard', lightingMode: 'vertex', pointLights: false, pointLightStrength: 50, ao: false, aoStrength: 0, bloom: false, bloomStrength: 0, bloomThreshold: 80, bloomKnee: 40, bloomRadius: 100, sharpen: false, sharpenStrength: 0 };
 const MSAA_SAMPLES = 4;
 
 /**
@@ -91,7 +110,9 @@ const MSAA_SAMPLES = 4;
 const mipmappable = (tile: { maskS: number; maskT: number }, tex: GpuTexture): boolean =>
   tex.mipmapped && (tile.maskS === 0 || 1 << tile.maskS === tex.width / tex.scale) && (tile.maskT === 0 || 1 << tile.maskT === tex.height / tex.scale);
 
-const FLOATS_PER_VERTEX = 10;
+/** Words per vertex: position, colour and uv, and in pixel lighting mode a fifth word of four signed bytes (normal x, y, z and 1 for a triangle lit per pixel). */
+const VERTEX_WORDS = 10;
+const LIT_VERTEX_WORDS = 11;
 const MAX_TEXTURES = 512;
 /** Texture unit that uploads bind on: units 0 and 1 hold the two tiles the combiner reads and must not be disturbed. */
 const UPLOAD_UNIT = 2;
@@ -108,7 +129,7 @@ const physical = (addr: number): number => addr & 0x1fffffff;
 
 export class Renderer {
   cullMode: CullMode = 'normal';
-  readonly stats: RenderStats = { tasks: 0, commands: 0, batches: 0, triangles: 0, rects: 0, drawCalls: 0, unmergedDrawCalls: 0, unknown: 0, problems: [], programs: 0, compileMs: 0, textures: 0, targets: 0 };
+  readonly stats: RenderStats = { tasks: 0, commands: 0, batches: 0, triangles: 0, rects: 0, drawCalls: 0, unmergedDrawCalls: 0, unknown: 0, problems: [], programs: 0, compileMs: 0, textures: 0, targets: 0, mipFallbackDraws: 0, programSwitches: 0, mipFailures: 0, uploads: 0, totalUploads: 0, reuploads: 0, maxUploadsOfOne: 0, lighting: { lit: 0, reversed: 0, mixed: 0, vertexPath: 0 } };
 
   private readonly gl: WebGL2RenderingContext;
   /** Called with the GPU milliseconds of each finished game frame (its task plus the presents that followed). */
@@ -121,6 +142,13 @@ export class Renderer {
   private readonly parallel: boolean;
   /** Mip-level programs that may still be built on the calling thread in this task, when the browser cannot build in parallel. */
   private syncMipBudget = 0;
+  /** The task from which a built mip variant is used: a variant finished while a task is drawn waits for the next, so no task draws one layer with it and another without. */
+  private readonly mipUsableFrom = new Map<string, number>();
+  /** Mip variants that failed to build. */
+  private readonly mipFailed = new Set<string>();
+  /** Counts the uploads of each picture (by its hash) for the debug overlay; off by default, hashing every upload costs. */
+  trackTextureBuilds = false;
+  private readonly uploadCounts = new Map<string, number>();
   private readonly presentProgram: Program;
   private readonly fx: PostFx;
   private taskId = 0;
@@ -134,6 +162,8 @@ export class Renderer {
   private samples = 0;
   private readonly targets = new Map<number, Target>();
   private readonly textureCache = new Map<number, GpuTexture>();
+  /** Textures of the decoded images by the hash of their picture: the interpreter numbers an image afresh when its caches turn over, and the same picture must not be uploaded and have its mip levels built again. */
+  private readonly byContent = new Map<string, GpuTexture>();
   private readonly white: GpuTexture;
   private lastResult: DisplayListResult | null = null;
   /** While recording (for tools/tex/compare.ts): per task, the textures it drew as `<hash><state>`, state `+` replaced, `~` in the pack but not yet loaded, `-` not in the pack. */
@@ -141,6 +171,13 @@ export class Renderer {
   private lastPresented: number | null = null;
   private lastTarget: Target | null = null;
   private vertices = new Float32Array(0);
+  private vertexBytes = new Int8Array(0);
+  private words = VERTEX_WORDS;
+  /** Torches and fires of the scene (world positions), the camera of the task being drawn, the lights picked for it and the viewport of the draw in progress. */
+  private pointSources: readonly PointLight[] = [];
+  private camera: FrameCamera | null = null;
+  private pointLights: PointLight[] = [];
+  private viewportRect: [number, number, number, number] = [0, 0, 1, 1];
 
   /** `texPack`: the replacement textures; by default the pack the page is served with, none where there is no page to ask (the tests). */
   constructor(readonly canvas: HTMLCanvasElement, scale = 1, settings: GfxSettings = PLAIN, readonly texPack: TexPack | null = pagePack()) {
@@ -156,13 +193,7 @@ export class Renderer {
     this.vao = gl.createVertexArray()!;
     gl.bindVertexArray(this.vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
-    const stride = FLOATS_PER_VERTEX * 4;
-    gl.enableVertexAttribArray(0);
-    gl.vertexAttribPointer(0, 4, gl.FLOAT, false, stride, 0);
-    gl.enableVertexAttribArray(1);
-    gl.vertexAttribPointer(1, 4, gl.FLOAT, false, stride, 16);
-    gl.enableVertexAttribArray(2);
-    gl.vertexAttribPointer(2, 2, gl.FLOAT, false, stride, 32);
+    this.layoutVertices();
     this.depth = gl.createRenderbuffer()!;
     this.setScale(scale);
     this.white = this.upload(1, 1, Uint8Array.of(255, 255, 255, 255), false);
@@ -171,6 +202,28 @@ export class Renderer {
       if (typeof addEventListener === 'function') bindToggleKey(this.texPack, globalThis);
       // The handle the screenshot tool (tools/tex/compare.ts) drives.
       Object.assign(globalThis, { ootTexPack: { pack: this.texPack, redraw: () => this.redraw(), boundsOf: (hashes: string[]) => this.boundsOf(new Set(hashes)), inUse: () => [...this.textureCache.values()].filter((t) => t.scale > 1).length, record: (on: boolean) => this.recordTextures(on), recorded: () => this.recorded() } });
+    }
+  }
+
+  /** Points the vertex attributes at the buffer's layout for the lighting mode in force. */
+  private layoutVertices(): void {
+    const gl = this.gl;
+    this.words = this.settings.lightingMode === 'pixel' || this.settings.pointLights ? LIT_VERTEX_WORDS : VERTEX_WORDS;
+    gl.bindVertexArray(this.vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+    const stride = this.words * 4;
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 4, gl.FLOAT, false, stride, 0);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 4, gl.FLOAT, false, stride, 16);
+    gl.enableVertexAttribArray(2);
+    gl.vertexAttribPointer(2, 2, gl.FLOAT, false, stride, 32);
+    if (this.words === LIT_VERTEX_WORDS) {
+      gl.enableVertexAttribArray(3);
+      gl.vertexAttribPointer(3, 4, gl.BYTE, false, stride, 40);
+    } else {
+      gl.disableVertexAttribArray(3);
+      gl.vertexAttrib4f(3, 0, 0, 0, 0);
     }
   }
 
@@ -277,10 +330,19 @@ export class Renderer {
     else gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, this.canvas.width, this.canvas.height);
   }
 
+  /** The light sources of the scene, as world positions, for the frames drawn from now on. */
+  setPointSources(sources: readonly PointLight[]): void {
+    this.pointSources = sources;
+  }
+
+  /** Ids of the actors the user marked as light sources (the game reads their positions for the frames drawn from now on). */
+  markedLightIds: ReadonlySet<number> = new Set();
+
   /** Applies new options; unless only the post-processing changed, the colour images and the cached textures are dropped and rebuilt as the game draws. */
   setSettings(settings: GfxSettings): void {
-    const effectsOnly = (Object.keys(settings) as (keyof GfxSettings)[]).every((k) => k.startsWith('ao') || k.startsWith('bloom') || k.startsWith('sharpen') || settings[k] === this.settings[k]);
+    const effectsOnly = (Object.keys(settings) as (keyof GfxSettings)[]).every((k) => k === 'lightingMode' || k.startsWith('pointLight') || k.startsWith('ao') || k.startsWith('bloom') || k.startsWith('sharpen') || settings[k] === this.settings[k]);
     this.settings = { ...settings };
+    this.layoutVertices();
     // The effects act at present time only: the images and textures stay.
     if (effectsOnly) return;
     this.setScale(this.scale);
@@ -341,6 +403,8 @@ export class Renderer {
     this.lastResult = result;
     this.taskId++;
     this.syncMipBudget = 1;
+    s.mipFallbackDraws = 0;
+    s.uploads = 0;
     s.drawCalls = 0;
     s.unmergedDrawCalls = 0;
     s.commands = result.commands;
@@ -349,6 +413,14 @@ export class Renderer {
     s.rects = 0;
     s.unknown = result.unknown.length;
     s.problems = result.problems.slice(0, 8);
+    if (result.lighting) {
+      s.lighting.lit += result.lighting.lit;
+      s.lighting.reversed += result.lighting.reversed;
+      s.lighting.mixed += result.lighting.mixed;
+      s.lighting.vertexPath += result.lighting.vertexPath;
+    }
+    this.camera = this.settings.pointLights ? frameCamera(result.cameras) : null;
+    this.pointLights = this.camera ? pickLights(this.pointSources, this.camera) : [];
     this.projection = occlusionOn(this.settings) ? fitProjection(result.batches) : null;
     try {
       this.drawRuns(mergeRuns(result.batches));
@@ -504,7 +576,7 @@ export class Renderer {
     if (vertices > 0) {
       gl.bindVertexArray(this.vao);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
-      gl.bufferData(gl.ARRAY_BUFFER, v.subarray(0, vertices * FLOATS_PER_VERTEX), gl.STREAM_DRAW);
+      gl.bufferData(gl.ARRAY_BUFFER, v.subarray(0, vertices * this.words), gl.STREAM_DRAW);
     }
     let first = 0;
     for (const [i, run] of runs.entries()) {
@@ -644,11 +716,17 @@ export class Renderer {
     this.stats.triangles += n / 3;
     this.stats.unmergedDrawCalls++;
     for (let i = 0; i < n; i++) {
-      const o = (first + i) * FLOATS_PER_VERTEX;
+      const o = (first + i) * this.words;
       v.set(b.positions.subarray(i * 4, i * 4 + 4), o);
       v.set(b.colors.subarray(i * 4, i * 4 + 4), o + 4);
       v[o + 8] = b.uvs[i * 2]!;
       v[o + 9] = b.uvs[i * 2 + 1]!;
+      if (this.words === LIT_VERTEX_WORDS) {
+        // Normal bytes are whole numbers except on vertices a clip made; those round.
+        const bytes = this.vertexBytes, at = (o + VERTEX_WORDS) * 4;
+        const n = b.normals;
+        for (let k = 0; k < 4; k++) bytes[at + k] = n ? Math.round(n[i * 4 + k]!) : 0;
+      }
     }
     return first + n;
   }
@@ -677,12 +755,16 @@ export class Renderer {
       v[o + 9] = t0 + (py - y0) * stepT;
     };
     const order: [number, number][] = [[x0, y0], [x1, y0], [x0, y1], [x1, y0], [x1, y1], [x0, y1]];
-    order.forEach(([px, py], i) => corner(px, py, (first + i) * FLOATS_PER_VERTEX));
+    order.forEach(([px, py], i) => corner(px, py, (first + i) * this.words));
+    if (this.words === LIT_VERTEX_WORDS) for (let i = 0; i < 6; i++) this.vertices[(first + i) * this.words + VERTEX_WORDS] = 0;
     return first + 6;
   }
 
   private scratch(vertices: number): Float32Array {
-    if (this.vertices.length < vertices * FLOATS_PER_VERTEX) this.vertices = new Float32Array(vertices * FLOATS_PER_VERTEX * 2);
+    if (this.vertices.length < vertices * this.words) {
+      this.vertices = new Float32Array(vertices * this.words * 2);
+      this.vertexBytes = new Int8Array(this.vertices.buffer);
+    }
     return this.vertices;
   }
 
@@ -690,11 +772,13 @@ export class Renderer {
     const gl = this.gl;
     const state = run.state;
     const cutout = this.settings.cutout === 'smooth' && this.samples > 0 && run.triangles && (state.geometryMode & Geo.ZBUFFER) !== 0;
-    const spec = specOf(state, { filter: this.settings.filter, mip: this.settings.mipmaps && run.triangles, cutout, smoothTexels: this.softTextures(state) });
+    const spec = specOf(state, { filter: this.settings.filter, mip: this.settings.mipmaps && run.triangles, cutout, smoothTexels: this.softTextures(state), pixelLight: run.lights !== null, pointLight: run.triangles && this.pointLights.length > 0 && (state.otherModeL & OtherL.Z_UPDATE) !== 0 });
     const { program, spec: used } = this.program(spec);
     gl.useProgram(program.gl);
     this.applyRaster(state, run.triangles, used);
     this.applyUniforms(program, state, run.triangles, used.mip);
+    if (used.pixelLight && run.lights) this.applyLights(program, run.lights);
+    if (used.pointLight) this.applyPointLights(program);
     gl.drawArrays(gl.TRIANGLES, first, count);
     this.stats.drawCalls++;
   }
@@ -726,8 +810,9 @@ export class Renderer {
       const hw = Math.abs(vp.scale[0]) / 4, hh = Math.abs(vp.scale[1]) / 4;
       const cx = vp.trans[0] / 4, cy = vp.trans[1] / 4;
       const left = this.devX(cx - 2 * hw), top = this.devY(cy - 2 * hh), bottom = this.devY(cy + 2 * hh);
-      gl.viewport(left, this.canvas.height - bottom, this.devX(cx + 2 * hw) - left, bottom - top);
-    } else gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+      this.viewportRect = [left, this.canvas.height - bottom, this.devX(cx + 2 * hw) - left, bottom - top];
+    } else this.viewportRect = [0, 0, this.canvas.width, this.canvas.height];
+    gl.viewport(...this.viewportRect);
 
     if (spec.framebufferBlend) {
       gl.enable(gl.BLEND);
@@ -793,6 +878,32 @@ export class Renderer {
     gl.uniform4fv(u('uTexC'), c);
   }
 
+  private applyPointLights(program: Program): void {
+    const gl = this.gl, camera = this.camera!;
+    const seconds = performance.now() / 1000, gain = (POINT_LIGHT_GAIN * this.settings.pointLightStrength) / 50;
+    const pos = new Float32Array(32), color = new Float32Array(32);
+    this.pointLights.forEach((p, i) => {
+      pos.set([p.x, p.y, p.z, POINT_LIGHT_RADIUS], i * 4);
+      const k = gain * (p.level ?? flicker(i, seconds));
+      color.set([POINT_LIGHT_COLOR[0] * k, POINT_LIGHT_COLOR[1] * k, POINT_LIGHT_COLOR[2] * k, 0], i * 4);
+    });
+    gl.uniformMatrix4fv(this.uniform(program, 'uInvCamera'), false, Float32Array.from(camera.inverse));
+    gl.uniform3f(this.uniform(program, 'uEye'), ...camera.eye);
+    gl.uniform4f(this.uniform(program, 'uViewport'), ...this.viewportRect);
+    gl.uniform4fv(this.uniform(program, 'uPointPos'), pos);
+    gl.uniform4fv(this.uniform(program, 'uPointColor'), color);
+    gl.uniform1i(this.uniform(program, 'uPointCount'), this.pointLights.length);
+    gl.uniform1i(this.uniform(program, 'uCameraSlot'), camera.slot);
+  }
+
+  private applyLights(program: Program, lights: LightSet): void {
+    const gl = this.gl;
+    gl.uniform3f(this.uniform(program, 'uLightAmbient'), ...lights.ambient);
+    gl.uniform3fv(this.uniform(program, 'uLightColor'), lights.colors);
+    gl.uniform3fv(this.uniform(program, 'uLightDir'), lights.dirs);
+    gl.uniform1i(this.uniform(program, 'uLightCount'), lights.count);
+  }
+
   // ---- Programs and textures ---------------------------------------------------------------------------------------
 
   /** Compiles and links without waiting for the result; `finish` checks it. */
@@ -826,17 +937,20 @@ ${source}`);
   }
 
   /**
-   * The program for a spec. A mip-level program is slow to build, so the first frames draw with the same program without mip
-   * levels while the full one builds in the background (in parallel when the browser can, else one per task).
+   * The program for a spec. A mip-level program is slow to build, so until it is usable the draws use the same program without mip levels (built
+   * in parallel when the browser can, else one per task). The choice is made once per task for every draw: a variant that finishes during a task is
+   * used from the next one, and a variant that does not build stays on the program without mip levels for good.
    */
   private program(spec: ShaderSpec): { program: Program; spec: ShaderSpec } {
     const key = specKey(spec);
+    if (spec.mip) {
+      const full = this.mipFailed.has(key) ? null : this.mipProgram(spec, key);
+      if (full) return { program: full, spec };
+      this.stats.mipFallbackDraws++;
+      return this.program({ ...spec, mip: false });
+    }
     let p = this.programs.get(key);
     if (p) return { program: p, spec };
-    if (spec.mip) {
-      const full = this.mipProgram(spec, key);
-      return full ? { program: full, spec } : this.program({ ...spec, mip: false });
-    }
     const started = performance.now();
     p = this.link(VERTEX_SHADER, fragmentSource(spec));
     this.stats.compileMs += performance.now() - started;
@@ -844,9 +958,11 @@ ${source}`);
     return { program: p, spec };
   }
 
-  /** The finished program, or null while it is still building or waits for its turn. */
+  /** The mip variant when it is usable in this task, else null: it is not built yet, still building, waiting for its turn, finished in this task, or failed. */
   private mipProgram(spec: ShaderSpec, key: string): Program | null {
     const gl = this.gl;
+    const done = this.programs.get(key);
+    if (done) return (this.mipUsableFrom.get(key) ?? 0) <= this.taskId ? done : null;
     let building = this.building.get(key);
     if (!building) {
       if (!this.parallel && this.syncMipBudget <= 0) return null;
@@ -859,17 +975,17 @@ ${source}`);
     if (this.parallel && !gl.getProgramParameter(building.program, COMPLETION_STATUS_KHR)) return null;
     this.building.delete(key);
     const started = performance.now();
-    let p: Program;
     try {
-      p = this.finish(building);
+      this.programs.set(key, this.finish(building));
+      this.mipUsableFrom.set(key, this.taskId + 1);
+      this.stats.programSwitches++;
     } catch (err) {
-      // A variant that does not build leaves the draws on the program without mip levels.
-      console.error(err);
-      p = this.program({ ...spec, mip: false }).program;
+      this.mipFailed.add(key);
+      this.stats.mipFailures++;
+      console.error(`the mip-level variant of a shader did not build; its draws stay without mip levels:`, err);
     }
     this.stats.compileMs += performance.now() - started;
-    this.programs.set(key, p);
-    return p;
+    return null;
   }
 
   private uniform(p: Program, name: string): WebGLUniformLocation | null {
@@ -892,17 +1008,31 @@ ${source}`);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, mipmaps ? gl.NEAREST_MIPMAP_NEAREST : gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     if (mipmaps) gl.generateMipmap(gl.TEXTURE_2D);
-    return { texture, width, height, mipmapped: mipmaps, scale };
+    return { texture, width, height, mipmapped: mipmaps, scale, refs: 1 };
+  }
+
+  private countUpload(image: DecodedTexture, replaced: boolean): void {
+    this.stats.uploads++;
+    this.stats.totalUploads++;
+    if (!this.trackTextureBuilds) return;
+    const key = hashImage(image) + (replaced ? '+pack' : '');
+    const n = (this.uploadCounts.get(key) ?? 0) + 1;
+    this.uploadCounts.set(key, n);
+    if (n > 1) this.stats.reuploads++;
+    if (n > this.stats.maxUploadsOfOne) this.stats.maxUploadsOfOne = n;
   }
 
   private dropTexture(id: number, tex: GpuTexture): void {
-    this.gl.deleteTexture(tex.texture);
     this.textureCache.delete(id);
+    if (--tex.refs > 0) return;
+    this.gl.deleteTexture(tex.texture);
+    if (tex.content !== undefined && this.byContent.get(tex.content) === tex) this.byContent.delete(tex.content);
   }
 
   private clearTextures(): void {
-    for (const t of this.textureCache.values()) this.gl.deleteTexture(t.texture);
+    for (const t of new Set(this.textureCache.values())) this.gl.deleteTexture(t.texture);
     this.textureCache.clear();
+    this.byContent.clear();
   }
 
   /**
@@ -920,10 +1050,21 @@ ${source}`);
       const hash = pack ? hashImage(image) : undefined;
       const replacement = pack && hash ? pack.lookup(hash) : null;
       const k = replacement ? scaleOf(image, replacement) : 0;
-      tex = replacement && k > 0
-        ? this.upload(replacement.width, replacement.height, replacement, this.settings.mipmaps, k)
-        : this.upload(image.width, image.height, this.settings.filter === 'n64' && isLowContrast(image) ? softened(image) : image.rgba);
-      tex.hash = hash;
+      if (replacement && k > 0) {
+        tex = this.upload(replacement.width, replacement.height, replacement, this.settings.mipmaps, k);
+        this.countUpload(image, true);
+      } else {
+        const content = hash ?? hashImage(image);
+        tex = this.byContent.get(content);
+        if (tex) tex.refs++;
+        else {
+          tex = this.upload(image.width, image.height, this.settings.filter === 'n64' && isLowContrast(image) ? softened(image) : image.rgba);
+          tex.content = content;
+          this.byContent.set(content, tex);
+          this.countUpload(image, false);
+        }
+      }
+      tex.hash ??= hash;
       this.textureCache.set(image.id, tex);
     }
     return tex;

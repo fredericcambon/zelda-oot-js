@@ -90,7 +90,13 @@ static void *grow(void *p, size_t *cap, size_t need, size_t elt) {
 
 // ---- Result buffers -----------------------------------------------------------------------------------------------
 
-static VEC(float) out_pos, out_col, out_uv;
+static VEC(float) out_pos, out_col, out_uv, out_nrm;
+static VEC(GfxLightSet) out_light_sets;
+static VEC(uint32_t) out_batch_lights;
+static uint32_t pixel_mode, last_light_set, batch_light;
+static GfxLightResult light_result;
+static uint32_t camera_output;
+static GfxCameraResult camera_result;
 static VEC(GfxBatch) out_batches;
 static VEC(GfxState) out_states;
 static VEC(GfxTextureRef) out_textures;
@@ -131,6 +137,11 @@ typedef struct {
   double clip[4];
   double color[4];
   double s, t;
+  // Pixel lighting only: model-space position, the normal bytes, and 1 + the index of the light set of a lit vertex (0 when unlit).
+  double pos[3], normal[3];
+  uint32_t light_set;
+  // Camera output only: 1 + the index of the perspective projection the vertex was transformed under, 0 for an orthographic one.
+  uint32_t camera;
 } Vertex;
 
 static uint32_t seg[16];
@@ -445,15 +456,21 @@ static void finish_batch(void) {
   b.first_vertex = batch_first;
   b.vertex_count = (uint32_t)(out_pos.n / 4) - batch_first;
   VEC_PUSH(out_batches, b);
+  VEC_PUSH(out_batch_lights, batch_light);
 }
 
-// The batch triangles go into: the one begun with the render state in force, until a command changes that state.
-static void current_batch(void) {
-  if (batch_open && snapshot_valid) return;
+// The batch triangles go into: the one begun with the render state in force, until a command changes that state or a triangle to
+// light per pixel comes with another light set than the batch's (`light_set` is 0 for a triangle on the vertex path, which fits any).
+static void current_batch(uint32_t light_set) {
+  if (batch_open && snapshot_valid && (light_set == 0 || batch_light == 0 || light_set == batch_light)) {
+    if (light_set) batch_light = light_set;
+    return;
+  }
   finish_batch();
   take_snapshot(st.texture_tile);
   batch_open = 1;
   batch_first = (uint32_t)(out_pos.n / 4);
+  batch_light = light_set;
 }
 
 // ---- Lighting -----------------------------------------------------------------------------------------------------
@@ -522,6 +539,26 @@ static void light(const int32_t n[3], int32_t dirs[][3], double out[3]) {
     for (int k = 0; k < 3; k++) c[k] += floor((l[k] * d) / 32768.0);
   }
   for (int k = 0; k < 3; k++) out[k] = js_min(255, c[k]) / 255;
+}
+
+// The index (plus one) of the set holding the lights in force with the directions `dirs`, added to the result when no set of the run
+// has them: runs of vertices lit the same way share a set, so that the batches they go into can merge.
+static uint32_t light_set_for(int32_t dirs[][3]) {
+  GfxLightSet set;
+  memset(&set, 0, sizeof set);
+  set.count = (uint32_t)num_lights;
+  const uint8_t *amb = light_slots[2 + num_lights];
+  for (int k = 0; k < 3; k++) set.ambient[k] = amb[k];
+  for (int i = 0; i < num_lights; i++) for (int k = 0; k < 3; k++) {
+    set.color[i][k] = light_slots[2 + i][k];
+    set.dir[i][k] = (float)dirs[2 + i][k];
+  }
+  if (last_light_set && memcmp(&out_light_sets.v[last_light_set - 1], &set, sizeof set) == 0) return last_light_set;
+  for (size_t i = out_light_sets.n; i-- > 0 && i + 16 > out_light_sets.n;) {
+    if (memcmp(&out_light_sets.v[i], &set, sizeof set) == 0) return last_light_set = (uint32_t)i + 1;
+  }
+  VEC_PUSH(out_light_sets, set);
+  return last_light_set = (uint32_t)out_light_sets.n;
 }
 
 // A texture coordinate in 10.5 fixed point times the texture command's scale (a 16-bit fraction), rounded down.
@@ -752,6 +789,24 @@ static void pop_matrix(uint32_t w1) {
 static VEC(double) vertex_trace;
 static int vertex_trace_on;
 
+// The slot of the perspective projection in force in the camera result (a new one takes the next slot while there is room), counting
+// `vertices` against it; 0 under an orthographic projection or when the slots are taken. The view matrix is multiplied into the
+// game's projection (docs/re/lighting.md, "Point lights"), so the projection is the world-to-clip transform of everything drawn under it.
+static uint32_t camera_of(int vertices) {
+  if (!perspective(proj)) return 0;
+  for (uint32_t i = 0; i < camera_result.count; i++) {
+    if (memcmp(camera_result.matrix[i], proj, sizeof proj) == 0) {
+      camera_result.vertices[i] += (uint32_t)vertices;
+      return i + 1;
+    }
+  }
+  if (camera_result.count == GFX_MAX_CAMERAS) return 0;
+  const uint32_t i = camera_result.count++;
+  memcpy(camera_result.matrix[i], proj, sizeof proj);
+  camera_result.vertices[i] = (uint32_t)vertices;
+  return i + 1;
+}
+
 static void load_vertices(uint32_t w0, uint32_t w1) {
   const int n = (int)((w0 >> 12) & 0xff);
   const int v0 = (int)((w0 >> 1) & 0x7f) - n;
@@ -767,6 +822,7 @@ static void load_vertices(uint32_t w0, uint32_t w1) {
     mvp_valid = 1;
   }
   const double *m = mvp;
+  const uint32_t camera = camera_output ? camera_of(n) : 0;
   if (motion_record) {
     uint32_t h = 2166136261u;
     for (size_t i = 0; i < (size_t)n * 16; i++) h = (h ^ ram[(size_t)addr + i]) * 16777619u;
@@ -777,11 +833,13 @@ static void load_vertices(uint32_t w0, uint32_t w1) {
   const int texgen = (st.geometry_mode & GEO_TEXTURE_GEN) != 0;
   const int linear = (st.geometry_mode & GEO_TEXTURE_GEN_LINEAR) != 0;
   const int fog_on = (st.geometry_mode & GEO_FOG) != 0;
+  uint32_t light_set = 0;
   // Light and look-at directions depend on the model-view matrix and the slots only, so they serve every vertex of the load.
   int32_t dirs[2 + 7][3];
   if (lighting) {
     if (texgen) for (int i = 0; i < 2; i++) model_direction(i, dirs[i]);
     for (int i = 0; i < num_lights; i++) model_direction(2 + i, dirs[2 + i]);
+    if (pixel_mode && num_lights > 0) light_set = light_set_for(dirs);
   }
   for (int i = 0; i < n; i++) {
     const size_t a = (size_t)addr + (size_t)i * 16;
@@ -791,6 +849,12 @@ static void load_vertices(uint32_t w0, uint32_t w1) {
     v->clip[1] = x * m[1] + y * m[5] + z * m[9] + m[13];
     v->clip[2] = x * m[2] + y * m[6] + z * m[10] + m[14];
     v->clip[3] = x * m[3] + y * m[7] + z * m[11] + m[15];
+    v->pos[0] = x;
+    v->pos[1] = y;
+    v->pos[2] = z;
+    v->light_set = 0;
+    v->camera = camera;
+    v->normal[0] = v->normal[1] = v->normal[2] = 0;
     double alpha = rd_u8(a + 15) / 255.0;
     double col[3];
     double s = scale_coordinate(rd_s16(a + 8), st.texture_scale_s);
@@ -798,6 +862,8 @@ static void load_vertices(uint32_t w0, uint32_t w1) {
     if (lighting) {
       const int32_t normal[3] = { rd_s8(a + 12), rd_s8(a + 13), rd_s8(a + 14) };
       light(normal, dirs, col);
+      v->light_set = light_set;
+      for (int k = 0; k < 3; k++) v->normal[k] = normal[k];
       if (texgen) {
         s = scale_coordinate(generated_coordinate(along(normal, dirs[0]), linear), st.texture_scale_s);
         t = scale_coordinate(generated_coordinate(along(normal, dirs[1]), linear), st.texture_scale_t);
@@ -848,6 +914,7 @@ static void modify_vertex(uint32_t w0, uint32_t w1) {
   const int32_t *vp = st.viewport;
   const double w = v->clip[3];
   if (where == 0x10) {
+    v->light_set = 0;
     v->color[0] = (w1 >> 24) / 255.0;
     v->color[1] = ((w1 >> 16) & 255) / 255.0;
     v->color[2] = ((w1 >> 8) & 255) / 255.0;
@@ -917,6 +984,12 @@ static void interpolate(const Vertex *a, const Vertex *b, double t, Vertex *o) {
   for (int i = 0; i < 4; i++) o->color[i] = a->color[i] + (b->color[i] - a->color[i]) * t;
   o->s = a->s + (b->s - a->s) * t;
   o->t = a->t + (b->t - a->t) * t;
+  for (int i = 0; i < 3; i++) {
+    o->pos[i] = a->pos[i] + (b->pos[i] - a->pos[i]) * t;
+    o->normal[i] = a->normal[i] + (b->normal[i] - a->normal[i]) * t;
+  }
+  o->light_set = a->light_set;
+  o->camera = a->camera;
 }
 
 enum { MAX_POLYGON = 16 };
@@ -956,11 +1029,51 @@ static inline int slot_of(uint32_t byte_index, const Vertex **out) {
   return 1;
 }
 
-static void emit(const Vertex *v) {
+static void emit(const Vertex *v, int per_pixel) {
   for (int i = 0; i < 4; i++) VEC_PUSH(out_pos, (float)v->clip[i]);
   for (int i = 0; i < 4; i++) VEC_PUSH(out_col, (float)v->color[i]);
   VEC_PUSH(out_uv, (float)v->s);
   VEC_PUSH(out_uv, (float)v->t);
+  if (!pixel_mode && !camera_output) return;
+  for (int i = 0; i < 3; i++) VEC_PUSH(out_nrm, per_pixel ? (float)v->normal[i] : 0.0f);
+  VEC_PUSH(out_nrm, (per_pixel ? 1.0f : 0.0f) + 2.0f * (float)v->camera);
+}
+
+// Whether the normals of a triangle point out of its face: the cosine between the sum of the three normals and the face normal
+// from the model-space positions in drawing order is not below -0.5. A zero-length normal sum or a degenerate face counts as agreeing.
+static int normals_face_out(const Vertex *a, const Vertex *b, const Vertex *c) {
+  double e1[3], e2[3], g[3], n[3];
+  for (int i = 0; i < 3; i++) {
+    e1[i] = b->pos[i] - a->pos[i];
+    e2[i] = c->pos[i] - a->pos[i];
+    n[i] = a->normal[i] + b->normal[i] + c->normal[i];
+  }
+  g[0] = e1[1] * e2[2] - e1[2] * e2[1];
+  g[1] = e1[2] * e2[0] - e1[0] * e2[2];
+  g[2] = e1[0] * e2[1] - e1[1] * e2[0];
+  const double lg = sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]), ln = sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+  if (lg == 0 || ln == 0) return 1;
+  return g[0] * n[0] + g[1] * n[1] + g[2] * n[2] >= -0.5 * lg * ln;
+}
+
+// The light set a triangle is lit with per pixel (see gfx.h), 0 for the vertex path.
+static uint32_t pixel_set_of(const Vertex *a, const Vertex *b, const Vertex *c) {
+  if (!pixel_mode || !a->light_set) return 0;
+  if (a->light_set != b->light_set || a->light_set != c->light_set) {
+    light_result.lit_triangles++;
+    light_result.mixed_triangles++;
+    light_result.vertex_path_triangles++;
+    return 0;
+  }
+  light_result.lit_triangles++;
+  if (!normals_face_out(a, b, c)) {
+    light_result.reversed_triangles++;
+    if (pixel_mode != GFX_LIGHTS_PIXEL_ALL) {
+      light_result.vertex_path_triangles++;
+      return 0;
+    }
+  }
+  return a->light_set;
 }
 
 // A triangle is dropped when its three vertices share a clip flag (all outside one side of the view volume, or all at or
@@ -991,20 +1104,36 @@ static void triangle(uint32_t a, uint32_t b, uint32_t c) {
     for (int i = 0; i < n; i++) polygon[i] = &clipped[i];
   }
   if (n < 3) return;
-  current_batch();
+  const uint32_t light_set = pixel_set_of(v0, v1, v2);
+  current_batch(light_set);
   for (int k = 1; k + 1 < n; k++) {
-    emit(polygon[0]);
-    emit(polygon[k]);
-    emit(polygon[k + 1]);
+    emit(polygon[0], light_set != 0);
+    emit(polygon[k], light_set != 0);
+    emit(polygon[k + 1], light_set != 0);
   }
 }
 
 static void push_rect_batch(uint32_t kind, uint32_t state, int32_t xl, int32_t yl, int32_t xh, int32_t yh, int32_t tile, int32_t s, int32_t t, int32_t dsdx, int32_t dtdy) {
   GfxBatch b = { kind, state, 0, 0, xl, yl, xh, yh, tile, s, t, dsdx, dtdy };
   VEC_PUSH(out_batches, b);
+  VEC_PUSH(out_batch_lights, 0);
+}
+
+// The overworld minimap's entrance icons (code at 0x8006d76c-0x8006d958) come from per-map tables whose pointers sit at 0x80119d10 + 0x48
+// (x), + 0x4c (y) and + 0x50 (flag word), indexed by the s16 at 0x800f348c (0 in Hyrule Field). A map without icon has x=1, y=0, flag 0xffff
+// in its row, and the code still draws the 8x8 icon for a flag of 0xffff: a rectangle from (1,0) to (9,8), 36 and 32 in 10.2 units.
+// On a television it lies in the overscan; here it would show in the picture's corner, so it is skipped when the row is such a placeholder.
+static int is_unused_icon_rect(uint32_t w0, uint32_t w1) {
+  if ((w0 & 0xffffff) != 0x024020 || (w1 & 0xffffff) != 0x004000) return 0;
+  const uint32_t maps = rd_u32(0x119d10u) & 0x7fffffu;
+  const int32_t row = rd_s16(0xf348cu);
+  if (maps == 0 || row < 0 || row >= 24) return 0;
+  const size_t x = rd_u32(maps + 0x48) & 0x7fffffu, y = rd_u32(maps + 0x4c) & 0x7fffffu, flag = rd_u32(maps + 0x50) & 0x7fffffu;
+  return rd_s16(x + 2 * (size_t)row) == 1 && rd_s16(y + 2 * (size_t)row) == 0 && rd_u16(flag + 2 * (size_t)row) == 0xffff;
 }
 
 static void tex_rect(uint32_t w0, uint32_t w1, uint32_t half1, uint32_t half2) {
+  if (is_unused_icon_rect(w0, w1)) return;
   finish_batch();
   const int tile = (int)((w1 >> 24) & 7);
   const uint32_t state = take_snapshot(tile);
@@ -1338,6 +1467,10 @@ static void reset(void) {
   ucode_2d = 0;
   batch_open = 0;
   batch_first = 0;
+  batch_light = last_light_set = 0;
+  memset(&light_result, 0, sizeof light_result);
+  camera_result.count = 0;
+  out_nrm.n = out_light_sets.n = out_batch_lights.n = 0;
   out_pos.n = out_col.n = out_uv.n = 0;
   out_batches.n = out_states.n = out_textures.n = out_unknown.n = out_opcodes.n = 0;
   out_problem_count = 0;
@@ -1472,6 +1605,19 @@ const GfxResult *gfx_result(void) {
   return &result;
 }
 
+void gfx_set_pixel_lighting(uint32_t mode) { pixel_mode = mode <= GFX_LIGHTS_PIXEL_ALL ? mode : GFX_LIGHTS_OFF; }
+void gfx_set_camera_output(uint32_t on) { camera_output = on != 0; }
+const GfxCameraResult *gfx_camera_result(void) { return &camera_result; }
+
+const GfxLightResult *gfx_light_result(void) {
+  light_result.enabled = pixel_mode != 0 || camera_output != 0;
+  light_result.normals = out_nrm.v;
+  light_result.light_set_count = (uint32_t)out_light_sets.n;
+  light_result.light_sets = out_light_sets.v;
+  light_result.batch_light_sets = out_batch_lights.v;
+  return &light_result;
+}
+
 void gfx_trace_vertices(uint32_t on) {
   vertex_trace.n = 0;
   vertex_trace_on = on != 0;
@@ -1489,6 +1635,9 @@ void gfx_reset(void) {
   VEC_FREE(out_pos);
   VEC_FREE(out_col);
   VEC_FREE(out_uv);
+  VEC_FREE(out_nrm);
+  VEC_FREE(out_light_sets);
+  VEC_FREE(out_batch_lights);
   VEC_FREE(out_batches);
   VEC_FREE(out_states);
   VEC_FREE(out_textures);
@@ -1518,6 +1667,8 @@ uint32_t gfx_layout(uint32_t what) {
     case 5: return GFX_PROBLEM_BYTES;
     case 6: return sizeof(GfxMatrix) / 4;
     case 7: return sizeof(GfxVertexLoad) / 4;
+    case 8: return sizeof(GfxLightSet) / 4;
+    case 9: return sizeof(GfxLightResult) / 4;
     default: return 0;
   }
 }

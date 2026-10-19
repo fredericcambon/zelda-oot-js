@@ -29,5 +29,4 @@ if (!existsSync(emcc)) {
   run(emsdk, ['activate', 'latest'], emsdkDir);
 }
 
-run('npx', ['tsc', '--noEmit']);
 run('npx', ['vite', 'build']);

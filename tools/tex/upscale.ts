@@ -1,6 +1,6 @@
 // `npm run tex -- upscale [--dump out/texdump] [--out out/texpack] [--tool <dir>] [--python <exe>] [--variants a,b,c,d] [--pad 16] [--limit N]`: enlarges every
 // texture of the dump that is not volatile with a third-party model run locally (a Real-ESRGAN model of its official release, run by tools/tex/model_run.py
-// with numpy, see docs/texture-pack.md) and writes one pack per variant, `<out>/<variant>/<hash>.png` plus an `index.json` that lists the pack, the settings
+// with numpy, see docs/texture-pack.md) and writes one pack per variant named by `--variants` (the others in `--out` are left as they are), `<out>/<variant>/<hash>.png` plus an `index.json` that lists the pack, the settings
 // it was made with, its texture memory and its build time. The models and the runtime are not part of the repository: they are fetched by hand into `--tool`
 // and `--python`'s environment, and their output stays under `out/`.
 import { spawnSync } from 'node:child_process';
@@ -14,6 +14,12 @@ import type { RgbaImage } from '../gfx/types.ts';
 import type { TextureRecord } from './collect.ts';
 import { modelInput, resample, seamRatio, upscaleTexture } from './image-ops.ts';
 import { decodePng } from './png-read.ts';
+
+/** Textures the spot-check found worse enlarged than original (`exclude.json`: hash to reason); they stay original. */
+export const EXCLUDED_FILE = fileURLToPath(new URL('./exclude.json', import.meta.url));
+export function loadExcluded(file = EXCLUDED_FILE): Record<string, string> {
+  return existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as Record<string, string>) : {};
+}
 
 export const RELEASE = { repo: 'xinntao/Real-ESRGAN', tag: 'v0.2.5.0', asset: 'realesrgan-ncnn-vulkan-20220424-windows.zip' };
 /** The model of each factor: the release's x2 model is its x4 network followed by a bicubic halving. */
@@ -42,6 +48,8 @@ export interface UpscaleArgs {
   variants?: string[];
   pad: number;
   limit?: number;
+  /** Hashes left original, with the reason (default: `exclude.json`). */
+  excluded?: Record<string, string>;
   log?: (line: string) => void;
 }
 
@@ -68,7 +76,8 @@ export interface PackStats {
 }
 
 /** Why a dumped texture gets no replacement, or null when it does. */
-export function skipReason(r: TextureRecord): string | null {
+export function skipReason(r: TextureRecord, excluded: Record<string, string> = {}): string | null {
+  if (excluded[r.hash]) return `excluded: ${excluded[r.hash]}`;
   if (r.volatile) return 'changes from frame to frame';
   if (Math.max(r.width, r.height) > MAX_SIDE) return `screen-size image (${r.width}x${r.height})`;
   if (r.frames < MIN_FRAMES) return `seen in ${r.frames} graphics task(s) only`;
@@ -85,7 +94,7 @@ export interface UpscaleResult {
   seams: Record<string, { wrapping: number; worse: number }>;
 }
 
-export function upscale({ dump, out, tool, python, variants: wanted, pad, limit, log = console.log }: UpscaleArgs): UpscaleResult {
+export function upscale({ dump, out, tool, python, variants: wanted, pad, limit, excluded = loadExcluded(), log = console.log }: UpscaleArgs): UpscaleResult {
   const models = join(tool, 'models');
   const variants = VARIANTS.filter((v) => !wanted || wanted.includes(v.name));
   if (!existsSync(python) || [...new Set(variants.map((v) => v.scale))].some((s) => !existsSync(join(models, `${MODELS[s]}.param`)))) {
@@ -95,7 +104,7 @@ export function upscale({ dump, out, tool, python, variants: wanted, pad, limit,
   const result: UpscaleResult = { skipped: [], stats: {}, seams: {} };
   const todo: TextureRecord[] = [];
   for (const r of Object.values(index.textures)) {
-    const why = skipReason(r);
+    const why = skipReason(r, excluded);
     if (why) result.skipped.push({ hash: r.hash, why });
     else todo.push(r);
   }
@@ -131,10 +140,10 @@ export function upscale({ dump, out, tool, python, variants: wanted, pad, limit,
     [...new Set(variants.map((v) => MODELS[v.scale]!))].flatMap((m) => readdirSync(models).filter((f) => f.startsWith(`${m}.`)).sort().map((f) => [f, sha256(join(models, f))])),
   );
 
-  rmSync(out, { recursive: true, force: true });
   for (const v of variants) {
     const t0 = performance.now();
     const dir = join(out, v.name);
+    rmSync(dir, { recursive: true, force: true });
     mkdirSync(dir, { recursive: true });
     const textures: Record<string, { width: number; height: number }> = {};
     const seams = { wrapping: 0, worse: 0 };
@@ -172,7 +181,12 @@ export function upscale({ dump, out, tool, python, variants: wanted, pad, limit,
     }, null, 1));
     log(`${v.name} (${v.label}): ${todo.length} textures, ${(bytes / 1048576).toFixed(1)} MiB (originals ${(originalBytes / 1048576).toFixed(1)} MiB), model ${stats.modelSeconds}s + ${stats.otherSeconds}s; ${seams.worse} of ${seams.wrapping} wrapping axes with a seam worse than plain bilinear's`);
   }
-  log(`${result.skipped.length} textures left original`);
+  const kinds = new Map<string, number>();
+  for (const { why } of result.skipped) {
+    const kind = why.replace(/^excluded: .*/, 'excluded').replace(/ \(.*\)/, '').replace(/\d+ graphics/, 'N graphics');
+    kinds.set(kind, (kinds.get(kind) ?? 0) + 1);
+  }
+  log(`${result.skipped.length} textures left original (${[...kinds].map(([k, n]) => `${n} ${k}`).join(', ')})`);
   rmSync(work, { recursive: true, force: true });
   return result;
 }

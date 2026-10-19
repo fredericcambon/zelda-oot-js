@@ -8,9 +8,10 @@ import { link } from '../port/build.ts';
 import { loadBase, variantDistDir } from '../recomp/test-base.ts';
 import { encodePng } from '../gfx/png.ts';
 import { HEIGHT, SoftRenderer, WIDTH } from '../gfx/raster.ts';
-import { bootGame, type Game } from './boot.ts';
+import { bootGame } from './boot.ts';
 import { padAt, parseInput } from './input.ts';
 import { linkPosition, playState } from './state.ts';
+import { LIVE_FRAMES, SAVE_FRAME } from './intro-state.ts';
 
 export const rom = process.env.OOT_ROM;
 export const FRAMES = 300;
@@ -125,19 +126,10 @@ export function dump(name: string, img: Uint8Array): void {
 
 export const sha = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 
-/** The frame at which states are taken, the frames replayed after it, and the size a gzipped state must stay within. */
-export const SAVE_FRAME = CONTROL_FRAME - 10;
-export const REPLAY_FRAMES = 180;
+/** The frames replayed after the intro state, and the size a gzipped state must stay within. */
+export { SAVE_FRAME };
+export const REPLAY_FRAMES = LIVE_FRAMES;
 export const STATE_SIZE_LIMIT = 4 * 1024 * 1024;
-
-/** Plays the scripted new game up to the frame at which states are taken. */
-export async function reachSaveFrame(game: Game): Promise<void> {
-  for (let frame = 1; frame <= SAVE_FRAME; frame++) {
-    const pad = padAt(SCRIPT, frame);
-    game.setPad(pad.buttons, pad.x, pad.y);
-    expect((await game.frame()).fatal, `frame ${frame}`).toBeUndefined();
-  }
-}
 
 /** The payload of each section of a portable state, by tag (runtime/state.c). */
 export function sections(state: Uint8Array): Map<string, Uint8Array> {

@@ -8,7 +8,7 @@ import { dumpSram } from './dump.ts';
 
 const rom = process.env.OOT_ROM;
 let written: Promise<Uint8Array> | undefined;
-const gameWrittenSave = () => (written ??= newFileSave(rom!).then((r) => r.sram));
+const gameWrittenSave = () => (written ??= newFileSave().then((r) => r.sram));
 
 describe.skipIf(!rom || !existsSync(rom))('the save memory the game writes', () => {
   it('passes verify after the scripted new game creates a file, and the game keeps it as it is', async () => {
@@ -24,7 +24,7 @@ describe.skipIf(!rom || !existsSync(rom))('the save memory the game writes', () 
     const [slot0] = (dumpSram(sram) as { slots: { fields: Record<string, number | string> }[] }).slots;
     expect(slot0!.fields).toMatchObject({ entranceIndex: 0xbb, healthCapacity: 0x30, health: 0x30, sceneIndex: 52, magic: '5a454c44415a' });
 
-    const again = await bootWithSave(rom!, sram);
+    const again = await bootWithSave(sram);
     expect(again.rewritten).toBe(false);
     expect(Buffer.from(again.sram).equals(Buffer.from(sram))).toBe(true);
 
@@ -32,14 +32,14 @@ describe.skipIf(!rom || !existsSync(rom))('the save memory the game writes', () 
     const badPrimary = sram.slice();
     badPrimary[PRIMARY[0] + 0x40] = badPrimary[PRIMARY[0] + 0x40]! ^ 0xff;
     expect(verify(badPrimary).slots[0]!.outcome).toBe('from-backup');
-    const restored = await bootWithSave(rom!, badPrimary);
+    const restored = await bootWithSave(badPrimary);
     expect(restored.rewritten).toBe(true);
     expect(verify(restored.sram).slots[0]!).toMatchObject({ used: true, outcome: 'from-backup' });
 
     const bothBad = badPrimary.slice();
     bothBad[BACKUP[0] + 0x40] = bothBad[BACKUP[0] + 0x40]! ^ 0xff;
     expect(verify(bothBad).slots[0]!.outcome).toBe('reset');
-    const reset = await bootWithSave(rom!, bothBad);
+    const reset = await bootWithSave(bothBad);
     expect(reset.rewritten).toBe(true);
     expect(verify(reset.sram).slots[0]!).toMatchObject({ used: false, outcome: 'kept' });
   }, 3_600_000);
@@ -49,7 +49,7 @@ describe.skipIf(!rom || !existsSync(rom))('the save memory the game writes', () 
     const bad = sram.slice();
     bad[4] = bad[4]! ^ 0xff;
     expect(verify(bad).header.signatureOk).toBe(false);
-    const fixed = await bootWithSave(rom!, bad);
+    const fixed = await bootWithSave(bad);
     expect(fixed.rewritten).toBe(true);
     expect(verify(fixed.sram).header.signatureOk).toBe(true);
   }, 3_600_000);
@@ -75,7 +75,7 @@ function fileSelectSlot0(ram: Uint8Array, name: Uint8Array, capacity: number, bi
 
 describe.skipIf(!rom || !existsSync(rom))('saves built by hand', () => {
   it('builds the record the game writes for a new file', async () => {
-    const { sram } = await newFileSave(rom!);
+    const { sram } = await newFileSave();
     const written = recordAt(sram, PRIMARY[0]).subarray(0, CHECKED_SIZE);
     const built = newRecord('A').subarray(0, CHECKED_SIZE);
     const differing = Array.from(built, (b, i) => (b === written[i] ? -1 : i)).filter((i) => i >= 0);
@@ -92,7 +92,7 @@ describe.skipIf(!rom || !existsSync(rom))('saves built by hand', () => {
     putRecord(sram, 0, record);
     expect(verify(sram).accepted).toBe(true);
 
-    const { prompt, context, loadedAt } = await loadFirstFile(rom!, sram);
+    const { prompt, context, loadedAt } = await loadFirstFile(sram);
     const slot = fileSelectSlot0(prompt, record.subarray(0x24, 0x2c), 12 * 16, u32(record, 0xa4), 12 * 16);
     expect(slot).toHaveLength(1);
 
@@ -113,7 +113,7 @@ describe.skipIf(!rom || !existsSync(rom))('saves built by hand', () => {
     const sram = blankImage();
     putRecord(sram, 0, record);
 
-    const { prompt, context } = await loadFirstFile(rom!, sram);
+    const { prompt, context } = await loadFirstFile(sram);
     expect(fileSelectSlot0(prompt, record.subarray(0x24, 0x2c), 9 * 16, 0, 120)).toHaveLength(1);
     expect(u16(context!, 0x2e)).toBe(9 * 16);
     expect(u16(context!, 0x30)).toBe(120);

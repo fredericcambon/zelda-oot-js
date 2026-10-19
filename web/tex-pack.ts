@@ -130,8 +130,8 @@ export class TexPack {
     } catch {
       bitmap = null;
     }
-    // The answer to a request for a variant that has been switched away from is dropped.
-    if (variant !== this.variant) return;
+    // The answer to a request for a variant that has been switched away from is dropped, and so is one that arrives after the requests were forgotten.
+    if (variant !== this.variant || !this.requested.has(hash)) return;
     this.bitmaps.set(hash, bitmap);
     this.onChange?.(hash);
   }
@@ -145,7 +145,7 @@ export class TexPack {
       entries: this.entries?.size ?? 0,
       seen: this.names.size,
       replaced,
-      pending: this.requested.size - this.bitmaps.size,
+      pending: [...this.requested].filter((name) => !this.bitmaps.has(name)).length,
     };
   }
 }

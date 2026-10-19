@@ -2,7 +2,7 @@
 // the DisplayListResult of types.ts. Float arrays and decoded images are views into the module's memory, valid
 // until the next run (and not across a growth of the memory: read the result right after the run).
 import {
-  decodeCombine, type Batch, type DecodedTexture, type DisplayListResult, type DrawState, type RunOptions, type TileState,
+  decodeCombine, type Batch, type DecodedTexture, type DisplayListResult, type DrawState, type CameraProjection, type LightSet, type RunOptions, type TileState,
 } from './types.ts';
 
 /** The exports of the interpreter (runtime/gfx/dl.c). */
@@ -14,6 +14,11 @@ export interface GfxCore {
   _gfx_result(): number;
   _gfx_reset(): void;
   _gfx_layout(what: number): number;
+  /** Present in modules built with the pixel-lighting output (runtime/gfx/gfx.h). */
+  _gfx_light_result?(): number;
+  _gfx_set_pixel_lighting?(mode: number): void;
+  _gfx_set_camera_output?(on: number): void;
+  _gfx_camera_result?(): number;
 }
 
 /** The vertex trace of the interpreter, for tests (runtime/gfx/gfx.h). */
@@ -41,6 +46,8 @@ const STATE_WORDS = 177;
 const TEXTURE_WORDS = 7;
 const UNKNOWN_WORDS = 3;
 const PROBLEM_BYTES = 160;
+const MAX_LIGHTS = 7;
+const MAX_CAMERAS = 3;
 const TILE_WORDS = 16;
 
 type Tuple17 = [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number];
@@ -49,8 +56,9 @@ const LATIN1 = new TextDecoder('latin1');
 const KINDS = ['triangles', 'texrect', 'fillrect'] as const;
 
 function checkLayout(core: GfxCore): void {
-  const expected = [RESULT_WORDS, BATCH_WORDS, STATE_WORDS, TEXTURE_WORDS, UNKNOWN_WORDS, PROBLEM_BYTES];
-  expected.forEach((want, what) => {
+  const expected: [number, number][] = [RESULT_WORDS, BATCH_WORDS, STATE_WORDS, TEXTURE_WORDS, UNKNOWN_WORDS, PROBLEM_BYTES].map((want, what) => [what, want] as [number, number]);
+  if (core._gfx_light_result) expected.push([8, LIGHT_SET_WORDS], [9, LIGHT_RESULT_WORDS]);
+  expected.forEach(([what, want]) => {
     const got = core._gfx_layout(what);
     if (got !== want) throw new Error(`the interpreter's record ${what} has ${got} words, the reader expects ${want}`);
   });
@@ -83,6 +91,7 @@ export function readResult(core: GfxCore): DisplayListResult {
   const positions = new Float32Array(buffer, positionsAt || 0, vertexCount * 4);
   const colors = new Float32Array(buffer, colorsAt || 0, vertexCount * 4);
   const uvs = new Float32Array(buffer, uvsAt || 0, vertexCount * 2);
+  const light = readLights(core, buffer, vertexCount, batchCount);
   const batches: Batch[] = [];
   for (let i = 0; i < batchCount; i++) {
     const w = i * BATCH_WORDS;
@@ -93,6 +102,7 @@ export function readResult(core: GfxCore): DisplayListResult {
       batches.push({
         kind, state, positions: positions.subarray(first * 4, (first + count) * 4), colors: colors.subarray(first * 4, (first + count) * 4),
         uvs: uvs.subarray(first * 2, (first + count) * 2),
+        ...(light && { normals: light.normals.subarray(first * 4, (first + count) * 4), lights: light.sets[light.batchSets[i]! - 1] }),
       });
     } else {
       batches.push({
@@ -122,7 +132,39 @@ export function readResult(core: GfxCore): DisplayListResult {
   const pairs = new Uint32Array(buffer, opcodesAt || 0, opcodeCount * 2);
   const opcodes = new Map<number, number>();
   for (let i = 0; i < opcodeCount; i++) opcodes.set(pairs[i * 2]!, pairs[i * 2 + 1]!);
-  return { batches, commands, opcodes, unknown, problems };
+  return { batches, commands, opcodes, unknown, problems, ...(light && { lighting: light.counts }), cameras: readCameras(core, buffer) };
+}
+
+/** The perspective projections of the last run (empty unless the camera output is on). */
+function readCameras(core: GfxCore, buffer: ArrayBuffer): CameraProjection[] {
+  if (!core._gfx_camera_result) return [];
+  const at = core._gfx_camera_result();
+  const header = new Uint32Array(buffer, at, 1 + MAX_CAMERAS);
+  return Array.from({ length: header[0]! }, (_, i) => ({ vertices: header[1 + i]!, matrix: new Float64Array(buffer, at + 16 + i * 128, 16).slice() }));
+}
+
+const LIGHT_SET_WORDS = 1 + 3 + 3 * MAX_LIGHTS * 2;
+const LIGHT_RESULT_WORDS = 9;
+
+/** The pixel-lighting output of the last run, or null when the module has none or it was off for the run. */
+function readLights(core: GfxCore, buffer: ArrayBuffer, vertexCount: number, batchCount: number) {
+  if (!core._gfx_light_result) return null;
+  const header = new Uint32Array(buffer, core._gfx_light_result(), LIGHT_RESULT_WORDS);
+  const [enabled, normalsAt, setCount, setsAt, batchSetsAt, lit, reversed, mixed, vertexPath] = Array.from(header) as number[];
+  if (!enabled) return null;
+  const words = new Float32Array(buffer, setsAt || 0, setCount! * LIGHT_SET_WORDS);
+  const counts = new Uint32Array(buffer, setsAt || 0, setCount! * LIGHT_SET_WORDS);
+  const sets: LightSet[] = Array.from({ length: setCount! }, (_, i) => {
+    const o = i * LIGHT_SET_WORDS;
+    return {
+      count: counts[o]!, ambient: [words[o + 1]!, words[o + 2]!, words[o + 3]!],
+      colors: words.slice(o + 4, o + 4 + 3 * MAX_LIGHTS), dirs: words.slice(o + 4 + 3 * MAX_LIGHTS, o + LIGHT_SET_WORDS),
+    };
+  });
+  return {
+    normals: new Float32Array(buffer, normalsAt || 0, vertexCount * 4), sets, batchSets: new Uint32Array(buffer, batchSetsAt || 0, batchCount),
+    counts: { lit: lit!, reversed: reversed!, mixed: mixed!, vertexPath: vertexPath! },
+  };
 }
 
 /** Opcodes already reported: an unimplemented command is logged once and the rest of the list still runs. */
@@ -218,7 +260,7 @@ export function copyResult(result: DisplayListResult): DisplayListResult {
   };
   const batches = result.batches.map((b): Batch =>
     b.kind === 'triangles'
-      ? { ...b, state: copyState(b.state), positions: b.positions.slice(), colors: b.colors.slice(), uvs: b.uvs.slice() }
+      ? { ...b, state: copyState(b.state), positions: b.positions.slice(), colors: b.colors.slice(), uvs: b.uvs.slice(), ...(b.normals && { normals: b.normals.slice() }) }
       : { ...b, state: copyState(b.state) });
   return { ...result, batches };
 }

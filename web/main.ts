@@ -23,6 +23,7 @@ import { pickSaveFile } from './save-picker.ts';
 import { EMPTY_INVENTORY, editContext, inventorySnapshot, sameInventory, toggleFreeze } from './inspect/inventory.ts';
 import { Bridge, readEntrances, sameSnapshot, snapshot, warpTo } from './inspect/index.ts';
 import { applyCheats, loadCheats, parseCode, saveCheats, type Cheat } from './inspect/cheats.ts';
+import { loadLightIds, saveLightIds, toggleId } from './inspect/light-labels.ts';
 import { EMPTY_ACTORS, goToActor, sameSnapshot as sameActors, snapshot as actorsSnapshot } from './inspect/actors.ts';
 import { EMPTY_MEMORY, MemoryModel, parseAddress } from './inspect/memory.ts';
 import { labels } from './ui/labels.ts';
@@ -93,6 +94,10 @@ const store = new Store<UiState>({
   bloomRadius: gfx.bloomRadius,
   sharpen: gfx.sharpen,
   sharpenStrength: gfx.sharpenStrength,
+  lightingMode: gfx.lightingMode,
+  pointLights: gfx.pointLights,
+  pointLightStrength: gfx.pointLightStrength,
+  lightIds: loadLightIds(),
   strength: readTuning(STRENGTH_KEY, 0, 100, 50),
   span: readTuning(SPAN_KEY, 25, 100, 50),
   bootHz,
@@ -147,6 +152,8 @@ try {
 }
 // The handle tools use to read renderer facts from the page (the fit of the occlusion's projection, the settings).
 if (location.hash === '#debug') (globalThis as { ootRenderer?: unknown }).ootRenderer = renderer;
+
+renderer.markedLightIds = new Set(store.get().lightIds);
 
 let game: Game | null = null;
 let saves: SaveSync | null = null;
@@ -267,12 +274,12 @@ function toggleMute(): void {
 }
 
 const stepStrength = (value: number, up: boolean): number => Math.min(100, Math.max(0, Math.round(value / 10) * 10 + (up ? 10 : -10)));
-// F cycles the texture filter, G switches multisampling, H the mip levels with anisotropic taps and V the cut-out edges. O, B and U switch the ambient
+// P switches the lighting between per vertex and per pixel, Y the point lights at torches and fires. F cycles the texture filter, G switches multisampling, H the mip levels with anisotropic taps and V the cut-out edges. O, B and U switch the ambient
 // occlusion, the bloom and the sharpening; [ and ] lower and raise the occlusion strength, , and . the bloom strength, - and = the sharpening strength,
 // in steps of 10.
 function changeGfx(change: Partial<GfxSettings>, text: string): void {
   gfx = { ...gfx, ...change };
-  store.set({ ao: gfx.ao, aoStrength: gfx.aoStrength, bloom: gfx.bloom, bloomStrength: gfx.bloomStrength, bloomThreshold: gfx.bloomThreshold, bloomKnee: gfx.bloomKnee, bloomRadius: gfx.bloomRadius, sharpen: gfx.sharpen, sharpenStrength: gfx.sharpenStrength });
+  store.set({ ao: gfx.ao, aoStrength: gfx.aoStrength, bloom: gfx.bloom, bloomStrength: gfx.bloomStrength, bloomThreshold: gfx.bloomThreshold, bloomKnee: gfx.bloomKnee, bloomRadius: gfx.bloomRadius, sharpen: gfx.sharpen, sharpenStrength: gfx.sharpenStrength, lightingMode: gfx.lightingMode, pointLights: gfx.pointLights, pointLightStrength: gfx.pointLightStrength });
   renderer.setSettings(gfx);
   if (!saveSettings(gfx)) showNotice('The browser did not keep the graphics settings');
   else showNotice(text);
@@ -287,6 +294,11 @@ addEventListener('keydown', (e) => {
   } else if (e.key === 'v' || e.key === 'V') {
     const cutout = gfx.cutout === 'smooth' ? 'hard' : 'smooth';
     changeGfx({ cutout }, `Cut-out edges: ${cutout}${cutout === 'smooth' && !gfx.msaa ? ' (needs multisampling)' : ''}`);
+  } else if (e.key === 'p' || e.key === 'P') {
+    const lightingMode = gfx.lightingMode === 'pixel' ? 'vertex' : 'pixel';
+    changeGfx({ lightingMode }, `Lighting: ${lightingMode}`);
+  } else if (e.key === 'y' || e.key === 'Y') {
+    changeGfx({ pointLights: !gfx.pointLights }, `Point lights: ${gfx.pointLights ? 'off' : `on, ${gfx.pointLightStrength}`}`);
   } else if (e.key === 'h' || e.key === 'H') {
     changeGfx({ mipmaps: !gfx.mipmaps }, `Mip levels: ${gfx.mipmaps ? 'off' : 'on'}`);
   } else if (e.key === 'o' || e.key === 'O') {
@@ -381,14 +393,16 @@ function updateOverlay(): void {
     ...(game ? formatBreakdown(game.profiler.breakdown()) : []),
     `unknown commands ${s.unknown}  problems ${s.problems.length}`,
     `programs ${s.programs} (${s.compileMs.toFixed(0)} ms to build)  textures ${s.textures}  colour images ${s.targets}`,
+    `mip programs: ${s.mipFallbackDraws} draws without them in the last task, ${s.programSwitches} variants switched on, ${s.mipFailures} failed  texture uploads (one mip build each): ${s.uploads} in the last task, ${s.totalUploads} in all, ${s.reuploads} of a picture seen before, most of one picture ${s.maxUploadsOfOne}`,
     game ? `video framebuffer 0x${game.framebuffer().toString(16)}` : '',
-    `culling ${renderer.cullMode}  resolution ${renderer.resolutionScale.toFixed(2)}x (${canvas.width}x${canvas.height})  filter ${gfx.filter}  msaa ${renderer.msaaSamples || 'off'}  ao ${gfx.ao ? gfx.aoStrength : 'off'}  bloom ${gfx.bloom ? gfx.bloomStrength : 'off'}  sharpen ${gfx.sharpen ? gfx.sharpenStrength : 'off'}  mips ${gfx.mipmaps ? `on, ${gfx.anisotropy} taps` : 'off'}  cutout ${renderer.msaaSamples ? gfx.cutout : 'hard'}`,
+    `culling ${renderer.cullMode}  resolution ${renderer.resolutionScale.toFixed(2)}x (${canvas.width}x${canvas.height})  filter ${gfx.filter}  lighting ${gfx.lightingMode}  point lights ${gfx.pointLights ? gfx.pointLightStrength : 'off'}  msaa ${renderer.msaaSamples || 'off'}  ao ${gfx.ao ? gfx.aoStrength : 'off'}  bloom ${gfx.bloom ? gfx.bloomStrength : 'off'}  sharpen ${gfx.sharpen ? gfx.sharpenStrength : 'off'}  mips ${gfx.mipmaps ? `on, ${gfx.anisotropy} taps` : 'off'}  cutout ${renderer.msaaSamples ? gfx.cutout : 'hard'}`,
     g ? `audio tasks ${g.audioTasks}  sound ${audio.state === 'running' ? `on, level ${audio.level().toFixed(3)}` : 'off: press a key'}` : '',
     ...audio.status(),
     g?.renderError ? `render error: ${g.renderError}` : '',
     g?.audioError ? `audio error: ${g.audioError}` : '',
     ...s.problems,
   ].filter(Boolean).join('\n');
+  renderer.trackTextureBuilds = !overlay.hidden;
   if (!overlay.hidden) overlay.textContent = text;
   if (showing) store.set({ debugText: text });
 }
@@ -618,6 +632,9 @@ const actions: UiActions = {
   setBloomThreshold: (bloomThreshold) => changeGfx({ bloom: true, bloomThreshold }, `Bloom threshold: ${bloomThreshold}`),
   setBloomKnee: (bloomKnee) => changeGfx({ bloom: true, bloomKnee }, `Bloom soft knee: ${bloomKnee}`),
   setBloomRadius: (bloomRadius) => changeGfx({ bloom: true, bloomRadius }, `Bloom radius: ${bloomRadius}`),
+  setLightingMode: (lightingMode) => changeGfx({ lightingMode }, `Lighting: ${lightingMode}`),
+  setPointLights: (pointLights) => changeGfx({ pointLights }, `Point lights: ${pointLights ? `on, ${gfx.pointLightStrength}` : 'off'}`),
+  setPointLightStrength: (pointLightStrength) => changeGfx({ pointLights: true, pointLightStrength }, `Point light strength: ${pointLightStrength}`),
   setSharpen: (sharpen) => changeGfx({ sharpen }, `Sharpening: ${sharpen ? `on, ${gfx.sharpenStrength}` : 'off'}`),
   setSharpenStrength: (sharpenStrength) => changeGfx({ sharpen: true, sharpenStrength }, `Sharpening strength: ${sharpenStrength}`),
   toggleHz() {
@@ -703,6 +720,13 @@ const actions: UiActions = {
   },
   toggleCheat: (id) => setCheats(store.get().cheats.map((c) => (c.id === id ? { ...c, enabled: !c.enabled } : c))),
   removeCheat: (id) => setCheats(store.get().cheats.filter((c) => c.id !== id)),
+  toggleLightActor(id) {
+    const lightIds = toggleId(store.get().lightIds, id);
+    saveLightIds(lightIds);
+    renderer.markedLightIds = new Set(lightIds);
+    store.set({ lightIds });
+    showNotice(lightIds.includes(id) ? `Actors with id 0x${id.toString(16)} light up (point lights must be on)` : `Actors with id 0x${id.toString(16)} no longer light up`);
+  },
   goToActor: (addr) => bridge.queue.push(() => goToActor(bridge, addr, (id) => labels.get('actor', id) ?? `actor ${id}`), 'Go to failed'),
   viewRecord(addr) {
     memoryModel.setStart(addr);

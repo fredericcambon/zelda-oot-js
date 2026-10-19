@@ -57,3 +57,37 @@ Entrance 238 of scene 85, 2,410 frames after loading it (as in `headless-forest.
 **Go to.** Writing Link's `0x24` and `0x38` triples to 50 units in +x of an actor puts him there for actors that stand on ground the game accepts: of every fourth actor of the forest (about 22 tried, `actors-rom.test.ts`), more than two ended within 80 units of the actor and at least one was more than 300 units from where Link began. For others (observed: actors at height 0 below Link, or high in the air) Link returned within 8 frames to where he had been or to another place on the ground: the game moves him back when the spot has no floor. The check was not located; nothing here bypasses it.
 
 Category numbers are not named: no code here maps them to a meaning, so the Actors tab calls them "lists" and says so. Link is the single record of category 2 with id 0, as in `docs/re/newgame.md`.
+
+Category numbers are not named: no code here maps them to a meaning. Link is the single record of category 2 with id 0, as in `docs/re/newgame.md`.
+
+## Light sources
+
+The port's point lights (`web/point-lights.ts`) read the game's own registry of lights, not a list of actor ids: the actors that burn a flame register a point light with the game, and the registry says where it is, how bright and whether it burns. Evidence comes from `tools/gfx/point-light-probe.ts` (one game; `LIGHTS=1`, `DUMP`, `FINDPTR`, `DUMPMEM`), which loads an entrance, runs 150 to 300 frames, lists the actors and projects each onto the picture with the projection the interpreter reports (`gfx_camera_result`: the view matrix is multiplied into the projection stack, `docs/re/gaps.md`, and the room's vertices are drawn with an identity model-view matrix, `docs/re/display-lists.md`; Link's own record lands on Link in every picture).
+
+**How it was found.** In the Fire Temple's first room (scene 4, entrance 357) three records of id `0x0008` (category 7) at (105, 260, -145), (0, 280, -140) and (-105, 260, -145) project onto the three flames at the top of the stairs. Dumping those records past the common fields showed, at `+0x144` of each, twelve bytes that follow the position and colour of a flame: `02 00 | x | y | z | r g b | 00 | radius`. A search of guest memory for words equal to that address (`FINDPTR`) found it in a table at `0x80119B68`: 32 nodes of three words `{info pointer, next, prev}` (12 bytes each; the nodes in use are linked in allocation order, the rest are zero, and the table ends at `0x80119CE8`, where other data starts). Every actor that lights the scene is there.
+
+**The info record** (read from the words at the pointer):
+
+| Offset | Meaning | Evidence |
+| --- | --- | --- |
+| `+0x00` byte | type: 2 for the point lights here | `02` at every torch, lamp and fairy light seen; `00` and `01` are other kinds (the first two nodes of every scene, `01 ...`, carry what look like the scene's directional lights, `docs/re/lighting.md` section 3) |
+| `+0x02`, `+0x04`, `+0x06` s16 | position x, y, z, world units | equals the owner's position with y raised by 40 (id `0x0008`: 260 -> 300) or 70 (id `0x005E`: 813 -> 883); the flame is drawn there |
+| `+0x08` three bytes | colour r, g, b | torches 0xEF/0xEF/0x00 down to 0x82/0x82/0x00, a different value in each frame the probe ran: the game's own flicker; white (FF FF FF) for the fairy's lights (id `0x0018`, Link's companion, node pairs at `0x80119B80` and `0x80119B8C`) |
+| `+0x0B` byte | 0 for torches, 1 for the first of the fairy's pair | observed only |
+| `+0x0C` s16 | radius | 200 (`0x00C8`) on every burning torch; `-1` on every torch that is not burning |
+
+**Lit or not is proven.** Torches that are not burning keep their light registered with colour 0 and radius -1: Goron City (scene 98, entrance 333) and Zora's Domain (scene 88, entrance 264) show six and five such records of id `0x005E` and no flame on screen. The Spirit Temple room (scene 6, entrance 757) has four `0x005E` records, two with colour `0x82`/`0x83` and radius 200 (the two with fire-coloured draws within 30 pixels of their projected position) and two with colour 0; putting Link next to an unlit one shows a bare bundle of sticks with no flame. The port lights a record only when its colour is not 0 and its radius is positive.
+
+**Source coverage** (entrance start views only, with the lights registered after 150 to 300 frames; the entrance table reaches no room deeper in a dungeon):
+
+| Owner id | Category | What it is | Scenes seen (entrance) |
+| --- | --- | --- | --- |
+| `0x0008` | 7 | wall flame | 4 (357): 3, Fire Temple first room; 16 (99): 2, Treasure Box Shop |
+| `0x005E` | 6 | torch on a stand, burning or not | burning: 6 (757): 2 of 4; 10 (1051): 4; 11 (8): 2; 63 (796): 2; 90 (976): 1; not burning: 88 (264): 5; 98 (333): 6 |
+| `0x0018` | 7 | the companion fairy | every scene (white, left out) |
+
+No registered flame in the first rooms of scenes 0 and 1 (the Deku Tree and Dodongo's Cavern as entered), in Kakariko Village by day (82, entrance 219) or night (entrances 220 and 221; the glowing windows are part of the room's mesh, not an actor), in the Bazaar (44) or in the other interiors tried (33 to 39, 41 to 43, 45 to 50, 53 to 55, 57; some register only fairy lights). Lamps and lanterns drawn as part of a room's mesh have no light in the registry: the port does not light them.
+
+**User labels.** The Actors tab has a Light button per row: it marks every actor with that id as a light source (kept in the browser, `zelda-oot-js:light-actors`). Those records light a little above their position (20 units), always (their lit state is unknown), and flicker with the port's own sines.
+
+**Probe fire detector.** A batch drawn with an orange primitive colour over a red environment colour is a flame candidate; the nearest actor within 40 pixels is credited. It found id `0x0008` (12 batches) and `0x0013` (64, the flying fire creature) in the Fire Temple and `0x005E` in scenes 6 and 10; in the Bazaar it picks the shelf items, so it only points at candidates.

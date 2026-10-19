@@ -101,6 +101,15 @@ export interface DrawState {
   depthImage: number;
 }
 
+/** The lights a run of lit vertices is shaded with per pixel: colours are bytes, directions are in the vertices' model space (runtime/gfx/gfx.h). */
+export interface LightSet {
+  count: number;
+  ambient: [number, number, number];
+  /** Three floats per light, seven lights. */
+  colors: Float32Array;
+  dirs: Float32Array;
+}
+
 export interface TriangleBatch {
   kind: 'triangles';
   state: DrawState;
@@ -113,6 +122,12 @@ export interface TriangleBatch {
   colors: Float32Array;
   /** Texture coordinates in texels (the S10.5 value times the texture command's scale, divided by 32), two floats per vertex. */
   uvs: Float32Array;
+  /**
+   * With pixel lighting on: four floats per vertex, the normal bytes and 1 where the triangle is lit per pixel with `lights` (its colour
+   * is then ignored), else 0 (runtime/gfx/gfx.h).
+   */
+  normals?: Float32Array;
+  lights?: LightSet;
 }
 
 export interface RectBatch {
@@ -148,6 +163,17 @@ export interface DisplayListResult {
   unknown: UnknownCommand[];
   /** Inconsistencies in the list that the interpreter worked around, such as a bad segment or a matrix underflow. */
   problems: string[];
+  /** With pixel lighting on: triangles lit, of those the ones whose normals disagree with their faces and the ones with vertices lit differently (mixed), and the ones left on the vertex path. */
+  lighting?: { lit: number; reversed: number; mixed: number; vertexPath: number };
+  /** Perspective projections used by the run's vertex loads, in the order met; filled only while the camera output is on. */
+  cameras?: CameraProjection[];
+}
+
+/** A perspective projection of a run, as the game's matrices leave it with the view matrix multiplied in (runtime/gfx/gfx.h), and the vertices drawn under it. */
+export interface CameraProjection {
+  vertices: number;
+  /** Sixteen values, row-major for row vectors: a world position (x, y, z, 1) times it is the clip-space position of the vertex data. */
+  matrix: Float64Array;
 }
 
 export interface RunOptions {

@@ -34,5 +34,6 @@ Automated runs must be silent: browsers launched by tools or tests use `--mute-a
 Workers run on the user's own computer, alongside each other and the user's apps. Never take over its resources:
 - Run at most one heavy process at a time (a game build, wasm-opt, a scene sweep, a headless browser running the game). Never fan out parallel sweeps or builds.
 - Close each headless browser or game instance as soon as its result is captured, and stop every process you started before reporting done.
+- Stop only processes you started, by the pid you recorded when you started them. The done check may list processes you did not start (the Overseer preview server, vite on the task port): never stop those; report them instead.
 - Prefer the smallest scope that answers the question (a few scenes, not all of them) and reuse existing build output instead of rebuilding.
 - If a run will take more than a few minutes of full CPU, say so in a checkpoint first.

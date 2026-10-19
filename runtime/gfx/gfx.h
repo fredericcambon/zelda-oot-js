@@ -121,6 +121,61 @@ void gfx_trace_vertices(uint32_t on);
 const double *gfx_vertex_trace(void);
 uint32_t gfx_vertex_trace_length(void);
 
+// ---- Per-pixel lighting (dl.c) --------------------------------------------------------------------------------
+
+// What a renderer needs to shade lit vertices per pixel; `gfx_set_pixel_lighting` turns the output below on (it is empty while off).
+// The formula is the one the interpreter lights vertices with (docs/re/display-lists.md section 9), applied to the normal bytes
+// interpolated across the triangle in place of the colour.
+enum { GFX_MAX_LIGHTS = 7, GFX_LIGHTS_OFF = 0, GFX_LIGHTS_PIXEL = 1, GFX_LIGHTS_PIXEL_ALL = 2 };
+
+// The lights in force for a run of lit vertices. Directions are the light vectors in the vertices' model space as
+// `model_direction` leaves them (whole numbers in -128..127, not of unit length), colours are bytes (0..255).
+typedef struct {
+  uint32_t count;
+  float ambient[3];
+  float color[GFX_MAX_LIGHTS][3];
+  float dir[GFX_MAX_LIGHTS][3];
+} GfxLightSet;
+
+typedef struct {
+  // 1 when the run was made with pixel lighting on (the arrays below are meaningful), else 0.
+  uint32_t enabled;
+  // Per vertex of the triangle batches (same indices as the positions): the normal bytes (x, y, z) and 1 where the vertex belongs to a
+  // triangle to light per pixel, else 0 (unlit, reversed normals, or vertices of different light sets).
+  const float *normals;
+  uint32_t light_set_count;
+  const GfxLightSet *light_sets;
+  // Per batch (same indices as the batches): 1 + the index of its light set, 0 for none.
+  const uint32_t *batch_light_sets;
+  // Triangles drawn from lit vertices; the ones among them whose normals disagree with their face (cosine below -0.5 between the
+  // sum of the vertex normals and the face normal from the model-space positions); the ones whose vertices were lit with different
+  // light sets or not all lit (skinned joints, where the vertices come from different matrices); and the ones left on the vertex path.
+  uint32_t lit_triangles, reversed_triangles, mixed_triangles, vertex_path_triangles;
+} GfxLightResult;
+
+// Sets what the runs that follow produce: GFX_LIGHTS_OFF, GFX_LIGHTS_PIXEL (triangles with reversed normals stay on the vertex
+// path) or GFX_LIGHTS_PIXEL_ALL (they are lit per pixel too).
+void gfx_set_pixel_lighting(uint32_t mode);
+const GfxLightResult *gfx_light_result(void);
+
+// ---- Camera output (dl.c) -------------------------------------------------------------------------------------
+
+// While `gfx_set_camera_output` is on, the per-vertex normal words (the array of GfxLightResult) are produced even without pixel
+// lighting, and their fourth value is (1 for a triangle lit per pixel) + 2 * (1 + the slot below of the perspective projection the
+// triangle's vertices were transformed under; 0 for an orthographic one). The view matrix is multiplied into the projection, so a
+// slot's matrix takes a world position (row vector, w = 1) to the clip space of the vertex data.
+enum { GFX_MAX_CAMERAS = 3 };
+
+typedef struct {
+  uint32_t count;
+  uint32_t vertices[GFX_MAX_CAMERAS];
+  // Sixteen values per slot, row-major for row vectors.
+  double matrix[GFX_MAX_CAMERAS][16];
+} GfxCameraResult;
+
+void gfx_set_camera_output(uint32_t on);
+const GfxCameraResult *gfx_camera_result(void);
+
 // ---- Motion: matrix names, records and overrides (dl.c) -----------------------------------------------------------
 
 enum {
