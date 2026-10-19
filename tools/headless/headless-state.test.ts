@@ -6,7 +6,8 @@ import { compressState, STATE_VERSION } from '../runtime/snapshot.ts';
 import { RDRAM_SIZE } from '../runtime/instance.ts';
 import { encodeThreads, parseThreads } from '../runtime/threads.ts';
 import { playState } from './state.ts';
-import { rom, HOUSE_SCENE, buildGame, buildVariant, sha, SAVE_FRAME, REPLAY_FRAMES, STATE_SIZE_LIMIT, reachSaveFrame, sections, withSection, startReplayable } from './headless-support.ts';
+import { introState, loadIntro } from './intro-state.ts';
+import { rom, HOUSE_SCENE, buildGame, buildVariant, sha, SAVE_FRAME, REPLAY_FRAMES, STATE_SIZE_LIMIT, sections, withSection, startReplayable } from './headless-support.ts';
 
 describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
   it('saves a portable state and loads it into a fresh game, which replays the same frames, pictures, sound, position and memory', async () => {
@@ -14,10 +15,10 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
     const start = () => startReplayable(moduleUrl, cartridge);
 
     const first = await start();
-    await reachSaveFrame(first.game);
+    const intro = await introState();
+    const { state, sram: savedGames } = intro;
+    await loadIntro(first.game, intro);
     expect(playState((a) => first.game.rd32(a))?.scene).toBe(HOUSE_SCENE);
-    const state = first.game.saveState();
-    const savedGames = first.game.readSave();
     const expected = await first.play(SAVE_FRAME, SAVE_FRAME + REPLAY_FRAMES);
     // The walk moves Link and the pictures change, so the comparison below is not between constant frames.
     expect(new Set(expected.map((l) => l.split(' ')[1])).size).toBeGreaterThan(20);
@@ -58,8 +59,9 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
     const { moduleUrl, cartridge } = await buildGame();
     const start = () => startReplayable(moduleUrl, cartridge);
     const first = await start();
-    await reachSaveFrame(first.game);
-    const state = first.game.saveState();
+    const intro = await introState();
+    const { state } = intro;
+    await loadIntro(first.game, intro);
     const expected = await first.play(SAVE_FRAME, SAVE_FRAME + REPLAY_FRAMES);
 
     const third = await start();
@@ -93,9 +95,9 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
     expect(wasm(b.moduleUrl)).not.toBe(wasm(a.moduleUrl));
 
     const first = await startReplayable(a.moduleUrl, a.cartridge);
-    await reachSaveFrame(first.game);
-    const state = first.game.saveState();
-    const savedGames = first.game.readSave();
+    const intro = await introState();
+    const { state, sram: savedGames } = intro;
+    await loadIntro(first.game, intro);
     const expected = await first.play(SAVE_FRAME, SAVE_FRAME + REPLAY_FRAMES);
 
     const second = await startReplayable(b.moduleUrl, b.cartridge);

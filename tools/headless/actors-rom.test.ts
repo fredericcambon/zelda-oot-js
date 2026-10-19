@@ -7,7 +7,8 @@ import { guestRam } from './load-save.ts';
 import { bootGame } from './boot.ts';
 import { padAt, parseInput } from './input.ts';
 import { playState, requestEntrance } from './state.ts';
-import { rom, SCRIPT, CONTROL_FRAME, buildGame } from './headless-support.ts';
+import { rom, CONTROL_FRAME, buildGame } from './headless-support.ts';
+import { introState, loadIntro, playScript, SAVE_FRAME } from './intro-state.ts';
 
 /** Kokiri Forest, entered as in headless-forest.test.ts, with the actors that are alive 2,410 frames after the entrance is loaded. */
 describe.skipIf(!rom || !existsSync(rom))('the live actors of Kokiri Forest', () => {
@@ -17,11 +18,8 @@ describe.skipIf(!rom || !existsSync(rom))('the live actors of Kokiri Forest', ()
   async function forest() {
     const { moduleUrl, cartridge } = await buildGame();
     const game = await bootGame(moduleUrl, cartridge, {});
-    for (let frame = 1; frame <= CONTROL_FRAME; frame++) {
-      const pad = padAt(SCRIPT, frame);
-      game.setPad(pad.buttons, pad.x, pad.y);
-      expect((await game.frame()).fatal, `frame ${frame}`).toBeUndefined();
-    }
+    await loadIntro(game, await introState());
+    await playScript(game, SAVE_FRAME, CONTROL_FRAME);
     game.setPad(0, 0, 0);
     const ram = game.ram();
     const view = new DataView(ram.buffer, ram.byteOffset, ram.byteLength);

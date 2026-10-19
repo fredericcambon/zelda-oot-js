@@ -8,7 +8,8 @@ import { bootGame, type GfxTask } from './boot.ts';
 import { padAt, parseInput } from './input.ts';
 import { playState, requestEntrance } from './state.ts';
 import { compareWithMicrocode } from '../gfx/ucode-compare.ts';
-import { rom, SCRIPT, DRAW_LEAD, CONTROL_FRAME, buildGame } from './headless-support.ts';
+import { rom, DRAW_LEAD, CONTROL_FRAME, buildGame } from './headless-support.ts';
+import { introState, loadIntro, playScript, SAVE_FRAME } from './intro-state.ts';
 
 const gfx = await sharedGfxModule();
 
@@ -25,18 +26,15 @@ describe.skipIf(!rom || !existsSync(rom))('Kokiri Forest and its interiors', () 
   /** A frame of the forest with Link on the platform in front of his house, the ladder on screen and the path decal under it. */
   const PLATFORM_FRAME = 2448;
 
-  /** Plays the new game to Link's house, loads `entrance` and runs `frames` frames, calling `onTask` for the tasks after `from`. */
+  /** Loads the new game at Link's house, loads `entrance` and runs `frames` frames, calling `onTask` for the tasks after `from`. */
   async function visit(entrance: number, frames: number, from: number, onTask: (task: GfxTask, frame: number) => void) {
     const { moduleUrl, cartridge } = await buildGame();
     let frame = 0;
     let record = false;
     const game = await bootGame(moduleUrl, cartridge, { onGfxTask: (t) => { if (record) onTask(t, frame); } });
-    while (frame < CONTROL_FRAME) {
-      frame++;
-      const pad = padAt(SCRIPT, frame);
-      game.setPad(pad.buttons, pad.x, pad.y);
-      expect((await game.frame()).fatal, `frame ${frame}`).toBeUndefined();
-    }
+    await loadIntro(game, await introState());
+    await playScript(game, SAVE_FRAME, CONTROL_FRAME);
+    frame = CONTROL_FRAME;
     game.setPad(0, 0, 0);
     const ram = game.ram();
     const write32 = (addr: number, value: number) => new DataView(ram.buffer, ram.byteOffset, ram.byteLength).setUint32(addr & 0x7fffff, value >>> 0);
