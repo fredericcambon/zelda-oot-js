@@ -86,6 +86,14 @@ describe('shader generation', () => {
     expect(specOf(state(), { filter: 'smooth' }).bilerp).toBe(false);
   });
 
+  it('swaps the 3-point filter for bilinear on a draw whose textures are soft gradients', () => {
+    const bilinear = state({ otherModeH: 2 << 12 });
+    const soft = specOf(bilinear, { smoothTexels: true });
+    expect([soft.bilerp, soft.smooth]).toEqual([true, true]);
+    expect(specKey(soft)).not.toBe(specKey(specOf(bilinear)));
+    expect(specOf(bilinear, { filter: 'sharp', smoothTexels: true }).bilerp).toBe(false);
+  });
+
   it('samples mip levels only when asked, never in copy mode', () => {
     const mipped = specOf(state({ otherModeH: 2 << 12 }), { mip: true });
     expect(fragmentSource(mipped)).toContain('#define MIP 1');
@@ -133,6 +141,24 @@ describe('shader generation', () => {
     expect(fragmentSource(edge)).toContain(`if (cA < ${MIN_COVERAGE_ALPHA.toFixed(6)}) discard;`);
     expect(fragmentSource(edge)).toContain('float pixelA = cA;');
     expect(specKey(edge)).not.toBe(specKey(plain));
+  });
+
+  it('turns the alpha test into coverage for cut-outs that do not blend with the framebuffer', () => {
+    const test = 1;
+    const blendL = ((0 << 30) | (0 << 26) | (1 << 22) | (0 << 18) | (1 << 14) | test) >>> 0;
+    const hard = specOf(state({ otherModeL: test }));
+    const smooth = specOf(state({ otherModeL: test }), { cutout: true });
+    expect(hard.cutout).toBe(false);
+    expect(smooth.cutout).toBe(true);
+    expect(fragmentSource(hard)).toContain('if (cA < uBlend.a) discard;');
+    expect(fragmentSource(smooth)).not.toContain('if (cA < uBlend.a) discard;');
+    expect(fragmentSource(smooth)).toContain('fwidth(edgeA)');
+    expect(fragmentSource(smooth)).toContain('outColor = vec4(pixel, cover);');
+    expect(fragmentSource(specOf(state({ otherModeL: test }), { cutout: true, mip: true }))).toContain('gLod');
+    expect(specKey(smooth)).not.toBe(specKey(hard));
+    expect(specOf(state({ otherModeL: blendL }), { cutout: true }).cutout).toBe(false);
+    expect(specOf(state(), { cutout: true }).cutout).toBe(false);
+    expect(specOf(state({ otherModeH: CycleType.COPY << 20, otherModeL: test }), { cutout: true }).cutout).toBe(false);
   });
 
   it('copies the texel in copy mode, and never filters it', () => {

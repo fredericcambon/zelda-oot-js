@@ -314,14 +314,19 @@ export function graphicsOpcodes(specs: Map<string, ImageSpec>, interpreter: CDis
 
 /** Whether the audio mixer accepts a command with this opcode. */
 export function mixerAccepts(op: number): boolean {
+  const ram = new Uint8Array(0x1000);
+  new DataView(ram.buffer).setUint32(0, op * 0x1000000);
+  const mixer = new Synth();
+  const warn = console.warn;
+  console.warn = () => {};
   try {
-    const ram = new Uint8Array(0x1000);
-    new DataView(ram.buffer).setUint32(0, op * 0x1000000);
-    new Synth().run(ram, { list: 0, size: 8, dataSegment: 0 });
-  } catch (e) {
-    if (/unknown audio command/.test(String(e))) return false;
+    mixer.run(ram, { list: 0, size: 8, dataSegment: 0 });
+  } catch {
+    // A handler that rejects the empty arguments still exists.
+  } finally {
+    console.warn = warn;
   }
-  return true;
+  return !mixer.unknownOpcodes.has(op);
 }
 
 export function audioOpcodes(specs: Map<string, ImageSpec>): { table: OpcodeRow[]; ucode: number; data: number; signature: string } {
@@ -332,9 +337,9 @@ export function audioOpcodes(specs: Map<string, ImageSpec>): { table: OpcodeRow[
   const listing = disassembleRspRange(code.bytes.subarray(text - code.base, text - code.base + 0x1000), 0);
   const table: OpcodeRow[] = [];
   const names: Record<number, string> = {
-    1: 'ADPCM decode', 2: 'clear', 5: 'resample', 7: 'FIR filter', 8: 'set buffers', 9: 'repeat block', 0xa: 'DMEM copy', 0xb: 'load codebook', 0xc: 'mix',
-    0xd: 'interleave', 0xf: 'set loop', 0x10: 'copy runs', 0x11: 'take every other sample', 0x12: 'envelope rates', 0x13: 'envelope mix', 0x14: 'load buffer',
-    0x15: 'save buffer', 0x16: 'envelope volumes',
+    0: 'record', 1: 'ADPCM decode', 2: 'clear', 3: 'multiply', 4: 'add buffers', 5: 'resample', 6: 'read through positions', 7: 'FIR filter', 8: 'set buffers', 9: 'repeat block', 0xa: 'DMEM copy', 0xb: 'load codebook', 0xc: 'mix',
+    0xd: 'interleave', 0xe: 'gain', 0xf: 'set loop', 0x10: 'copy runs', 0x11: 'take every other sample', 0x12: 'envelope rates', 0x13: 'envelope mix', 0x14: 'load buffer',
+    0x15: 'save buffer', 0x16: 'envelope volumes', 0x17: 'widen bytes',
   };
   for (let op = 0; op < 128; op++) {
     const entry = dmem.getUint16(AUDIO_TABLE + 2 * op);

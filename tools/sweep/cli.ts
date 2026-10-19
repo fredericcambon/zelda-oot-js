@@ -10,7 +10,7 @@ import { loadContext, romPathFromEnv } from '../analyze/context.ts';
 import type { Inventory } from '../analyze/types.ts';
 import { ENTRANCE_COUNT } from '../headless/state.ts';
 import { renderScenes, renderStatic, replaceBlock } from './render.ts';
-import { DEFAULT_START_FRAME, mergeReports, sweepScenes, type SceneSweepReport } from './scenes.ts';
+import { DEFAULT_START_FRAME, mergeReports, type Age, sweepScenes, type SceneSweepReport } from './scenes.ts';
 import { sharedInterpreter } from '../gfx/c-dl-node.ts';
 import { staticSweep, type StaticSweep } from './static.ts';
 
@@ -26,6 +26,7 @@ const { values, positionals } = parseArgs({
     to: { type: 'string', default: String(ENTRANCE_COUNT - 1) },
     every: { type: 'string', default: '1' },
     entrances: { type: 'string' },
+    ages: { type: 'string', default: 'child,adult' },
     shard: { type: 'string' },
     'start-frame': { type: 'string', default: String(DEFAULT_START_FRAME) },
     input: { type: 'string', default: 'tools/headless/newgame.input' },
@@ -63,7 +64,7 @@ async function main(): Promise<number> {
     ).filter((e) => e % shards === shard);
     const save = (report: SceneSweepReport) => writeFileSync(scenesPath, JSON.stringify(report));
     const report = await sweepScenes({
-      dist: values.dist!, entrances, frames: Number(values.frames), startFrame: Number(values['start-frame']), input: values.input!,
+      dist: values.dist!, entrances, ages: values.ages!.split(',') as Age[], frames: Number(values.frames), startFrame: Number(values['start-frame']), input: values.input!,
       dumpDir: values.dump, thumbs: values.thumbs ? { dir: values.thumbs, frame: Number(values['thumb-frame']) } : undefined, dumpsPerScene: Number(values['dumps-per-scene']), log: (m) => console.log(m), onProgress: save,
     });
     save(report);

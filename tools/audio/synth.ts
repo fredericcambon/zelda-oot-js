@@ -37,6 +37,10 @@ export class Synth {
   private outAddr = 0;
   private count = 0;
   private loopAddr = 0;
+  /** Opcodes the list contained that no handler exists for; each is logged once and its command skipped. */
+  readonly unknownOpcodes = new Set<number>();
+  private listLeft = 0;
+  private chunkLeft = 0;
   // Envelope mixer parameters, set by two commands and consumed by the next envelope mix.
   private rateL = 0;
   private rateR = 0;
@@ -68,7 +72,11 @@ export class Synth {
     this.ram = ram;
     this.ramView = new DataView(ram.buffer, ram.byteOffset, ram.byteLength);
     this.loadFilterTable(task.dataSegment & 0x7ffffc);
-    for (let at = task.list & 0x7ffff8, end = at + task.size; at + 8 <= end; at += 8) {
+    for (let at = task.list & 0x7ffff8, end = at + task.size, chunkEnd = at; at + 8 <= end; at += 8) {
+      // The microcode fetches the list in chunks of up to 64 bytes and counts down what is left of the list and of the chunk.
+      if (at === chunkEnd) chunkEnd = Math.min(at + 64, end);
+      this.listLeft = end - at - 8;
+      this.chunkLeft = chunkEnd - at - 8;
       this.command(this.ramView.getUint32(at), this.ramView.getUint32(at + 4));
     }
   }
@@ -80,10 +88,15 @@ export class Synth {
   }
 
   private command(w0: number, w1: number): void {
-    switch (w0 >>> 24) {
+    // The microcode indexes its handler table with seven bits of the opcode (ucode+0x60-0x64).
+    switch ((w0 >>> 24) & 0x7f) {
+      case 0x00: this.record(w0, w1); break;
       case 0x01: this.adpcm(w0, w1); break;
       case 0x02: this.clear(w0 & 0xffff, w1 & 0xffff); break;
+      case 0x03: this.multiply(w0, w1); break;
+      case 0x04: this.addBuffers(w0, w1); break;
       case 0x05: this.resample(w0, w1); break;
+      case 0x06: this.gather(w0, w1); break;
       case 0x07: this.filter(w0, w1); break;
       case 0x08: this.inAddr = w0 & 0xffff; this.outAddr = w1 >>> 16; this.count = w1 & 0xffff; break;
       case 0x09: this.repeat128(w0, w1); break;
@@ -91,6 +104,7 @@ export class Synth {
       case 0x0b: this.dmaIn(BOOK, w1 & 0xffffff, w0 & 0xffff); break;
       case 0x0c: this.mix(w0, w1); break;
       case 0x0d: this.interleave(w0, w1); break;
+      case 0x0e: this.gainBuffer(w0, w1); break;
       case 0x0f: this.loopAddr = w1 & 0xffffff; break;
       case 0x10: this.copy(w0, w1); break;
       case 0x11: this.decimate(w0 & 0xffff, w1 >>> 16, w1 & 0xffff); break;
@@ -106,8 +120,15 @@ export class Synth {
       case 0x14: this.dmaIn(w0 & 0xffff, w1 & 0xffffff, (w0 >>> 12) & 0xff0); break;
       case 0x15: this.dmaOut(w0 & 0xffff, w1 & 0xffffff, (w0 >>> 12) & 0xff0); break;
       case 0x16: this.volL = w1 >>> 16; this.volR = w1 & 0xffff; break;
-      default: throw new Error(`unknown audio command 0x${(w0 >>> 24).toString(16)}`);
+      case 0x17: this.widen(w0, w1); break;
+      default: this.unknown((w0 >>> 24) & 0x7f);
     }
+  }
+
+  private unknown(op: number): void {
+    if (this.unknownOpcodes.has(op)) return;
+    this.unknownOpcodes.add(op);
+    console.warn(`audio: unknown command 0x${op.toString(16)} skipped`);
   }
 
   // The microcode clears and copies eight bytes at a time and does not need the addresses aligned.
@@ -160,6 +181,101 @@ export class Synth {
       const acc = this.ld(dst + off) * 0x7fff * 2 + 0x8000 + this.ld(src + off) * gain * 2;
       this.st(dst + off, clamp16(Math.floor(acc / 65536)));
     }
+  }
+
+  /**
+   * Multiplies `w0` low 16 bytes of samples at `w1` high 16, in place and in 32-byte steps (at least one), by the gain in
+   * `w0` bits 16-23: four integer and four fraction bits. Results saturate to 16 bits.
+   */
+  private gainBuffer(w0: number, w1: number): void {
+    const whole = (w0 >>> 20) & 0xf, fraction = (w0 >>> 16) & 0xf;
+    const addr = w1 >>> 16;
+    this.requireAligned(addr);
+    for (let off = 0; off < Math.max(32, Math.ceil((w0 & 0xffff) / 32) * 32); off += 2) {
+      const x = this.ld(addr + off);
+      this.st(addr + off, clamp16(x * whole + Math.floor((x * (fraction << 12)) / 65536)));
+    }
+  }
+
+  /**
+   * Reads `w0` bits 16-23 times 16 bytes from RAM into the scratch, sets the halfword at +0 to `w0` low 16, adds one to the
+   * word at +4, stores the bytes of the list left after this command at +8 and those left in its 64-byte chunk at +12, and
+   * writes the bytes back to the same RAM address.
+   */
+  private record(w0: number, w1: number): void {
+    const bytes = (w0 >>> 12) & 0xff0, ram = w1 & 0xffffff;
+    this.dmaIn(STATE_SCRATCH, ram, bytes);
+    this.dv.setUint16(STATE_SCRATCH, w0 & 0xffff);
+    this.dv.setUint32(STATE_SCRATCH + 4, (this.dv.getUint32(STATE_SCRATCH + 4) + 1) >>> 0);
+    this.dv.setUint32(STATE_SCRATCH + 8, this.listLeft);
+    this.dv.setUint32(STATE_SCRATCH + 12, this.chunkLeft);
+    this.dmaOut(STATE_SCRATCH, ram, bytes);
+  }
+
+  /**
+   * Over `w0` low 16 bytes (32-byte steps, at least one) at `w1` low 16, from 16-byte blocks `a` (the first half of each
+   * 32 bytes at the source `w1` high 16) and `b` (the second half), with `a` signed and `b` unsigned: the first 16
+   * output bytes are the low half of 2 * a * b saturated to 32 bits (0 or 0xffff when it does not fit), the next 16
+   * the low half of a * b.
+   */
+  private multiply(w0: number, w1: number): void {
+    const dst = w1 & 0xffff, src = w1 >>> 16;
+    this.requireAligned(dst, src);
+    for (let off = 0; off < Math.max(32, Math.ceil((w0 & 0xffff) / 32) * 32); off += 32) {
+      for (let i = 0; i < 16; i += 2) {
+        const p = this.ld(src + off + i) * (this.ld(src + off + 16 + i) & 0xffff);
+        const doubled = 2 * p;
+        this.st(dst + off + i, doubled >= -0x80000000 && doubled < 0x80000000 ? s16(doubled & 0xffff) : doubled < 0 ? 0 : -1);
+        this.st(dst + off + 16 + i, s16(p & 0xffff));
+      }
+    }
+  }
+
+  /** dst = clamp16(dst + src) over `w0` bits 16-23 times 16 bytes, in 64-byte steps (at least one). */
+  private addBuffers(w0: number, w1: number): void {
+    const dst = w1 & 0xffff, src = w1 >>> 16;
+    this.requireAligned(dst, src);
+    for (let off = 0; off < Math.max(64, Math.ceil(((w0 >>> 12) & 0xff0) / 64) * 64); off += 2) {
+      this.st(dst + off, clamp16(this.ld(dst + off) + this.ld(src + off)));
+    }
+  }
+
+  /**
+   * Reads samples through a position: the state block's input address is the integer part (bytes) and `w0` low 16 times
+   * 4 the step, both over 16 fraction bits, starting at `w1` low 16 as the fraction. Writes one sample per step to the
+   * state block's output address, four per 8 bytes of its count (at least 8).
+   */
+  private gather(w0: number, w1: number): void {
+    const step = (w0 & 0xffff) * 4;
+    let pos = ((this.inAddr << 16) | (w1 & 0xffff)) >>> 0;
+    let out = this.outAddr;
+    for (let left = this.count; ; ) {
+      for (let k = 0; k < 4; k++, out += 2) {
+        this.st(out, this.ld((pos >>> 16) & 0xfffe));
+        pos = (pos + step) >>> 0;
+      }
+      left -= 8;
+      if (left <= 0) break;
+    }
+  }
+
+  /**
+   * Expands bytes to samples (each byte becomes the high byte of a sample): the state block's input and output addresses
+   * and count, and the 32 bytes before the output as in the ADPCM decoder. Flag 1 (`w0` bits 16-23) starts from silence;
+   * otherwise the 32 bytes come from RAM `w1` low 24, or from the loop address with flag 2. The last 32 output bytes are
+   * written back to `w1` low 24. The count is in output bytes, 32 per 16 input bytes, at least 32 when it is not 0.
+   */
+  private widen(w0: number, w1: number): void {
+    const flags = (w0 >>> 16) & 0xff;
+    const stateAddr = w1 & 0xffffff;
+    this.dmem.fill(0, this.outAddr & 0xff8, (this.outAddr & 0xff8) + 32);
+    if (!(flags & 1)) this.dmaIn(this.outAddr, flags & 2 ? this.loopAddr : stateAddr, 32);
+    let out = this.outAddr + 32;
+    for (let left = this.count, src = this.inAddr; left > 0; left -= 32, src += 16, out += 32) {
+      for (let i = 0; i < 16; i++) this.dmem[(out + i * 2) & 0xfff] = this.dmem[((src & ~7) + (i & 8) + (i & 7) + (src & 7)) & 0xfff]!;
+      for (let i = 0; i < 16; i++) this.dmem[(out + i * 2 + 1) & 0xfff] = 0;
+    }
+    this.dmaOut(out - 32, stateAddr, 32);
   }
 
   /** Writes the two channels `left` and `right` (count bytes each) alternately into `out`. */

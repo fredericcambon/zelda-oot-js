@@ -38,7 +38,7 @@ export function runDisplayList(core: GfxGameCore, start: number): DisplayListRes
 const RESULT_WORDS = 17;
 const BATCH_WORDS = 13;
 const STATE_WORDS = 177;
-const TEXTURE_WORDS = 4;
+const TEXTURE_WORDS = 7;
 const UNKNOWN_WORDS = 3;
 const PROBLEM_BYTES = 160;
 const TILE_WORDS = 16;
@@ -67,8 +67,12 @@ export function readResult(core: GfxCore): DisplayListResult {
   const textureWords = new Uint32Array(buffer, texturesAt || 0, textureCount * TEXTURE_WORDS);
   const images: DecodedTexture[] = Array.from({ length: textureCount }, (_, i) => {
     const width = textureWords[i * TEXTURE_WORDS + 1]!, height = textureWords[i * TEXTURE_WORDS + 2]!;
-    const rgba = textureWords[i * TEXTURE_WORDS + 3]!;
-    return { id: textureWords[i * TEXTURE_WORDS]!, width, height, rgba: heap.subarray(rgba, rgba + width * height * 4), tile: 0 };
+    const rgba = textureWords[i * TEXTURE_WORDS + 3]!, loaded = textureWords[i * TEXTURE_WORDS + 4]!;
+    return {
+      id: textureWords[i * TEXTURE_WORDS]!, width, height, rgba: heap.subarray(rgba, rgba + width * height * 4), tile: 0,
+      fmt: textureWords[i * TEXTURE_WORDS + 5]! | 0, siz: textureWords[i * TEXTURE_WORDS + 6]! | 0,
+      loaded: loaded === 0 ? null : heap.subarray(loaded, loaded + width * height),
+    };
   });
 
   const stateWords = new Int32Array(buffer, statesAt || 0, stateCount * STATE_WORDS);
@@ -109,11 +113,20 @@ export function readResult(core: GfxCore): DisplayListResult {
   const unknown = Array.from({ length: unknownCount }, (_, i) => ({
     addr: unknownWords[i * 3]!, w0: unknownWords[i * 3 + 1]!, w1: unknownWords[i * 3 + 2]!,
   }));
+  for (const u of unknown) {
+    const op = u.w0 >>> 24;
+    if (warnedUnknown.has(op)) continue;
+    warnedUnknown.add(op);
+    console.warn(`gfx: unimplemented display-list command 0x${op.toString(16)} at 0x${u.addr.toString(16)} (${u.w0.toString(16).padStart(8, '0')} ${u.w1.toString(16).padStart(8, '0')}) skipped`);
+  }
   const pairs = new Uint32Array(buffer, opcodesAt || 0, opcodeCount * 2);
   const opcodes = new Map<number, number>();
   for (let i = 0; i < opcodeCount; i++) opcodes.set(pairs[i * 2]!, pairs[i * 2 + 1]!);
   return { batches, commands, opcodes, unknown, problems };
 }
+
+/** Opcodes already reported: an unimplemented command is logged once and the rest of the list still runs. */
+const warnedUnknown = new Set<number>();
 
 function readTile(w: Int32Array, o: number): TileState {
   return {
@@ -192,7 +205,7 @@ export function copyResult(result: DisplayListResult): DisplayListResult {
     if (!image) return null;
     let rgba = pixels.get(image.rgba);
     if (!rgba) pixels.set(image.rgba, (rgba = image.rgba.slice()));
-    return { ...image, rgba };
+    return { ...image, rgba, loaded: image.loaded ? image.loaded.slice() : image.loaded };
   };
   const states = new Map<DrawState, DrawState>();
   const copyState = (state: DrawState): DrawState => {

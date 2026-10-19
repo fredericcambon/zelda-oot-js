@@ -5,11 +5,11 @@ describe('graphics settings', () => {
   it('falls back to the defaults for missing, broken or invalid stored values', () => {
     expect(parseSettings(null, false)).toEqual(defaultSettings(false));
     expect(parseSettings('{not json', false)).toEqual(defaultSettings(false));
-    expect(parseSettings('{"filter":"blurry","msaa":3,"scaleCap":-1,"anisotropy":99}', false)).toEqual(defaultSettings(false));
+    expect(parseSettings('{"filter":"blurry","cutout":"soft","msaa":3,"scaleCap":-1,"anisotropy":99,"ao":1,"aoStrength":101,"bloom":1,"bloomStrength":101,"bloomThreshold":"x","bloomKnee":-5,"bloomRadius":500,"sharpen":"on","sharpenStrength":-1}', false)).toEqual(defaultSettings(false));
   });
 
   it('keeps valid stored values', () => {
-    const stored = { filter: 'sharp', msaa: false, scaleCap: 1.5, mipmaps: false, anisotropy: 8 };
+    const stored = { filter: 'sharp', msaa: false, scaleCap: 1.5, mipmaps: false, anisotropy: 8, cutout: 'hard', ao: false, aoStrength: 65, bloom: false, bloomStrength: 55, bloomThreshold: 70, bloomKnee: 0, bloomRadius: 50, sharpen: false, sharpenStrength: 0 };
     expect(parseSettings(JSON.stringify(stored), false)).toEqual(stored);
   });
 

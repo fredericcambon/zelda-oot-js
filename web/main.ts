@@ -14,7 +14,10 @@ import { formatBreakdown } from '../tools/gfx/profile.ts';
 import { fetchWasm, preloadModule } from './wasm.ts';
 import { mark, timingLines } from './timing.ts';
 import { FramePacer, loadHz, saveHz, type Hz } from './mode.ts';
-import { AutoStart, fileSelectReached, guestRam } from '../tools/headless/load-save.ts';
+import { AutoStart, fileSelectReached, guestRam, loadRecordIntoPlay, unsafeReason } from '../tools/headless/load-save.ts';
+import { playState } from '../tools/headless/state.ts';
+import { parseBootParams, type BootParams } from './boot-params.ts';
+import { getRecord } from '../tools/saves/image.ts';
 import { backToFileSelect, loadSaveFile, loadSlotIntoPlay, type SaveTarget } from './save-actions.ts';
 import { pickSaveFile } from './save-picker.ts';
 import { EMPTY_INVENTORY, editContext, inventorySnapshot, sameInventory, toggleFreeze } from './inspect/inventory.ts';
@@ -39,9 +42,10 @@ const notice = document.getElementById('notice')!;
 const SMOOTH_KEY = 'oot.smooth';
 const readSmooth = (): boolean => {
   try {
-    return localStorage.getItem(SMOOTH_KEY) === '1';
+    const raw = localStorage.getItem(SMOOTH_KEY);
+    return raw === null ? true : raw === '1';
   } catch {
-    return false;
+    return true;
   }
 };
 const writeSmooth = (on: boolean): void => {
@@ -53,7 +57,7 @@ const writeSmooth = (on: boolean): void => {
 };
 
 // Percent sliders: how much motion is shown and how fast it catches up to the current game frame.
-const readTuning = (key: string, min: number, max: number): number => {
+const readTuning = (key: string, min: number, max: number, fallback: number): number => {
   try {
     const raw = localStorage.getItem(key);
     const stored = Number(raw);
@@ -61,7 +65,7 @@ const readTuning = (key: string, min: number, max: number): number => {
   } catch {
     // Storage may be blocked; the default stays.
   }
-  return 100;
+  return fallback;
 };
 const writeTuning = (key: string, value: number): void => {
   try {
@@ -76,10 +80,21 @@ const SPAN_KEY = 'oot.smooth.span';
 // The video rate is chosen when the game boots, so the button only changes what the next page load boots.
 const bootHz: Hz = loadHz();
 
+let gfx = loadSettings();
+
 const store = new Store<UiState>({
   smooth: readSmooth(),
-  strength: readTuning(STRENGTH_KEY, 0, 100),
-  span: readTuning(SPAN_KEY, 25, 100),
+  ao: gfx.ao,
+  aoStrength: gfx.aoStrength,
+  bloom: gfx.bloom,
+  bloomStrength: gfx.bloomStrength,
+  bloomThreshold: gfx.bloomThreshold,
+  bloomKnee: gfx.bloomKnee,
+  bloomRadius: gfx.bloomRadius,
+  sharpen: gfx.sharpen,
+  sharpenStrength: gfx.sharpenStrength,
+  strength: readTuning(STRENGTH_KEY, 0, 100, 50),
+  span: readTuning(SPAN_KEY, 25, 100, 50),
   bootHz,
   wantedHz: bootHz,
   muted: false,
@@ -116,7 +131,6 @@ const setStatus = (text: string, error = false) => {
   status.classList.toggle('ok', text === 'Running');
 };
 
-let gfx = loadSettings();
 // The 3D image has as many pixels as the canvas has on the display, within the settings' cap.
 const displayScale = () => renderScale(canvas.clientWidth, devicePixelRatio, gfx);
 
@@ -131,6 +145,8 @@ try {
   setStatus(err instanceof Error ? err.message : String(err), true);
   throw err;
 }
+// The handle tools use to read renderer facts from the page (the fit of the occlusion's projection, the settings).
+if (location.hash === '#debug') (globalThis as { ootRenderer?: unknown }).ootRenderer = renderer;
 
 let game: Game | null = null;
 let saves: SaveSync | null = null;
@@ -151,6 +167,20 @@ const sound = { push: (bytes: Uint8Array, hz: number) => { if (!fastForward.acti
 addEventListener('keydown', (e) => fastForward.keydown(e));
 addEventListener('keyup', (e) => fastForward.keyup(e));
 addEventListener('blur', () => fastForward.reset());
+// `?capture` hands the game's pace to `globalThis.ootStep(frames, x, y)`, which runs exactly that many frames with the stick held
+// and then shows the last picture, so that two renders of the same scene (tools/tex/cutout-compare.ts) match frame for frame.
+const captureMode = location.search.includes('capture');
+if (captureMode) {
+  (globalThis as { ootStep?: unknown }).ootStep = async (frames: number, x: number, y: number): Promise<void> => {
+    if (!game) throw new Error('no game');
+    const tasks = game.info().gfxTasks;
+    for (let i = 0; i < frames || (game.info().gfxTasks === tasks && i < frames + 8); i++) {
+      game.setPad({ buttons: 0, x, y });
+      await game.frame();
+    }
+    renderer.present(game.framebuffer());
+  };
+}
 let fps = 0;
 let shownFps = 0;
 let gameFps = 0;
@@ -236,9 +266,13 @@ function toggleMute(): void {
   store.set({ muted: audio.toggleMute() });
 }
 
-// F cycles the texture filter, G switches multisampling and H the mip levels with anisotropic taps.
+const stepStrength = (value: number, up: boolean): number => Math.min(100, Math.max(0, Math.round(value / 10) * 10 + (up ? 10 : -10)));
+// F cycles the texture filter, G switches multisampling, H the mip levels with anisotropic taps and V the cut-out edges. O, B and U switch the ambient
+// occlusion, the bloom and the sharpening; [ and ] lower and raise the occlusion strength, , and . the bloom strength, - and = the sharpening strength,
+// in steps of 10.
 function changeGfx(change: Partial<GfxSettings>, text: string): void {
   gfx = { ...gfx, ...change };
+  store.set({ ao: gfx.ao, aoStrength: gfx.aoStrength, bloom: gfx.bloom, bloomStrength: gfx.bloomStrength, bloomThreshold: gfx.bloomThreshold, bloomKnee: gfx.bloomKnee, bloomRadius: gfx.bloomRadius, sharpen: gfx.sharpen, sharpenStrength: gfx.sharpenStrength });
   renderer.setSettings(gfx);
   if (!saveSettings(gfx)) showNotice('The browser did not keep the graphics settings');
   else showNotice(text);
@@ -250,8 +284,26 @@ addEventListener('keydown', (e) => {
     changeGfx({ filter }, `Texture filter: ${filter}`);
   } else if (e.key === 'g' || e.key === 'G') {
     changeGfx({ msaa: !gfx.msaa }, `Multisampling: ${gfx.msaa ? 'off' : 'on'}`);
+  } else if (e.key === 'v' || e.key === 'V') {
+    const cutout = gfx.cutout === 'smooth' ? 'hard' : 'smooth';
+    changeGfx({ cutout }, `Cut-out edges: ${cutout}${cutout === 'smooth' && !gfx.msaa ? ' (needs multisampling)' : ''}`);
   } else if (e.key === 'h' || e.key === 'H') {
     changeGfx({ mipmaps: !gfx.mipmaps }, `Mip levels: ${gfx.mipmaps ? 'off' : 'on'}`);
+  } else if (e.key === 'o' || e.key === 'O') {
+    changeGfx({ ao: !gfx.ao }, `Ambient occlusion: ${gfx.ao ? 'off' : `on, ${gfx.aoStrength}`}`);
+  } else if (e.key === '[' || e.key === ']') {
+    const aoStrength = stepStrength(gfx.aoStrength, e.key === ']');
+    changeGfx({ ao: true, aoStrength }, `Ambient occlusion strength: ${aoStrength}`);
+  } else if (e.key === 'b' || e.key === 'B') {
+    changeGfx({ bloom: !gfx.bloom }, `Bloom: ${gfx.bloom ? 'off' : `on, ${gfx.bloomStrength}`}`);
+  } else if (e.key === 'u' || e.key === 'U') {
+    changeGfx({ sharpen: !gfx.sharpen }, `Sharpening: ${gfx.sharpen ? 'off' : `on, ${gfx.sharpenStrength}`}`);
+  } else if (e.key === ',' || e.key === '.') {
+    const bloomStrength = stepStrength(gfx.bloomStrength, e.key === '.');
+    changeGfx({ bloom: true, bloomStrength }, `Bloom strength: ${bloomStrength}`);
+  } else if (e.key === '-' || e.key === '=') {
+    const sharpenStrength = stepStrength(gfx.sharpenStrength, e.key === '=');
+    changeGfx({ sharpen: true, sharpenStrength }, `Sharpening strength: ${sharpenStrength}`);
   }
 });
 let resizeTimer = 0;
@@ -330,7 +382,7 @@ function updateOverlay(): void {
     `unknown commands ${s.unknown}  problems ${s.problems.length}`,
     `programs ${s.programs} (${s.compileMs.toFixed(0)} ms to build)  textures ${s.textures}  colour images ${s.targets}`,
     game ? `video framebuffer 0x${game.framebuffer().toString(16)}` : '',
-    `culling ${renderer.cullMode}  resolution ${renderer.resolutionScale.toFixed(2)}x (${canvas.width}x${canvas.height})  filter ${gfx.filter}  msaa ${renderer.msaaSamples || 'off'}  mips ${gfx.mipmaps ? `on, ${gfx.anisotropy} taps` : 'off'}`,
+    `culling ${renderer.cullMode}  resolution ${renderer.resolutionScale.toFixed(2)}x (${canvas.width}x${canvas.height})  filter ${gfx.filter}  msaa ${renderer.msaaSamples || 'off'}  ao ${gfx.ao ? gfx.aoStrength : 'off'}  bloom ${gfx.bloom ? gfx.bloomStrength : 'off'}  sharpen ${gfx.sharpen ? gfx.sharpenStrength : 'off'}  mips ${gfx.mipmaps ? `on, ${gfx.anisotropy} taps` : 'off'}  cutout ${renderer.msaaSamples ? gfx.cutout : 'hard'}`,
     g ? `audio tasks ${g.audioTasks}  sound ${audio.state === 'running' ? `on, level ${audio.level().toFixed(3)}` : 'off: press a key'}` : '',
     ...audio.status(),
     g?.renderError ? `render error: ${g.renderError}` : '',
@@ -357,7 +409,7 @@ async function loop(): Promise<void> {
     // Fast-forward runs frames back to back and has no time for in-between pictures.
     game?.setSmooth(store.get().smooth && !fastForward.active);
     const now = performance.now();
-    let due = pacer.advance(now - last);
+    let due = captureMode ? 0 : pacer.advance(now - last);
     last = now;
     let stepped = false;
     // Fast-forward: frames back to back for most of the display interval.
@@ -383,7 +435,7 @@ async function loop(): Promise<void> {
       counted++;
       stepped = true;
     }
-    if (game) {
+    if (game && !captureMode) {
       const smooth = game.drawSmooth(pacer.fraction());
       if (smooth !== null || stepped) {
         renderer.present(smooth ?? game.framebuffer());
@@ -436,9 +488,108 @@ async function boot(): Promise<void> {
     applyTuning();
     setStatus('Running');
     void loop();
+    if (!captureMode) void applyBootParams(parseBootParams(location.search));
   } catch (err) {
     setStatus(err instanceof Error ? err.message : String(err), true);
   }
+}
+
+/** Runs `run` between two frames and resolves with the message it gives, or the failure. */
+function betweenFrames(run: () => Promise<string> | string): Promise<string> {
+  return new Promise((resolve) => {
+    bridge.queue.push(async () => {
+      try {
+        const message = await run();
+        resolve(message);
+        return message;
+      } catch (err) {
+        const message = `Failed: ${err instanceof Error ? err.message : String(err)}`;
+        resolve(message);
+        return message;
+      }
+    });
+  });
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+const BOOT_WAIT_MS = 60_000;
+
+/** Waits until the game can be changed between frames; false when it did not within BOOT_WAIT_MS. */
+async function untilSettled(): Promise<boolean> {
+  for (let waited = 0; waited < BOOT_WAIT_MS; waited += 100) {
+    if (!bridge.unsafeReason()) return true;
+    await sleep(100);
+  }
+  return false;
+}
+
+const SETTLE_FRAMES = 1500;
+
+/** Runs frames back to back, with no input and no picture, until `done` holds; false when it does not within SETTLE_FRAMES. */
+async function runUntil(g: Game, done: () => boolean): Promise<boolean> {
+  g.setPad({ buttons: 0, x: 0, y: 0 });
+  for (let i = 0; i < SETTLE_FRAMES && !done(); i++) await g.frame();
+  return done();
+}
+
+/** Puts a record of the save memory in play without the title or the file select: runs to the title's demo scene, loads the record into the save context there and runs until the scene is settled. */
+async function enterFile(g: Game, record: Uint8Array, slot: number): Promise<string> {
+  const mem = () => guestRam(g.ram());
+  if (!(await runUntil(g, () => playState((a) => mem().rd32(a)) !== undefined))) return 'Could not enter the save file: the game did not reach a scene';
+  const { scene } = loadRecordIntoPlay(mem(), record, slot, true);
+  if (!(await runUntil(g, () => unsafeReason(mem()) === undefined))) return 'Could not enter the save file: the scene did not settle';
+  return `Entered save file ${slot + 1} (scene ${scene})`;
+}
+
+/** Applies the URL parameters in order: save state, save file, warp. A parameter that cannot be applied is reported and the game keeps running. */
+async function applyBootParams(params: BootParams): Promise<void> {
+  const problems = [...params.problems];
+  const report = () => {
+    if (problems.length > 0) showNotice(problems.join('; '));
+  };
+  report();
+  let entered = false;
+  if (params.state !== undefined) {
+    const slot = params.state;
+    const target = states;
+    if (!target) {
+      problems.push('Save states are not available');
+    } else {
+      const message = await betweenFrames(async () => {
+        await target.select(slot - target.slot);
+        store.set({ slot: target.slot });
+        return target.load();
+      });
+      showNotice(message);
+      entered = message.startsWith('Loaded');
+      if (!entered) problems.push(message);
+    }
+  }
+  if (params.file !== undefined) {
+    const file = params.file;
+    const g = game;
+    if (!g) return;
+    const record = getRecord(g.saveMemory.read(), file - 1);
+    if (!record) {
+      problems.push(`Save file ${file} is empty`);
+    } else {
+      const message = await betweenFrames(() => enterFile(g, record, file - 1));
+      showNotice(message);
+      entered = message.startsWith('Entered');
+      if (!entered) problems.push(message);
+    }
+  }
+  if (params.warp !== undefined) {
+    const entrance = params.warp;
+    if ((params.state !== undefined || params.file !== undefined) && !entered) {
+      problems.push(`Warp to ${entrance} skipped: no scene was entered`);
+    } else if (!(await untilSettled())) {
+      problems.push(`Warp to ${entrance} skipped: the game is not in a scene`);
+    } else {
+      bridge.queue.push(() => warpTo(bridge, entrance), 'Warp failed');
+    }
+  }
+  report();
 }
 
 function setCheats(cheats: Cheat[]): void {
@@ -460,6 +611,15 @@ const actions: UiActions = {
     writeTuning(SPAN_KEY, percent);
     store.set({ span: percent });
   },
+  setAo: (ao) => changeGfx({ ao }, `Ambient occlusion: ${ao ? `on, ${gfx.aoStrength}` : 'off'}`),
+  setAoStrength: (aoStrength) => changeGfx({ ao: true, aoStrength }, `Ambient occlusion strength: ${aoStrength}`),
+  setBloom: (bloom) => changeGfx({ bloom }, `Bloom: ${bloom ? `on, ${gfx.bloomStrength}` : 'off'}`),
+  setBloomStrength: (bloomStrength) => changeGfx({ bloom: true, bloomStrength }, `Bloom strength: ${bloomStrength}`),
+  setBloomThreshold: (bloomThreshold) => changeGfx({ bloom: true, bloomThreshold }, `Bloom threshold: ${bloomThreshold}`),
+  setBloomKnee: (bloomKnee) => changeGfx({ bloom: true, bloomKnee }, `Bloom soft knee: ${bloomKnee}`),
+  setBloomRadius: (bloomRadius) => changeGfx({ bloom: true, bloomRadius }, `Bloom radius: ${bloomRadius}`),
+  setSharpen: (sharpen) => changeGfx({ sharpen }, `Sharpening: ${sharpen ? `on, ${gfx.sharpenStrength}` : 'off'}`),
+  setSharpenStrength: (sharpenStrength) => changeGfx({ sharpen: true, sharpenStrength }, `Sharpening strength: ${sharpenStrength}`),
   toggleHz() {
     const wantedHz: Hz = store.get().wantedHz === 60 ? 50 : 60;
     if (!saveHz(wantedHz)) showNotice('The browser did not keep the 60 Hz choice');

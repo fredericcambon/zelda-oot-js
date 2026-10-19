@@ -6,6 +6,11 @@ import { GpuTimer } from './gpu-timer.ts';
 import { Geo } from '../tools/gfx/opcodes.ts';
 import { CycleType, cycleTypeOf, fragmentSource, OtherL, shiftScale, specKey, specOf, VERTEX_SHADER, type ShaderSpec } from './shader.ts';
 import { MAX_SCALE, type GfxSettings } from './gfx-settings.ts';
+import { texturesRead } from '../tools/tex/used.ts';
+import { effectsOn, FULLSCREEN_VERTEX, occlusionOn, PostFx, type SceneDepth } from './post-fx.ts';
+import { fitProjection, type ProjectionFit } from './ao.ts';
+import { isLowContrast, softened } from './low-contrast.ts';
+import { bindToggleKey, scaleOf, hashImage, pagePack, type TexPack } from './tex-pack.ts';
 
 export const SCREEN_W = 320;
 export const SCREEN_H = 240;
@@ -48,9 +53,13 @@ const COMPLETION_STATUS_KHR = 0x91b1;
 
 interface GpuTexture {
   texture: WebGLTexture;
+  /** Size of the uploaded image; a replacement from the texture pack is `scale` times the size of the texture it stands for. */
   width: number;
   height: number;
   mipmapped: boolean;
+  scale: number;
+  /** Hash of the decoded texture, when it was looked up in the pack. */
+  hash?: string;
 }
 
 interface Target {
@@ -60,10 +69,19 @@ interface Target {
   /** With multisampling: the buffers drawn into, resolved into `texture` at the end of a task. */
   samples: { color: WebGLRenderbuffer; framebuffer: WebGLFramebuffer } | null;
   dirty: boolean;
+  /** The task that last drew into this image (`Renderer.taskId`); the two flags below describe that task. */
+  task: number;
+  /** A depth-tested triangle draw has been made: the image holds a 3D scene. */
+  hasScene: boolean;
+  /** The image as it was before the first HUD draw, when there was one (see `Renderer.drawRuns`). */
+  scene: { texture: WebGLTexture; framebuffer: WebGLFramebuffer } | null;
+  sceneSplit: boolean;
+  /** The depth buffer as it was when the scene was complete (with the occlusion on), in the task `task`, with the projection of that task's main draws. */
+  depth: { texture: WebGLTexture; framebuffer: WebGLFramebuffer; task: number; projection: ProjectionFit } | null;
 }
 
 /** What a renderer made without settings uses: no multisampling, no mip levels. */
-const PLAIN: GfxSettings = { filter: 'n64', msaa: false, scaleCap: 0, mipmaps: false, anisotropy: 1 };
+const PLAIN: GfxSettings = { filter: 'n64', msaa: false, scaleCap: 0, mipmaps: false, anisotropy: 1, cutout: 'hard', ao: false, aoStrength: 0, bloom: false, bloomStrength: 0, bloomThreshold: 80, bloomKnee: 40, bloomRadius: 100, sharpen: false, sharpenStrength: 0 };
 const MSAA_SAMPLES = 4;
 
 /**
@@ -71,7 +89,7 @@ const MSAA_SAMPLES = 4;
  * of it, and a level made from the whole texture would blend that repeat with its neighbours.
  */
 const mipmappable = (tile: { maskS: number; maskT: number }, tex: GpuTexture): boolean =>
-  tex.mipmapped && (tile.maskS === 0 || 1 << tile.maskS === tex.width) && (tile.maskT === 0 || 1 << tile.maskT === tex.height);
+  tex.mipmapped && (tile.maskS === 0 || 1 << tile.maskS === tex.width / tex.scale) && (tile.maskT === 0 || 1 << tile.maskT === tex.height / tex.scale);
 
 const FLOATS_PER_VERTEX = 10;
 const MAX_TEXTURES = 512;
@@ -84,14 +102,6 @@ in vec2 vUv;
 uniform sampler2D uImage;
 out vec4 outColor;
 void main() { outColor = vec4(texture(uImage, vUv).rgb, 1.0); }
-`;
-const PRESENT_VERTEX = `#version 300 es
-out vec2 vUv;
-void main() {
-  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
-  vUv = p;
-  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
-}
 `;
 
 const physical = (addr: number): number => addr & 0x1fffffff;
@@ -112,6 +122,10 @@ export class Renderer {
   /** Mip-level programs that may still be built on the calling thread in this task, when the browser cannot build in parallel. */
   private syncMipBudget = 0;
   private readonly presentProgram: Program;
+  private readonly fx: PostFx;
+  private taskId = 0;
+  /** The projection of the main 3D draws of the task being drawn; null without the occlusion or without such draws. */
+  private projection: ProjectionFit | null = null;
   private readonly buffer: WebGLBuffer;
   private readonly vao: WebGLVertexArrayObject;
   private readonly depth: WebGLRenderbuffer;
@@ -121,17 +135,23 @@ export class Renderer {
   private readonly targets = new Map<number, Target>();
   private readonly textureCache = new Map<number, GpuTexture>();
   private readonly white: GpuTexture;
+  private lastResult: DisplayListResult | null = null;
+  /** While recording (for tools/tex/compare.ts): per task, the textures it drew as `<hash><state>`, state `+` replaced, `~` in the pack but not yet loaded, `-` not in the pack. */
+  private textureLog: { frames: string[][]; facts: Map<string, { width: number; height: number; fmt: number; siz: number; unloaded: number; rgba?: string }> } | null = null;
+  private lastPresented: number | null = null;
   private lastTarget: Target | null = null;
   private vertices = new Float32Array(0);
 
-  constructor(readonly canvas: HTMLCanvasElement, scale = 1, settings: GfxSettings = PLAIN) {
+  /** `texPack`: the replacement textures; by default the pack the page is served with, none where there is no page to ask (the tests). */
+  constructor(readonly canvas: HTMLCanvasElement, scale = 1, settings: GfxSettings = PLAIN, readonly texPack: TexPack | null = pagePack()) {
     const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, preserveDrawingBuffer: true });
     if (!gl) throw new Error('WebGL2 is not available in this browser');
     this.gl = gl;
     this.settings = { ...settings };
     this.gpuTimer = new GpuTimer(gl);
+    this.fx = new PostFx(gl);
     this.parallel = gl.getExtension('KHR_parallel_shader_compile') !== null;
-    this.presentProgram = this.link(PRESENT_VERTEX, PRESENT_FRAGMENT);
+    this.presentProgram = this.link(FULLSCREEN_VERTEX, PRESENT_FRAGMENT);
     this.buffer = gl.createBuffer()!;
     this.vao = gl.createVertexArray()!;
     gl.bindVertexArray(this.vao);
@@ -146,6 +166,99 @@ export class Renderer {
     this.depth = gl.createRenderbuffer()!;
     this.setScale(scale);
     this.white = this.upload(1, 1, Uint8Array.of(255, 255, 255, 255), false);
+    if (this.texPack) {
+      this.texPack.onChange = (hash) => this.packChanged(hash);
+      if (typeof addEventListener === 'function') bindToggleKey(this.texPack, globalThis);
+      // The handle the screenshot tool (tools/tex/compare.ts) drives.
+      Object.assign(globalThis, { ootTexPack: { pack: this.texPack, redraw: () => this.redraw(), boundsOf: (hashes: string[]) => this.boundsOf(new Set(hashes)), inUse: () => [...this.textureCache.values()].filter((t) => t.scale > 1).length, record: (on: boolean) => this.recordTextures(on), recorded: () => this.recorded() } });
+    }
+  }
+
+  /** The pack arrived, a replacement arrived (`hash`) or the switch was toggled: the textures concerned are rebuilt when next drawn. */
+  private packChanged(name?: string): void {
+    if (name === undefined) this.clearTextures();
+    else for (const [id, tex] of this.textureCache) if (tex.hash !== undefined && this.texPack?.nameOf(tex.hash) === name) this.dropTexture(id, tex);
+  }
+
+  private recordTextures(on: boolean): void {
+    this.textureLog = on ? { frames: [], facts: new Map() } : null;
+  }
+
+  private recorded(): { frames: string[][]; facts: Record<string, { width: number; height: number; fmt: number; siz: number; unloaded: number; rgba?: string }> } {
+    return { frames: this.textureLog?.frames ?? [], facts: Object.fromEntries(this.textureLog?.facts ?? []) };
+  }
+
+  private logTextures(result: DisplayListResult): void {
+    const log = this.textureLog!;
+    const ids = new Set<number>();
+    const frame: string[] = [];
+    for (const b of result.batches) {
+      const read = texturesRead(b.state);
+      for (const [slot, image] of b.state.textures.entries()) {
+        const tex = image && read[slot] && !ids.has(image.id) ? this.textureCache.get(image.id) : undefined;
+        if (!image || !tex?.hash) continue;
+        ids.add(image.id);
+        const state = tex.scale > 1 ? '+' : this.texPack?.nameOf(tex.hash) ? '~' : '-';
+        frame.push(tex.hash + state);
+        const known = log.facts.get(tex.hash);
+        if (!known || (state === '-' && known.rgba === undefined)) {
+          log.facts.set(tex.hash, {
+            width: image.width, height: image.height, fmt: image.fmt ?? 0, siz: image.siz ?? 0, unloaded: image.loaded ? image.loaded.reduce((n, v) => n + (v === 0 ? 1 : 0), 0) : 0,
+            // The picture of a texture the pack has no entry for, to look at.
+            rgba: state === '-' ? btoa(String.fromCharCode(...image.rgba)) : undefined,
+          });
+        }
+      }
+    }
+    log.frames.push(frame);
+  }
+
+  /** Draws the last task and shows the picture it drew (not the one the video interface scans out, which is the frame before). Only valid while the game is not running: the task reads the game's memory. */
+  redraw(): void {
+    if (!this.lastResult) return;
+    // The colour and depth images still hold the picture the task drew: left in place, depth testing would reject the redraw.
+    const gl = this.gl;
+    gl.disable(gl.SCISSOR_TEST);
+    gl.colorMask(true, true, true, true);
+    gl.depthMask(true);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clearDepth(1);
+    for (const t of this.targets.values()) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, t.samples ? t.samples.framebuffer : t.framebuffer);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      t.dirty = true;
+    }
+    this.drawTask(this.lastResult);
+    const drawn = this.lastResult.batches.map((b) => b.state).filter((st) => physical(st.colorImage.addr) !== physical(st.depthImage)).at(-1);
+    this.present(drawn?.colorImage.addr ?? this.lastPresented ?? 0);
+  }
+
+  /**
+   * The point, in canvas pixels, at the centre of the on-screen area covered by the triangles of the last task that sample a texture whose hash is in
+   * `hashes` (for centring close-ups, as a box of no size); null when there is none. 3D draws only (the HUD is drawn without the depth buffer), vertices behind the eye are ignored, and so are triangles
+   * centred in the corner where the minimap sits.
+   */
+  private boundsOf(hashes: ReadonlySet<string>): { x: number; y: number; w: number; h: number } | null {
+    let sx = 0, sy = 0, total = 0;
+    const { width, height } = this.canvas;
+    for (const b of this.lastResult?.batches ?? []) {
+      if (b.kind !== 'triangles' || (b.state.geometryMode & Geo.ZBUFFER) === 0 || !b.state.textures.some((t) => t && hashes.has(hashImage(t)))) continue;
+      for (let i = 0; i + 12 <= b.positions.length; i += 12) {
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, behind = false;
+        for (let k = 0; k < 3; k++) {
+          const w = b.positions[i + k * 4 + 3]!;
+          if (w <= 0) behind = true;
+          const x = ((b.positions[i + k * 4]! * 0.5) / w * 0.5 + 0.5) * width, y = (0.5 - (b.positions[i + k * 4 + 1]! * 0.5) / w * 0.5) * height;
+          x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+        }
+        x0 = Math.max(0, x0); y0 = Math.max(0, y0); x1 = Math.min(width, x1); y1 = Math.min(height, y1);
+        const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+        if (behind || x1 <= x0 || y1 <= y0 || (cx > 0.62 * width && cy > 0.66 * height)) continue;
+        const area = (x1 - x0) * (y1 - y0);
+        sx += cx * area; sy += cy * area; total += area;
+      }
+    }
+    return total > 0 ? { x: sx / total, y: sy / total, w: 0, h: 0 } : null;
   }
 
   /** Renders at `scale` times the 320x240 the game addresses; the colour images are dropped and redrawn by the game. */
@@ -156,6 +269,7 @@ export class Renderer {
     this.canvas.height = Math.round(SCREEN_H * this.scale);
     for (const t of this.targets.values()) this.deleteTarget(t);
     this.targets.clear();
+    this.fx.dispose();
     this.lastTarget = null;
     this.samples = this.settings.msaa ? this.supportedSamples() : 0;
     gl.bindRenderbuffer(gl.RENDERBUFFER, this.depth);
@@ -163,11 +277,19 @@ export class Renderer {
     else gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, this.canvas.width, this.canvas.height);
   }
 
-  /** Applies new options; the colour images and the cached textures are dropped and rebuilt as the game draws. */
+  /** Applies new options; unless only the post-processing changed, the colour images and the cached textures are dropped and rebuilt as the game draws. */
   setSettings(settings: GfxSettings): void {
+    const effectsOnly = (Object.keys(settings) as (keyof GfxSettings)[]).every((k) => k.startsWith('ao') || k.startsWith('bloom') || k.startsWith('sharpen') || settings[k] === this.settings[k]);
     this.settings = { ...settings };
+    // The effects act at present time only: the images and textures stay.
+    if (effectsOnly) return;
     this.setScale(this.scale);
     this.clearTextures();
+  }
+
+  /** The fit of the last task's main projection (see `fitProjection`); null when the occlusion is off or no draw gave one. */
+  get depthProjection(): Readonly<ProjectionFit> | null {
+    return this.projection;
   }
 
   get options(): Readonly<GfxSettings> {
@@ -216,6 +338,8 @@ export class Renderer {
     this.collectGpu();
     this.gpuTimer.begin('task');
     s.tasks++;
+    this.lastResult = result;
+    this.taskId++;
     this.syncMipBudget = 1;
     s.drawCalls = 0;
     s.unmergedDrawCalls = 0;
@@ -225,12 +349,15 @@ export class Renderer {
     s.rects = 0;
     s.unknown = result.unknown.length;
     s.problems = result.problems.slice(0, 8);
+    this.projection = occlusionOn(this.settings) ? fitProjection(result.batches) : null;
     try {
       this.drawRuns(mergeRuns(result.batches));
     } finally {
       this.resolveTargets();
+      this.captureDepths();
       this.gpuTimer.end();
     }
+    if (this.textureLog) this.logTextures(result);
     s.programs = this.programs.size;
     s.textures = this.textureCache.size;
     s.targets = this.targets.size;
@@ -238,6 +365,7 @@ export class Renderer {
 
   /** Shows the colour image at `address` (the one the video interface scans out), or the last one drawn when unknown. */
   present(address: number): void {
+    this.lastPresented = address;
     this.gpuTimer.begin('present');
     try {
       this.presentImage(address);
@@ -268,6 +396,13 @@ export class Renderer {
     if (!target) {
       gl.clearColor(0, 0, 0, 1);
       gl.clear(gl.COLOR_BUFFER_BIT);
+      return;
+    }
+    if (effectsOn(this.settings) && target.hasScene) {
+      const d = target.depth && target.depth.task === target.task ? target.depth : null;
+      const depth: SceneDepth | null = d && occlusionOn(this.settings) ? { texture: d.texture, a: d.projection.a, b: d.projection.b } : null;
+      this.fx.run(target.sceneSplit ? target.scene!.texture : target.texture, target.sceneSplit ? target.texture : null, depth, this.canvas.width, this.canvas.height, this.settings);
+      gl.bindVertexArray(this.vao);
       return;
     }
     gl.useProgram(this.presentProgram.gl);
@@ -307,7 +442,7 @@ export class Renderer {
       gl.colorMask(true, true, true, true);
       gl.clearColor(0, 0, 0, 1);
       gl.clear(gl.COLOR_BUFFER_BIT);
-      t = { texture, framebuffer, samples, dirty: samples !== null };
+      t = { texture, framebuffer, samples, dirty: samples !== null, task: 0, hasScene: false, scene: null, sceneSplit: false, depth: null };
       this.targets.set(key, t);
     }
     return t;
@@ -320,6 +455,14 @@ export class Renderer {
     if (t.samples) {
       gl.deleteRenderbuffer(t.samples.color);
       gl.deleteFramebuffer(t.samples.framebuffer);
+    }
+    if (t.scene) {
+      gl.deleteTexture(t.scene.texture);
+      gl.deleteFramebuffer(t.scene.framebuffer);
+    }
+    if (t.depth) {
+      gl.deleteTexture(t.depth.texture);
+      gl.deleteFramebuffer(t.depth.framebuffer);
     }
   }
 
@@ -371,10 +514,96 @@ export class Renderer {
         continue;
       }
       const count = counts[i]!;
+      this.separateScene(run);
       this.bindTarget(run.state.colorImage.addr);
       this.draw(run, first, count);
       first += count;
     }
+  }
+
+  /**
+   * Splits a 3D scene from the HUD drawn over it, for the post-processing at present time (post-fx.ts). A triangle draw with the depth buffer in use
+   * (`Geo.ZBUFFER`) is scene. A draw before the first of those in the task is scene too: the sky backdrop and other non-depth-tested 3D draws come first.
+   * Every non-depth-tested draw after it is HUD (texture rectangles, 2D triangles, and any non-Z 3D effect drawn late, which then stays unprocessed),
+   * and the first one copies the colour image, which at that point is the scene alone. Depth-tested draws after that (menu items with their own
+   * depth) are HUD as well. An image with no depth-tested draw in a task (file select, some menus) holds no scene and is presented as it is; so is the
+   * pause menu's backdrop, a texture drawn as 2D.
+   */
+  private separateScene(run: DrawRun): void {
+    if (!effectsOn(this.settings)) return;
+    const t = this.target(run.state.colorImage.addr);
+    if (t.task !== this.taskId) {
+      t.task = this.taskId;
+      t.hasScene = false;
+      t.sceneSplit = false;
+    }
+    if (run.triangles && (run.state.geometryMode & Geo.ZBUFFER) !== 0) {
+      if (!t.sceneSplit) t.hasScene = true;
+    } else if (t.hasScene && !t.sceneSplit) {
+      this.copyScene(t);
+      t.sceneSplit = true;
+    }
+  }
+
+  /** An image whose scene was not followed by HUD draws holds its scene as it is at the end of the task: the depth is copied then. */
+  private captureDepths(): void {
+    if (!occlusionOn(this.settings)) return;
+    for (const t of this.targets.values()) if (t.task === this.taskId && t.hasScene && !t.sceneSplit) this.copyDepth(t);
+  }
+
+  /**
+   * Copies the depth buffer into a texture the occlusion can read. A multisampled buffer is resolved by the copy (one sample per pixel), which suits it:
+   * the occlusion works on the pixels of the finished image.
+   */
+  private copyDepth(t: Target): void {
+    const gl = this.gl;
+    const projection = this.projection;
+    if (!projection) return;
+    const { width, height } = this.canvas;
+    if (!t.depth) {
+      const texture = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, width, height, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      const framebuffer = gl.createFramebuffer()!;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, texture, 0);
+      t.depth = { texture, framebuffer, task: 0, projection };
+    }
+    gl.disable(gl.SCISSOR_TEST);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, t.samples ? t.samples.framebuffer : t.framebuffer);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, t.depth.framebuffer);
+    gl.blitFramebuffer(0, 0, width, height, 0, 0, width, height, gl.DEPTH_BUFFER_BIT, gl.NEAREST);
+    t.depth.task = t.task;
+    t.depth.projection = projection;
+  }
+
+  /** Copies what has been drawn into the image so far into its scene texture. */
+  private copyScene(t: Target): void {
+    const gl = this.gl;
+    const { width, height } = this.canvas;
+    gl.disable(gl.SCISSOR_TEST);
+    if (t.samples) {
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, t.samples.framebuffer);
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, t.framebuffer);
+      gl.blitFramebuffer(0, 0, width, height, 0, 0, width, height, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    }
+    if (!t.scene) {
+      const texture = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      const framebuffer = gl.createFramebuffer()!;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+      t.scene = { texture, framebuffer };
+    }
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, t.framebuffer);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, t.scene.framebuffer);
+    gl.blitFramebuffer(0, 0, width, height, 0, 0, width, height, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    if (occlusionOn(this.settings)) this.copyDepth(t);
   }
 
   private scissorRect(state: DrawState): { x: number; y: number; w: number; h: number } {
@@ -460,7 +689,8 @@ export class Renderer {
   private draw(run: DrawRun, first: number, count: number): void {
     const gl = this.gl;
     const state = run.state;
-    const spec = specOf(state, { filter: this.settings.filter, mip: this.settings.mipmaps && run.triangles });
+    const cutout = this.settings.cutout === 'smooth' && this.samples > 0 && run.triangles && (state.geometryMode & Geo.ZBUFFER) !== 0;
+    const spec = specOf(state, { filter: this.settings.filter, mip: this.settings.mipmaps && run.triangles, cutout, smoothTexels: this.softTextures(state) });
     const { program, spec: used } = this.program(spec);
     gl.useProgram(program.gl);
     this.applyRaster(state, run.triangles, used);
@@ -469,11 +699,22 @@ export class Renderer {
     this.stats.drawCalls++;
   }
 
+  /** Whether every texture the draw reads is a soft gradient: the 3-point filter would only cut its contours along diagonals. */
+  private softTextures(state: DrawState): boolean {
+    if (this.settings.filter !== 'n64' || ((state.otherModeH >>> 12) & 3) === 0) return false;
+    const read = texturesRead(state);
+    const used = state.textures.filter((t, i) => t && read[i]);
+    return used.length > 0 && used.every((t) => isLowContrast(t!));
+  }
+
   // ---- State -------------------------------------------------------------------------------------------------------
 
   private applyRaster(state: DrawState, triangles: boolean, spec: ShaderSpec): void {
     const gl = this.gl;
-    gl.colorMask(true, true, true, true);
+    // Alpha-to-coverage takes the coverage from the shader's alpha output; the target keeps its alpha of 1.
+    gl.colorMask(true, true, true, !spec.cutout);
+    if (spec.cutout) gl.enable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+    else gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
     const sc = this.scissorRect(state);
     gl.enable(gl.SCISSOR_TEST);
     this.setScissor(sc.x, sc.y, sc.x + sc.w, sc.y + sc.h);
@@ -532,16 +773,19 @@ export class Renderer {
     gl.uniform1f(u('uXyScale'), state.viewport.scale[0] !== 0 && state.viewport.scale[1] !== 0 && triangles ? 0.5 : 1);
 
     const a = new Float32Array(8), m = new Float32Array(8), c = new Float32Array(8);
+    const read = texturesRead(state);
     for (let i = 0; i < 2; i++) {
       const decoded = state.textures[i];
-      const tex = decoded ? this.textureFor(decoded) : this.white;
+      const tex = decoded ? this.textureFor(decoded, read[i]!) : this.white;
       const tile = decoded ? state.tiles[decoded.tile]! : null;
       gl.activeTexture(gl.TEXTURE0 + i);
       gl.bindTexture(gl.TEXTURE_2D, tex.texture);
       gl.uniform1i(u(`uTex${i}`), i);
-      a.set([tex.width, tex.height, tile ? tile.uls / 4 : 0, tile ? tile.ult / 4 : 0], i * 4);
-      m.set(tile ? [tile.maskS, tile.maskT, tile.cmS, tile.cmT] : [0, 0, 0, 0], i * 4);
-      c.set(tile ? [shiftScale(tile.shiftS), shiftScale(tile.shiftT), mip && mipmappable(tile, tex) ? 1 : 0, 0] : [1, 1, 0, 0], i * 4);
+      // A replacement is sampled in its own texels: the coordinates, the tile origin and the masks' periods are scaled by its size.
+      const k = tex.scale, log2k = Math.log2(k);
+      a.set([tex.width, tex.height, tile ? (tile.uls / 4) * k : 0, tile ? (tile.ult / 4) * k : 0], i * 4);
+      m.set(tile ? [tile.maskS ? tile.maskS + log2k : 0, tile.maskT ? tile.maskT + log2k : 0, tile.cmS, tile.cmT] : [0, 0, 0, 0], i * 4);
+      c.set(tile ? [shiftScale(tile.shiftS) * k, shiftScale(tile.shiftT) * k, mip && mipmappable(tile, tex) ? 1 : 0, 0] : [1, 1, 0, 0], i * 4);
     }
     gl.uniform4fv(u('uTexA'), a);
     gl.uniform4fv(u('uTexB'), m);
@@ -636,17 +880,23 @@ ${source}`);
     return loc;
   }
 
-  private upload(width: number, height: number, rgba: Uint8Array, mipmaps = this.settings.mipmaps): GpuTexture {
+  private upload(width: number, height: number, rgba: Uint8Array | ImageBitmap, mipmaps = this.settings.mipmaps, scale = 1): GpuTexture {
     const gl = this.gl;
     const texture = gl.createTexture()!;
     gl.activeTexture(gl.TEXTURE0 + UPLOAD_UNIT);
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+    if (rgba instanceof Uint8Array) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+    else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, mipmaps ? gl.NEAREST_MIPMAP_NEAREST : gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     if (mipmaps) gl.generateMipmap(gl.TEXTURE_2D);
-    return { texture, width, height, mipmapped: mipmaps };
+    return { texture, width, height, mipmapped: mipmaps, scale };
+  }
+
+  private dropTexture(id: number, tex: GpuTexture): void {
+    this.gl.deleteTexture(tex.texture);
+    this.textureCache.delete(id);
   }
 
   private clearTextures(): void {
@@ -654,11 +904,25 @@ ${source}`);
     this.textureCache.clear();
   }
 
-  /** The interpreter numbers each decoded image once, so the id names the pixels and no upload repeats across tasks. */
-  private textureFor(image: DecodedTexture): GpuTexture {
+  /**
+   * The interpreter numbers each decoded image once, so the id names the pixels and no upload repeats across tasks. `read`: the draw's combiner reads the
+   * image, so the pack may replace it (see tools/tex/used.ts).
+   */
+  private textureFor(image: DecodedTexture, read: boolean): GpuTexture {
     let tex = this.textureCache.get(image.id);
+    const pack = read && this.texPack?.available ? this.texPack : null;
+    if (tex && pack && tex.hash === undefined) {
+      this.dropTexture(image.id, tex);
+      tex = undefined;
+    }
     if (!tex) {
-      tex = this.upload(image.width, image.height, image.rgba);
+      const hash = pack ? hashImage(image) : undefined;
+      const replacement = pack && hash ? pack.lookup(hash) : null;
+      const k = replacement ? scaleOf(image, replacement) : 0;
+      tex = replacement && k > 0
+        ? this.upload(replacement.width, replacement.height, replacement, this.settings.mipmaps, k)
+        : this.upload(image.width, image.height, this.settings.filter === 'n64' && isLowContrast(image) ? softened(image) : image.rgba);
+      tex.hash = hash;
       this.textureCache.set(image.id, tex);
     }
     return tex;
