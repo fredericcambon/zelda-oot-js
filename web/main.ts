@@ -76,8 +76,14 @@ const SPAN_KEY = 'oot.smooth.span';
 // The video rate is chosen when the game boots, so the button only changes what the next page load boots.
 const bootHz: Hz = loadHz();
 
+let gfx = loadSettings();
+
 const store = new Store<UiState>({
   smooth: readSmooth(),
+  bloom: gfx.bloom,
+  bloomStrength: gfx.bloomStrength,
+  sharpen: gfx.sharpen,
+  sharpenStrength: gfx.sharpenStrength,
   strength: readTuning(STRENGTH_KEY, 0, 100, 50),
   span: readTuning(SPAN_KEY, 25, 100, 50),
   bootHz,
@@ -116,7 +122,6 @@ const setStatus = (text: string, error = false) => {
   status.classList.toggle('ok', text === 'Running');
 };
 
-let gfx = loadSettings();
 // The 3D image has as many pixels as the canvas has on the display, within the settings' cap.
 const displayScale = () => renderScale(canvas.clientWidth, devicePixelRatio, gfx);
 
@@ -255,6 +260,7 @@ const stepStrength = (value: number, up: boolean): number => Math.min(100, Math.
 // sharpening; , and . lower and raise the bloom strength, - and = the sharpening strength, in steps of 10.
 function changeGfx(change: Partial<GfxSettings>, text: string): void {
   gfx = { ...gfx, ...change };
+  store.set({ bloom: gfx.bloom, bloomStrength: gfx.bloomStrength, sharpen: gfx.sharpen, sharpenStrength: gfx.sharpenStrength });
   renderer.setSettings(gfx);
   if (!saveSettings(gfx)) showNotice('The browser did not keep the graphics settings');
   else showNotice(text);
@@ -489,6 +495,10 @@ const actions: UiActions = {
     writeTuning(SPAN_KEY, percent);
     store.set({ span: percent });
   },
+  setBloom: (bloom) => changeGfx({ bloom }, `Bloom: ${bloom ? `on, ${gfx.bloomStrength}` : 'off'}`),
+  setBloomStrength: (bloomStrength) => changeGfx({ bloom: true, bloomStrength }, `Bloom strength: ${bloomStrength}`),
+  setSharpen: (sharpen) => changeGfx({ sharpen }, `Sharpening: ${sharpen ? `on, ${gfx.sharpenStrength}` : 'off'}`),
+  setSharpenStrength: (sharpenStrength) => changeGfx({ sharpen: true, sharpenStrength }, `Sharpening strength: ${sharpenStrength}`),
   toggleHz() {
     const wantedHz: Hz = store.get().wantedHz === 60 ? 50 : 60;
     if (!saveHz(wantedHz)) showNotice('The browser did not keep the 60 Hz choice');

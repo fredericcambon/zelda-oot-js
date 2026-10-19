@@ -12,6 +12,10 @@ export interface UiState {
   /** Percent of the motion between game frames that is shown, and of a game frame it takes to catch up. */
   strength: number;
   span: number;
+  bloom: boolean;
+  bloomStrength: number;
+  sharpen: boolean;
+  sharpenStrength: number;
   bootHz: Hz;
   wantedHz: Hz;
   muted: boolean;
@@ -54,6 +58,10 @@ export interface UiActions {
   setSmooth(on: boolean): void;
   setStrength(percent: number): void;
   setSpan(percent: number): void;
+  setBloom(on: boolean): void;
+  setBloomStrength(percent: number): void;
+  setSharpen(on: boolean): void;
+  setSharpenStrength(percent: number): void;
   toggleHz(): void;
   toggleMute(): void;
   toggleNative(): void;

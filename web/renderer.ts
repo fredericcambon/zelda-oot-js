@@ -271,9 +271,12 @@ export class Renderer {
     else gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, this.canvas.width, this.canvas.height);
   }
 
-  /** Applies new options; the colour images and the cached textures are dropped and rebuilt as the game draws. */
+  /** Applies new options; unless only the post-processing changed, the colour images and the cached textures are dropped and rebuilt as the game draws. */
   setSettings(settings: GfxSettings): void {
+    const effectsOnly = (Object.keys(settings) as (keyof GfxSettings)[]).every((k) => k.startsWith('bloom') || k.startsWith('sharpen') || settings[k] === this.settings[k]);
     this.settings = { ...settings };
+    // The effects act at present time only: the images and textures stay.
+    if (effectsOnly) return;
     this.setScale(this.scale);
     this.clearTextures();
   }
