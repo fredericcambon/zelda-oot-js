@@ -33,18 +33,34 @@ export async function playScript(game: Game, from: number, to: number): Promise<
   }
 }
 
-let known: Promise<Map<number, IntroState>> | undefined;
+/** Frames a continuously played game runs past SAVE_FRAME to make the live reference. */
+export const LIVE_FRAMES = 180;
+
+/** What a game that played the intro without ever loading a state holds LIVE_FRAMES after SAVE_FRAME: the SHA-256 of its memory and of its saved state. */
+export interface LiveReference {
+  ram: string;
+  state: string;
+}
+
+const sha = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
+
+let known: Promise<{ states: Map<number, IntroState>; live: LiveReference }> | undefined;
+
+export async function liveReference(): Promise<LiveReference> {
+  known ??= makeStates();
+  return (await known).live;
+}
 
 /** The state of a fresh game at `frame`, one of CHECKPOINTS, played from boot once for every checkpoint. */
 export async function introState(frame = SAVE_FRAME): Promise<IntroState> {
   known ??= makeStates();
-  const found = (await known).get(frame);
+  const found = (await known).states.get(frame);
   if (!found) throw new Error(`no intro state at frame ${frame}`);
   return found;
 }
 
 /** The states of CHECKPOINTS, keyed by the shared build's wasm, the controller script and the frames, so that a new build or script never reads an old state. */
-async function makeStates(): Promise<Map<number, IntroState>> {
+async function makeStates(): Promise<{ states: Map<number, IntroState>; live: LiveReference }> {
   const base = loadBase();
   const wasm = readFileSync(new URL(base.moduleUrl.replace(/\.js$/, '.wasm')));
   const key = createHash('sha256').update(wasm).update(readFileSync(SCRIPT_URL)).update(CHECKPOINTS.join(',')).digest('hex').slice(0, 24);
@@ -84,17 +100,20 @@ async function makeStates(): Promise<Map<number, IntroState>> {
       }
       const tmp = `${file}.${process.pid}.tmp`;
       writeFileSync(tmp, Buffer.concat(parts));
-      for (const old of readdirSync(dir)) if (old.endsWith('.bin') && old !== `${key}.bin`) rmSync(join(dir, old), { force: true });
+      for (const old of readdirSync(dir)) if (/\.(bin|live)$/.test(old) && !old.startsWith(key)) rmSync(join(dir, old), { force: true });
+      await playScript(game, SAVE_FRAME, SAVE_FRAME + LIVE_FRAMES);
+      const live = { ram: sha(game.ram()), state: sha(game.saveState()) };
+      writeFileSync(`${file}.live`, JSON.stringify(live));
       renameSync(tmp, file);
-      return made;
+      return { states: made, live };
     } finally {
       rmSync(lock, { force: true });
     }
   }
 }
 
-async function read(file: string): Promise<Map<number, IntroState> | undefined> {
-  if (!existsSync(file)) return undefined;
+async function read(file: string): Promise<{ states: Map<number, IntroState>; live: LiveReference } | undefined> {
+  if (!existsSync(file) || !existsSync(`${file}.live`)) return undefined;
   const bytes = readFileSync(file);
   const states = new Map<number, IntroState>();
   for (let at = 0; at < bytes.length; ) {
@@ -107,7 +126,7 @@ async function read(file: string): Promise<Map<number, IntroState> | undefined> 
     states.set(frame, { sram, state: await decompressState(bytes.subarray(at, at + packedLength)) });
     at += packedLength;
   }
-  return states;
+  return { states, live: JSON.parse(readFileSync(`${file}.live`, 'utf8')) as LiveReference };
 }
 
 /** Loads an intro state into a game that has just booted; the save memory is restored too. */

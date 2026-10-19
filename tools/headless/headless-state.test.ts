@@ -6,7 +6,7 @@ import { compressState, STATE_VERSION } from '../runtime/snapshot.ts';
 import { RDRAM_SIZE } from '../runtime/instance.ts';
 import { encodeThreads, parseThreads } from '../runtime/threads.ts';
 import { playState } from './state.ts';
-import { introState, loadIntro } from './intro-state.ts';
+import { introState, liveReference, loadIntro } from './intro-state.ts';
 import { rom, HOUSE_SCENE, buildGame, buildVariant, sha, SAVE_FRAME, REPLAY_FRAMES, STATE_SIZE_LIMIT, sections, withSection, startReplayable } from './headless-support.ts';
 
 describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
@@ -39,6 +39,10 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
     expect(sha(second.game.ram())).toBe(sha(first.game.ram()));
     // Everything the state holds is the same after the replay, so nothing the game depends on was left out of it.
     expect(sha(second.game.saveState())).toBe(sha(first.game.saveState()));
+    // A game that played the intro from boot without loading anything holds the same after the same frames, so the state left nothing out.
+    const live = await liveReference();
+    expect(sha(second.game.ram())).toBe(live.ram);
+    expect(sha(second.game.saveState())).toBe(live.state);
 
     // The same game goes back too.
     await first.game.loadState(state);
@@ -106,6 +110,9 @@ describe.skipIf(!rom || !existsSync(rom))('headless boot', () => {
     expect(await second.play(SAVE_FRAME, SAVE_FRAME + REPLAY_FRAMES)).toEqual(expected);
     expect(sha(second.game.ram())).toBe(sha(first.game.ram()));
     expect(sha(second.game.saveState())).toBe(sha(first.game.saveState()));
+    const live = await liveReference();
+    expect(sha(second.game.ram())).toBe(live.ram);
+    expect(sha(second.game.saveState())).toBe(live.state);
   }, 3_600_000);
 
   it('refuses to save a state while the game boots', async () => {

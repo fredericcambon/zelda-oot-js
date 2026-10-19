@@ -11,7 +11,7 @@ import { HEIGHT, SoftRenderer, WIDTH } from '../gfx/raster.ts';
 import { bootGame } from './boot.ts';
 import { padAt, parseInput } from './input.ts';
 import { linkPosition, playState } from './state.ts';
-import { SAVE_FRAME } from './intro-state.ts';
+import { LIVE_FRAMES, SAVE_FRAME } from './intro-state.ts';
 
 export const rom = process.env.OOT_ROM;
 export const FRAMES = 300;
@@ -128,7 +128,7 @@ export const sha = (bytes: Uint8Array) => createHash('sha256').update(bytes).dig
 
 /** The frames replayed after the intro state, and the size a gzipped state must stay within. */
 export { SAVE_FRAME };
-export const REPLAY_FRAMES = 180;
+export const REPLAY_FRAMES = LIVE_FRAMES;
 export const STATE_SIZE_LIMIT = 4 * 1024 * 1024;
 
 /** The payload of each section of a portable state, by tag (runtime/state.c). */
