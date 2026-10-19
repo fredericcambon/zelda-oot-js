@@ -1,0 +1,4 @@
+/* The tab strip scrolls inside the panel when its tabs do not fit, instead of pushing the fold button out of the page. */
+.tabs { overflow-x: auto; scrollbar-width: none; }
+.tabs button { flex: 1 0 auto; padding-left: 8px; padding-right: 8px; }
+.tabs .fold { position: sticky; right: 0; background: #181818; }

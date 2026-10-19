@@ -2,6 +2,7 @@ import { html } from 'htm/preact';
 import type { VNode } from 'preact';
 import { useEffect } from 'preact/hooks';
 import type { TabProps } from './types.ts';
+import { LabelsSection } from './label-edit.ts';
 import { Button, Slider } from './widgets.ts';
 
 export function GameTab({ state: s, actions: a }: TabProps): VNode {
@@ -21,6 +22,7 @@ export function GameTab({ state: s, actions: a }: TabProps): VNode {
         <${Button} id="fullscreen-toggle" onClick=${a.toggleFullscreen}>Fullscreen<//>
       </div>
     </section>
+    <${LabelsSection} />
     <section class="keys">
       <h3>Keys</h3>
       <p class="help">Arrows: stick · Enter: Start · X: A · Z: B · Shift: Z · Q/E: L/R · IJKL: C buttons · WASD: D-pad · or a gamepad</p>

@@ -25,6 +25,7 @@ import { Bridge, readEntrances, sameSnapshot, snapshot, warpTo } from './inspect
 import { applyCheats, loadCheats, parseCode, saveCheats, type Cheat } from './inspect/cheats.ts';
 import { EMPTY_ACTORS, goToActor, sameSnapshot as sameActors, snapshot as actorsSnapshot } from './inspect/actors.ts';
 import { EMPTY_MEMORY, MemoryModel, parseAddress } from './inspect/memory.ts';
+import { labels } from './ui/labels.ts';
 import { mountUi } from './ui/panel.ts';
 import { Store } from './ui/store.ts';
 import { isTyping } from './ui/typing.ts';
@@ -702,7 +703,7 @@ const actions: UiActions = {
   },
   toggleCheat: (id) => setCheats(store.get().cheats.map((c) => (c.id === id ? { ...c, enabled: !c.enabled } : c))),
   removeCheat: (id) => setCheats(store.get().cheats.filter((c) => c.id !== id)),
-  goToActor: (addr) => bridge.queue.push(() => goToActor(bridge, addr), 'Go to failed'),
+  goToActor: (addr) => bridge.queue.push(() => goToActor(bridge, addr, (id) => labels.get('actor', id) ?? `actor ${id}`), 'Go to failed'),
   viewRecord(addr) {
     memoryModel.setStart(addr);
     updateMemory(performance.now(), true);
