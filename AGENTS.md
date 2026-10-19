@@ -28,3 +28,11 @@ The ROM file never enters the repo, a commit or an upload. Only the build reads 
 ## Silent runs
 
 Automated runs must be silent: browsers launched by tools or tests use `--mute-audio`; when a worker opens the game in a browser to check something, mute it (M key) first.
+
+## Shared machine
+
+Workers run on the user's own computer, alongside each other and the user's apps. Never take over its resources:
+- Run at most one heavy process at a time (a game build, wasm-opt, a scene sweep, a headless browser running the game). Never fan out parallel sweeps or builds.
+- Close each headless browser or game instance as soon as its result is captured, and stop every process you started before reporting done.
+- Prefer the smallest scope that answers the question (a few scenes, not all of them) and reuse existing build output instead of rebuilding.
+- If a run will take more than a few minutes of full CPU, say so in a checkpoint first.
