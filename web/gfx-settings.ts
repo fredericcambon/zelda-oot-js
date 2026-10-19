@@ -29,6 +29,10 @@ export interface GfxSettings {
   cutout: CutoutMode;
   /** Where lit surfaces are shaded (see `LightingMode`). */
   lightingMode: LightingMode;
+  /** Warm flickering point lights at the torches and fires of the scene, added by the port (the game has none). */
+  pointLights: boolean;
+  /** Strength of the point lights, 0 to 100. */
+  pointLightStrength: number;
   /** Soft contact shadows in corners and under objects of the 3D scene, from its depth (never the HUD or the sky). */
   ao: boolean;
   /** Strength of the occlusion, 0 to 100. */
@@ -62,6 +66,8 @@ export const defaultSettings = (mobile: boolean): GfxSettings => ({
   anisotropy: mobile ? 2 : 4,
   cutout: 'smooth',
   lightingMode: 'vertex',
+  pointLights: false,
+  pointLightStrength: 50,
   ao: true,
   aoStrength: 40,
   bloom: true,
@@ -94,6 +100,8 @@ export function parseSettings(text: string | null, mobile: boolean): GfxSettings
   if (typeof raw.mipmaps === 'boolean') settings.mipmaps = raw.mipmaps;
   if (typeof raw.scaleCap === 'number' && Number.isFinite(raw.scaleCap) && raw.scaleCap >= 0) settings.scaleCap = raw.scaleCap;
   if (typeof raw.anisotropy === 'number' && Number.isInteger(raw.anisotropy) && raw.anisotropy >= 1 && raw.anisotropy <= 8) settings.anisotropy = raw.anisotropy;
+  if (typeof raw.pointLights === 'boolean') settings.pointLights = raw.pointLights;
+  if (isStrength(raw.pointLightStrength)) settings.pointLightStrength = raw.pointLightStrength;
   if (typeof raw.ao === 'boolean') settings.ao = raw.ao;
   if (isStrength(raw.aoStrength)) settings.aoStrength = raw.aoStrength;
   if (typeof raw.bloom === 'boolean') settings.bloom = raw.bloom;

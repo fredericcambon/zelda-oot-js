@@ -23,6 +23,10 @@ export interface UiState {
   sharpen: boolean;
   sharpenStrength: number;
   lightingMode: LightingMode;
+  pointLights: boolean;
+  pointLightStrength: number;
+  /** Ids of the actors marked as point-light sources. */
+  lightIds: number[];
   bootHz: Hz;
   wantedHz: Hz;
   muted: boolean;
@@ -74,6 +78,8 @@ export interface UiActions {
   setAoStrength(percent: number): void;
   setSharpen(on: boolean): void;
   setLightingMode(mode: LightingMode): void;
+  setPointLights(on: boolean): void;
+  setPointLightStrength(percent: number): void;
   setSharpenStrength(percent: number): void;
   toggleHz(): void;
   toggleMute(): void;
@@ -117,6 +123,7 @@ export interface UiActions {
   removeCheat(id: string): void;
   /** Queues putting Link next to the actor whose record is at `addr`; refused in an unsafe state. */
   goToActor(addr: number): void;
+  toggleLightActor(id: number): void;
   /** Shows the record at `addr` in the Memory tab. */
   viewRecord(addr: number): void;
 }

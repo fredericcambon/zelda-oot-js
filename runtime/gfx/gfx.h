@@ -158,6 +158,24 @@ typedef struct {
 void gfx_set_pixel_lighting(uint32_t mode);
 const GfxLightResult *gfx_light_result(void);
 
+// ---- Camera output (dl.c) -------------------------------------------------------------------------------------
+
+// While `gfx_set_camera_output` is on, the per-vertex normal words (the array of GfxLightResult) are produced even without pixel
+// lighting, and their fourth value is (1 for a triangle lit per pixel) + 2 * (1 + the slot below of the perspective projection the
+// triangle's vertices were transformed under; 0 for an orthographic one). The view matrix is multiplied into the projection, so a
+// slot's matrix takes a world position (row vector, w = 1) to the clip space of the vertex data.
+enum { GFX_MAX_CAMERAS = 3 };
+
+typedef struct {
+  uint32_t count;
+  uint32_t vertices[GFX_MAX_CAMERAS];
+  // Sixteen values per slot, row-major for row vectors.
+  double matrix[GFX_MAX_CAMERAS][16];
+} GfxCameraResult;
+
+void gfx_set_camera_output(uint32_t on);
+const GfxCameraResult *gfx_camera_result(void);
+
 // ---- Motion: matrix names, records and overrides (dl.c) -----------------------------------------------------------
 
 enum {
