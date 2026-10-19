@@ -603,6 +603,11 @@ export class Renderer {
     return { texture, framebuffer };
   }
 
+  /** Whether the task draws colour images that nothing displays, which `drawTask` with a memory copies into it. */
+  drawsOffscreen(result: DisplayListResult): boolean {
+    return offscreenRegions(result.batches, (addr) => this.screens.has(addr)).length > 0;
+  }
+
   /** Copies the images the task drew that nothing displays into the guest's memory, as the RDP would have left them. */
   private copyOffscreen(result: DisplayListResult, memory: Uint8Array): void {
     for (const region of offscreenRegions(result.batches, (addr) => this.screens.has(addr))) {

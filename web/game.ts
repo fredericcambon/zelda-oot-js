@@ -110,6 +110,12 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
         if (smoothing) {
           const t0 = performance.now();
           frames!.push(data);
+          // Smoothed pictures are drawn later, when the game has moved on: the images it draws for its own use are drawn now, so that it finds them in memory.
+          const kept = frames!.current();
+          if (renderer.drawsOffscreen(kept)) {
+            useLighting();
+            renderer.drawTask(kept, guestRam());
+          }
           keptBefore = keptAt;
           keptAt = videoFrames;
           serial++;
