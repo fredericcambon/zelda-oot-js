@@ -4,10 +4,10 @@ import { locateFileTable, type FileEntry } from '../../tools/rom/filetable.ts';
 import { fileOf } from './icons.ts';
 
 /** File table index of the main code file, whose data holds the scene table. */
-const CODE_FILE = 28;
+export const CODE_FILE = 28;
 /** Offset of the scene table in that file (the table is at 0x800F9440 in RAM) and its record size. */
-const SCENE_TABLE_AT = 949600;
-const SCENE_RECORD_SIZE = 20;
+export const SCENE_TABLE_AT = 949600;
+export const SCENE_RECORD_SIZE = 20;
 /** Records of the table: the next 20 bytes are display-list data (docs/re/title-cards.md). */
 export const SCENE_RECORDS = 101;
 

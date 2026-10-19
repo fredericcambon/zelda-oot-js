@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import { loadCartridge } from '../cartridge.ts';
 import { ITEM_SIZE, QUEST_SIZE, readPictures, type Pictures } from '../inspect/icons.ts';
+import { readExitLists } from '../inspect/exits.ts';
 import { CARD_HEIGHT, CARD_WIDTH, readTitleCards, type TitleCards } from '../inspect/title-cards.ts';
 
 export interface Icons {
@@ -39,6 +40,7 @@ function iconsFor(pictures: Pictures): Icons {
 interface Art {
   icons: Icons;
   cards: TitleCards | null;
+  exits: ReadonlyMap<number, readonly number[]>;
 }
 
 let loading: Promise<Art> | undefined;
@@ -46,8 +48,8 @@ let loading: Promise<Art> | undefined;
 /** The page fetches the pack again (the browser serves it from its cache) and keeps only the pictures it needs. */
 function loadArt(): Promise<Art> {
   loading ??= loadCartridge(() => {})
-    .then((image) => ({ icons: iconsFor(readPictures(image)), cards: cardsOf(image) }))
-    .catch((err: unknown) => ({ icons: { ...NONE, error: err instanceof Error ? err.message : String(err) }, cards: null }));
+    .then((image) => ({ icons: iconsFor(readPictures(image)), cards: cardsOf(image), exits: exitsOf(image) }))
+    .catch((err: unknown) => ({ icons: { ...NONE, error: err instanceof Error ? err.message : String(err) }, cards: null, exits: new Map() }));
   return loading;
 }
 
@@ -96,10 +98,31 @@ export function useTitleCards(): CardImages | null {
   return cards;
 }
 
+function exitsOf(image: Uint8Array): ReadonlyMap<number, readonly number[]> {
+  try {
+    return readExitLists(image);
+  } catch {
+    return new Map();
+  }
+}
+
 function cardsOf(image: Uint8Array): TitleCards | null {
   try {
     return readTitleCards(image);
   } catch {
     return null;
   }
+}
+
+/** The exit list of each scene, read from the game's own data; empty until it is loaded. */
+export function useSceneExits(): ReadonlyMap<number, readonly number[]> | null {
+  const [exits, setExits] = useState<ReadonlyMap<number, readonly number[]> | null>(null);
+  useEffect(() => {
+    let live = true;
+    void loadArt().then((a) => live && setExits(a.exits));
+    return () => {
+      live = false;
+    };
+  }, []);
+  return exits;
 }

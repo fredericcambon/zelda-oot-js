@@ -59,7 +59,7 @@ Cards cover 65 of 101 scenes, and the Warp list has one row per entrance, so eac
 
 - `npm run sweep -- scenes --dist dist --frames 90 --thumbs dist/warp-thumbs [--shard k/n]` (`tools/sweep/scenes.ts`) forces each entrance as the sweep always does (`requestEntrance`), runs 90 frames, and writes the picture shown then at half size (160 x 120) as `dist/warp-thumbs/<entrance, 4 digits>.png`. From the start of the run it writes 0xFF to byte `+0xB` of the title card record (`+0x1D4C` of the play context, the delay counter above) every frame, so the card never fades in over the picture. The picture is the software renderer's, as the other sweep dumps are. An entrance whose run ends in another scene than its table entry names, or traps, gets none.
 - The dev and preview servers answer `/warp-thumbs/NNNN.png` from `dist/warp-thumbs` to loopback clients only (`web/game-files.ts`); the Pages build does not carry them, and a row without its picture simply shows no picture. They are ROM-derived and git-ignored with the rest of `dist/`.
-- The Warp tab shows, per row: the picture of the arrival, the scene's card when it has one (above), the user's label (entrance label first, then scene label), and the numbers.
+- The Warp tab shows, per arrival row (`entrances.md`): the picture of the arrival, the scene's card on the scene heading, the text names, the user's labels and the numbers.
 
 Coverage (1556 table entries, 1519 valid, 37 name scenes past the table; `npx tsx tools/assets/title-cards-report.ts` prints it):
 
@@ -72,7 +72,7 @@ Coverage (1556 table entries, 1519 valid, 37 name scenes past the table; `npx ts
 | picture only | 290 |
 | neither | 2 |
 
-No picture, with a card (27): 694-697 and 1552-1555 (the run does not end: 694-697 is the floor-probe loop of `gaps.md`, 1552-1555 did not finish within a minute either), 1016-1019 (PI trap of `gaps.md`), 1528-1531 (`thread 0xffed0000 is runnable but was never created`), 877-880, 1156-1157, 1412-1415 and 1504 (the game sends them to another scene: `not-reached`). Neither card nor picture: 1305 and 1306 (scene 79, which the game redirects to scene 26; neither has a card): only the user's label or the numbers.
+No picture, with a card (27): 694-697 and 1552-1555 (the run does not end: 694-697 is the floor-probe loop of `gaps.md`, 1552-1555 did not finish within a minute either), 1016-1019 (PI trap of `gaps.md`), 1528-1531 (`thread 0xffed0000 is runnable but was never created`), 877-880, 1156-1157, 1412-1415 and 1504 (the game sends them to another scene: `not-reached`). Neither card nor picture (the list shows the text name of the row all the same): 1305 and 1306 (scene 79, which the game redirects to scene 26; neither has a card): only the user's label or the numbers.
 
 ## Pause-screen names (not found)
 
