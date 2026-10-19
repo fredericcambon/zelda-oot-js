@@ -105,6 +105,11 @@ const START_HOLD = 6;
 /** The record's init word is zero before the code is loaded and holds the link address until the overlay is loaded (docs/re/input.md). */
 const FILE_SELECT_INIT = FILE_SELECT_RECORD + RECORD.init;
 
+/** Whether a scene of the game itself is loaded (not the title's demo scene or the file select). */
+export function sceneRunning(mem: GuestRam): boolean {
+  return playState((a) => mem.rd32(a)) !== undefined && mem.rd32(GAME_MODE) === 0;
+}
+
 /** Whether the game has loaded the file select overlay since it started. */
 export function fileSelectReached(mem: GuestRam): boolean {
   const init = mem.rd32(FILE_SELECT_INIT);
