@@ -2,6 +2,7 @@
 // rules as the WebGL path (web/shader.ts, web/renderer.ts).
 import type { Batch, DecodedTexture, DisplayListResult, DrawState, RectBatch, TileState, TriangleBatch } from './types.ts';
 import { Geo } from './opcodes.ts';
+import { offscreenRegions, writeRegion } from './offscreen.ts';
 import { CycleType, cycleTypeOf, MIN_COVERAGE_ALPHA, OtherL, shiftScale, specOf, type BlendCycle, type ShaderSpec } from '../../web/shader.ts';
 
 export const WIDTH = 320;
@@ -138,9 +139,28 @@ export class SoftRenderer {
   pixelsWritten = 0;
   cullMode: 'normal' | 'swapped' | 'off' = 'normal';
   private readonly depth = new Float32Array(WIDTH * HEIGHT).fill(1);
+  /** The colour images the video interface has scanned out. */
+  private readonly screens = new Set<number>();
 
-  drawTask(result: DisplayListResult): void {
+  /**
+   * Draws the batches of one graphics task. With `memory` (the guest's RDRAM, indexed by physical address) the colour images that are not
+   * screens are copied into it afterwards, as the RDP leaves them there for the game to read (tools/gfx/offscreen.ts).
+   */
+  drawTask(result: DisplayListResult, memory?: Uint8Array): void {
     for (const b of result.batches) this.drawBatch(b);
+    if (!memory) return;
+    for (const region of offscreenRegions(result.batches, (addr) => this.screens.has(addr))) {
+      const img = this.images.get(region.addr)!;
+      const w = region.x1 - region.x0;
+      const rgba = new Uint8Array(w * (region.y1 - region.y0) * 4);
+      for (let y = region.y0; y < region.y1; y++) rgba.set(img.subarray((y * WIDTH + region.x0) * 4, (y * WIDTH + region.x1) * 4), (y - region.y0) * w * 4);
+      writeRegion(memory, region, rgba);
+    }
+  }
+
+  /** Notes that the video interface scans out the colour image at `address`. */
+  present(address: number): void {
+    this.screens.add(physical(address));
   }
 
   /** The image at `address`, or null when none was drawn there (and for 0, the blanked screen). */
@@ -159,8 +179,22 @@ export class SoftRenderer {
     return img;
   }
 
-  private drawBatch(b: Batch): void {
-    const state = b.state;
+  /** The state with the textures that the game loaded from a colour image drawn into earlier replaced by that image's pixels. */
+  private sampled(state: DrawState): DrawState {
+    if (!state.textures.some((t) => t?.source)) return state;
+    const textures = state.textures.map((t) => {
+      const image = t?.source ? this.images.get(t.source.addr) : undefined;
+      if (!t || !t.source || !image || t.source.x + t.width > WIDTH || t.source.y + t.height > HEIGHT) return t;
+      const rgba = new Uint8Array(t.width * t.height * 4);
+      for (let y = 0; y < t.height; y++) rgba.set(image.subarray(((t.source.y + y) * WIDTH + t.source.x) * 4, ((t.source.y + y) * WIDTH + t.source.x + t.width) * 4), y * t.width * 4);
+      return { ...t, rgba, loaded: null };
+    }) as DrawState['textures'];
+    return { ...state, textures };
+  }
+
+  private drawBatch(drawn: Batch): void {
+    const state = this.sampled(drawn.state);
+    const b = state === drawn.state ? drawn : ({ ...drawn, state } as Batch);
     const img = this.target(state.colorImage.addr);
     if (b.kind === 'triangles') this.triangles(b, img);
     else if (b.kind === 'fillrect' && cycleTypeOf(state.otherModeH) === CycleType.FILL) this.fill(b, img);

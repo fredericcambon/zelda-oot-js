@@ -308,6 +308,9 @@ static uint32_t hash_bytes(const uint8_t *data, size_t len, size_t start, size_t
 // load (LOADTLUT) is not a texel load: the bytes it writes stop counting as loaded, so a tile whose rows a palette later
 // overwrote (a palette sits at TMEM word 256, where a second texture's rows may be) does not hash the palette as texels.
 static uint32_t tmem_stamp[TMEM_BYTES];
+// Per 64-bit word of TMEM: the RDRAM address its bytes were loaded from by the last texel load, -1 when none, or after a palette load
+// or a partial overwrite.
+static int32_t tmem_src[TMEM_BYTES / 8];
 static uint32_t load_count;
 // Per tile: the load count at its last SetTile that followed a load, and the load count at the one before.
 static uint32_t tile_mark[8], tile_window[8];
@@ -345,6 +348,7 @@ static void store(int64_t dest, int64_t src, int64_t bytes, int texels) {
   if (n > 0) {
     memcpy(tmem + d, ram + src, (size_t)n);
     for (int64_t i = 0; i < n; i++) tmem_stamp[d + i] = texels ? load_count : 0;
+    for (int64_t w = d / 8; w <= (d + n - 1) / 8; w++) tmem_src[w] = texels && w * 8 >= d && w * 8 + 8 <= d + n ? (int32_t)(src + w * 8 - d) : -1;
   }
   tmem_epoch++;
   invalidate();
@@ -434,12 +438,75 @@ static Texture *decode_tile(int index) {
 
 // ---- Render state snapshots and batches -------------------------------------------------------------------------
 
+// ---- Colour images read as textures -----------------------------------------------------------------------------
+//
+// The RDP writes what it draws into RDRAM; the interpreter does not. A texture loaded from an image drawn into earlier in the same
+// list (the pause menu draws Link into a 64x112 image and copies it, as four texture rectangles, into another one) would be decoded
+// from the memory's old contents. So the images drawn into so far are remembered, and a texture whose texels were loaded from inside
+// one is reported with its place in the image (GfxState.texture_source), for the renderer to sample the image it holds. What a
+// later list loads is read from RDRAM, which the host fills from the images that nothing displays.
+enum { DRAWN_IMAGES = 8 };
+static struct { uint32_t addr, rows; int32_t width; } drawn_images[DRAWN_IMAGES];
+static int drawn_image_n;
+
+// Notes that the draw about to be snapshotted goes into the colour image in force.
+static void note_drawn_image(void) {
+  const uint32_t addr = (uint32_t)st.color_image[3];
+  if (st.color_image[1] != GFX_SIZ_16 || addr == st.depth_image) return;
+  const uint32_t rows = st.scissor[4] > 0 ? (uint32_t)((st.scissor[4] + 3) >> 2) : 240;
+  int i = 0;
+  while (i < drawn_image_n && drawn_images[i].addr != addr) i++;
+  if (i == drawn_image_n) {
+    if (i == DRAWN_IMAGES) i = DRAWN_IMAGES - 1;
+    else drawn_image_n++;
+    drawn_images[i].addr = addr;
+    drawn_images[i].rows = 0;
+  }
+  if (drawn_images[i].width != st.color_image[2]) drawn_images[i].rows = 0;
+  drawn_images[i].width = st.color_image[2];
+  if (rows > drawn_images[i].rows) drawn_images[i].rows = rows;
+}
+
+// The colour image that the texels of `tex`, decoded for tile `index`, were loaded from: its address, then the column and row of the
+// first texel in it. Only RGBA16 textures whose rows are rows of an RGBA16 image qualify.
+static void texture_source_of(const Texture *tex, int index, int32_t out[3]) {
+  out[0] = -1;
+  if (!tex || tex->fmt != GFX_FMT_RGBA || tex->siz != GFX_SIZ_16) return;
+  const GfxTile *t = &st.tiles[index];
+  const int32_t row_words = (int32_t)((tex->width * 16 + 63) / 64);
+  if (t->tmem < 0 || t->tmem + (int32_t)(tex->height - 1) * t->line + row_words > TMEM_BYTES / 8) return;
+  const int64_t first = tmem_src[t->tmem];
+  if (first < 0) return;
+  const int64_t stride = tex->height > 1 ? (int64_t)tmem_src[t->tmem + t->line] - first : 0;
+  for (uint32_t y = 0; y < tex->height; y++) {
+    for (int32_t k = 0; k < row_words; k++) {
+      if (tmem_src[t->tmem + (int32_t)y * t->line + k] != first + (int64_t)y * stride + k * 8) return;
+    }
+  }
+  const int64_t last = first + (int64_t)(tex->height - 1) * stride + row_words * 8;
+  for (int i = 0; i < drawn_image_n; i++) {
+    const int64_t row_bytes = (int64_t)drawn_images[i].width * 2;
+    if (first < drawn_images[i].addr || last > (int64_t)drawn_images[i].addr + (int64_t)drawn_images[i].rows * row_bytes) continue;
+    if (tex->height > 1 && stride != row_bytes) continue;
+    const int64_t at = first - drawn_images[i].addr;
+    if (at % 2 != 0 || at % row_bytes / 2 + tex->width > (int64_t)drawn_images[i].width) continue;
+    out[0] = (int32_t)drawn_images[i].addr;
+    out[1] = (int32_t)(at % row_bytes / 2);
+    out[2] = (int32_t)(at / row_bytes);
+    return;
+  }
+}
+
 static uint32_t take_snapshot(int texture_tile) {
   GfxState s = st;
   s.texture_ref_tile[0] = texture_tile;
   s.texture_ref_tile[1] = (texture_tile + 1) & 7;
-  s.texture_ref[0] = texture_ref(decode_tile(s.texture_ref_tile[0]));
-  s.texture_ref[1] = texture_ref(decode_tile(s.texture_ref_tile[1]));
+  Texture *textures[2] = { decode_tile(s.texture_ref_tile[0]), decode_tile(s.texture_ref_tile[1]) };
+  for (int i = 0; i < 2; i++) {
+    s.texture_ref[i] = texture_ref(textures[i]);
+    texture_source_of(textures[i], s.texture_ref_tile[i], s.texture_source[i]);
+  }
+  note_drawn_image();
   VEC_PUSH(out_states, s);
   snapshot_valid = 1;
   return (uint32_t)(out_states.n - 1);
@@ -1448,6 +1515,8 @@ static void reset(void) {
   memset(vert_loaded, 0, sizeof vert_loaded);
   memset(tmem, 0, sizeof tmem);
   memset(tmem_stamp, 0, sizeof tmem_stamp);
+  memset(tmem_src, 0xff, sizeof tmem_src);
+  drawn_image_n = 0;
   load_count = 0;
   memset(tile_mark, 0, sizeof tile_mark);
   memset(tile_window, 0, sizeof tile_window);

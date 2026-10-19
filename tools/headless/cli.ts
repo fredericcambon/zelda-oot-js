@@ -79,7 +79,7 @@ async function main(): Promise<number> {
               profiler?.taskDone();
               if (values.dl) totals.add(result);
               const wanted = dumpAt.length > 0 ? dumpAt.some((f) => frameNo <= f && frameNo > f - DRAW_LEAD) : frameNo >= dumpFrom - 2;
-              if (wanted) soft?.drawTask(result);
+              if (wanted) soft?.drawTask(result, task.ram);
             };
             if (profiler) profiler.hook(handle);
             else handle();
@@ -123,6 +123,7 @@ async function main(): Promise<number> {
       const calls = game.lastCalls(40);
       if (calls.length > 0) console.error(`last calls, newest first: ${calls.join(' ')}`);
     }
+    if (soft && game.framebuffer()) soft.present(game.framebuffer());
     const dumpNow = dumpAt.length > 0 ? dumpAt.includes(r.frame) : r.frame % dumpEvery === 0 && r.frame >= dumpFrom;
     if (soft && dumpDir && dumpNow) {
       const img = soft.image(game.framebuffer());

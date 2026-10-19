@@ -121,7 +121,7 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
         useLighting();
         const result = runDisplayList(mod, data);
         const t1 = performance.now();
-        renderer.drawTask(result);
+        renderer.drawTask(result, guestRam());
         profiler.addDisplayList(t1 - t0);
         profiler.addSubmit(performance.now() - t1, renderer.stats.drawCalls);
       } catch (err) {

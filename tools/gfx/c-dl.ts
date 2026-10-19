@@ -42,7 +42,7 @@ export function runDisplayList(core: GfxGameCore, start: number): DisplayListRes
 /** Words of the records of the result (GfxResult, GfxBatch, GfxState, GfxTextureRef, GfxUnknown in runtime/gfx/gfx.h). */
 const RESULT_WORDS = 17;
 const BATCH_WORDS = 13;
-const STATE_WORDS = 177;
+const STATE_WORDS = 183;
 const TEXTURE_WORDS = 7;
 const UNKNOWN_WORDS = 3;
 const PROBLEM_BYTES = 160;
@@ -196,7 +196,12 @@ function readState(w: Int32Array, base: number, images: DecodedTexture[]): DrawS
   });
   const refs = [next(), next()];
   const refTiles = [next(), next()];
-  const textures = refs.map((ref, i) => (ref < 0 ? null : { ...images[ref]!, tile: refTiles[i]! })) as DrawState['textures'];
+  const sources = [[next(), next(), next()], [next(), next(), next()]];
+  const textures = refs.map((ref, i) => {
+    if (ref < 0) return null;
+    const [addr, x, y] = sources[i]!;
+    return { ...images[ref]!, tile: refTiles[i]!, ...(addr! >= 0 && { source: { addr: addr!, x: x!, y: y! } }) };
+  }) as DrawState['textures'];
   const viewport = { scale: [next(), next(), next()] as [number, number, number], trans: [next(), next(), next()] as [number, number, number] };
   const scissor = { mode: next(), xh: next(), yh: next(), xl: next(), yl: next() };
   const colorImage = { fmt: next(), siz: next(), width: next(), addr: next() };

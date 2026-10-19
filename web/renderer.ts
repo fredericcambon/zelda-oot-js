@@ -12,6 +12,7 @@ import { effectsOn, FULLSCREEN_VERTEX, occlusionOn, PostFx, type SceneDepth } fr
 import { fitProjection, type ProjectionFit } from './ao.ts';
 import { isLowContrast, softened } from './low-contrast.ts';
 import { bindToggleKey, scaleOf, hashImage, pagePack, type TexPack } from './tex-pack.ts';
+import { offscreenRegions, writeRegion, type ImageRegion } from '../tools/gfx/offscreen.ts';
 
 export const SCREEN_W = 320;
 export const SCREEN_H = 240;
@@ -169,6 +170,12 @@ export class Renderer {
   /** While recording (for tools/tex/compare.ts): per task, the textures it drew as `<hash><state>`, state `+` replaced, `~` in the pack but not yet loaded, `-` not in the pack. */
   private textureLog: { frames: string[][]; facts: Map<string, { width: number; height: number; fmt: number; siz: number; unloaded: number; rgba?: string }> } | null = null;
   private lastPresented: number | null = null;
+  /** The colour images shown so far, by physical address: what the video interface scans out, as opposed to the images the game draws for its own use. */
+  private readonly screens = new Set<number>();
+  /** Per texture of the draw about to be issued: the copy of the colour image the game loaded it from, when it did (`drawRuns`). */
+  private sources: [GpuTexture | null, GpuTexture | null] = [null, null];
+  /** Copies of parts of colour images made for the textures of the task being drawn; deleted at its end. */
+  private readonly sourceTextures: WebGLTexture[] = [];
   private lastTarget: Target | null = null;
   private vertices = new Float32Array(0);
   private vertexBytes = new Int8Array(0);
@@ -392,8 +399,11 @@ export class Renderer {
 
   // ---- Frame interface ---------------------------------------------------------------------------------------------
 
-  /** Draws the batches of one graphics task into the colour images they name. */
-  drawTask(result: DisplayListResult): void {
+  /**
+   * Draws the batches of one graphics task into the colour images they name. With `memory` (the guest's RDRAM, indexed by physical address)
+   * the images that are not screens are copied into it afterwards, as the RDP leaves them there for the game to read (tools/gfx/offscreen.ts).
+   */
+  drawTask(result: DisplayListResult, memory?: Uint8Array): void {
     const s = this.stats;
     // The cache is emptied between tasks: emptying it while a draw holds two textures would delete the first one.
     if (this.textureCache.size >= MAX_TEXTURES) this.clearTextures();
@@ -427,8 +437,10 @@ export class Renderer {
     } finally {
       this.resolveTargets();
       this.captureDepths();
+      for (const t of this.sourceTextures.splice(0)) this.gl.deleteTexture(t);
       this.gpuTimer.end();
     }
+    if (memory) this.copyOffscreen(result, memory);
     if (this.textureLog) this.logTextures(result);
     s.programs = this.programs.size;
     s.textures = this.textureCache.size;
@@ -438,6 +450,7 @@ export class Renderer {
   /** Shows the colour image at `address` (the one the video interface scans out), or the last one drawn when unknown. */
   present(address: number): void {
     this.lastPresented = address;
+    if (address !== 0) this.screens.add(physical(address));
     this.gpuTimer.begin('present');
     try {
       this.presentImage(address);
@@ -545,6 +558,75 @@ export class Renderer {
     this.lastTarget = t;
   }
 
+  /** The pixels of a rectangle of a colour image at the size the game addresses, top row first, RGBA; null when no draw made the image. */
+  private readRegion(region: ImageRegion): Uint8Array | null {
+    const t = this.targets.get(region.addr);
+    if (!t) return null;
+    const gl = this.gl;
+    const w = region.x1 - region.x0, h = region.y1 - region.y0;
+    const copy = this.copyRegion(t, region.x0, region.y0, w, h, 1);
+    const out = new Uint8Array(w * h * 4);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, copy.framebuffer);
+    gl.pixelStorei(gl.PACK_ALIGNMENT, 1);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, out);
+    gl.deleteFramebuffer(copy.framebuffer);
+    gl.deleteTexture(copy.texture);
+    return out;
+  }
+
+  /**
+   * A texture of `w` x `h` pixels (`scale` times as many texels each way) holding the rectangle at (`x`, `y`) of a colour image, top row
+   * first, as it is now. Of a multisampled image the resolved copy is read, so the draws since the last resolve are resolved first.
+   */
+  private copyRegion(t: Target, x: number, y: number, w: number, h: number, scale: number): { texture: WebGLTexture; framebuffer: WebGLFramebuffer } {
+    const gl = this.gl;
+    const k = this.canvas.width / SCREEN_W;
+    if (t.samples && t.dirty) {
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, t.samples.framebuffer);
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, t.framebuffer);
+      gl.blitFramebuffer(0, 0, this.canvas.width, this.canvas.height, 0, 0, this.canvas.width, this.canvas.height, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+      t.dirty = false;
+    }
+    const texture = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w * scale, h * scale, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    const framebuffer = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, framebuffer);
+    gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, t.framebuffer);
+    gl.disable(gl.SCISSOR_TEST);
+    // The images are stored bottom row first and the copy top row first, so the blit mirrors.
+    const height = this.canvas.height;
+    gl.blitFramebuffer(x * k, height - (y + h) * k, (x + w) * k, height - y * k, 0, h * scale, w * scale, 0, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    return { texture, framebuffer };
+  }
+
+  /** Copies the images the task drew that nothing displays into the guest's memory, as the RDP would have left them. */
+  private copyOffscreen(result: DisplayListResult, memory: Uint8Array): void {
+    for (const region of offscreenRegions(result.batches, (addr) => this.screens.has(addr))) {
+      const rgba = this.readRegion(region);
+      if (rgba) writeRegion(memory, region, rgba);
+    }
+  }
+
+  /**
+   * The textures of a draw that the game loaded from a colour image it had drawn into earlier in the list: the image's pixels as they
+   * are now, which the decoded texture (whatever the memory held) is not.
+   */
+  private sourcesOf(state: DrawState): [GpuTexture | null, GpuTexture | null] {
+    const k = this.canvas.width / SCREEN_W;
+    return state.textures.map((image) => {
+      const t = image?.source ? this.targets.get(image.source.addr) : undefined;
+      if (!image || !image.source || !t) return null;
+      const copy = this.copyRegion(t, image.source.x, image.source.y, image.width, image.height, k);
+      this.gl.deleteFramebuffer(copy.framebuffer);
+      this.sourceTextures.push(copy.texture);
+      return { texture: copy.texture, width: image.width * k, height: image.height * k, mipmapped: false, scale: k, refs: 1 };
+    }) as [GpuTexture | null, GpuTexture | null];
+  }
+
   /** Copies the multisampled buffers drawn into since the last resolve into the images that get presented. */
   private resolveTargets(): void {
     if (this.samples === 0) return;
@@ -586,6 +668,7 @@ export class Renderer {
         continue;
       }
       const count = counts[i]!;
+      this.sources = this.sourcesOf(run.state);
       this.separateScene(run);
       this.bindTarget(run.state.colorImage.addr);
       this.draw(run, first, count);
@@ -788,7 +871,7 @@ export class Renderer {
     if (this.settings.filter !== 'n64' || ((state.otherModeH >>> 12) & 3) === 0) return false;
     const read = texturesRead(state);
     const used = state.textures.filter((t, i) => t && read[i]);
-    return used.length > 0 && used.every((t) => isLowContrast(t!));
+    return used.length > 0 && used.every((t) => !t!.source && isLowContrast(t!));
   }
 
   // ---- State -------------------------------------------------------------------------------------------------------
@@ -862,7 +945,7 @@ export class Renderer {
     const read = texturesRead(state);
     for (let i = 0; i < 2; i++) {
       const decoded = state.textures[i];
-      const tex = decoded ? this.textureFor(decoded, read[i]!) : this.white;
+      const tex = this.sources[i] ?? (decoded ? this.textureFor(decoded, read[i]!) : this.white);
       const tile = decoded ? state.tiles[decoded.tile]! : null;
       gl.activeTexture(gl.TEXTURE0 + i);
       gl.bindTexture(gl.TEXTURE_2D, tex.texture);
