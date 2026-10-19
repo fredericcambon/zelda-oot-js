@@ -1,3 +1,4 @@
+import type { LightingMode } from '../gfx-settings.ts';
 import type { CullMode } from '../renderer.ts';
 import type { Hz } from '../mode.ts';
 import type { InventorySnapshot } from '../inspect/inventory.ts';
@@ -21,6 +22,7 @@ export interface UiState {
   bloomRadius: number;
   sharpen: boolean;
   sharpenStrength: number;
+  lightingMode: LightingMode;
   bootHz: Hz;
   wantedHz: Hz;
   muted: boolean;
@@ -71,6 +73,7 @@ export interface UiActions {
   setAo(on: boolean): void;
   setAoStrength(percent: number): void;
   setSharpen(on: boolean): void;
+  setLightingMode(mode: LightingMode): void;
   setSharpenStrength(percent: number): void;
   toggleHz(): void;
   toggleMute(): void;

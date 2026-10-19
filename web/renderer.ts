@@ -1,6 +1,6 @@
 // WebGL2 back end for the draw batches of tools/gfx/types.ts (produced by the interpreter in runtime/gfx/). Every colour image the game draws into is a 320x240 texture
 // keyed by its address, so double buffering behaves as on the console; the depth image is one shared buffer.
-import type { DecodedTexture, DisplayListResult, DrawState, RectBatch, TriangleBatch } from '../tools/gfx/types.ts';
+import type { DecodedTexture, DisplayListResult, DrawState, LightSet, RectBatch, TriangleBatch } from '../tools/gfx/types.ts';
 import { mergeRuns, type DrawRun, type Run } from './batching.ts';
 import { GpuTimer } from './gpu-timer.ts';
 import { Geo } from '../tools/gfx/opcodes.ts';
@@ -35,6 +35,8 @@ export interface RenderStats {
   compileMs: number;
   textures: number;
   targets: number;
+  /** Pixel lighting: triangles lit, those among them with normals against their face, those with vertices lit differently, and those left on the vertex path, summed over the tasks drawn so far. */
+  lighting: { lit: number; reversed: number; mixed: number; vertexPath: number };
 }
 
 interface Program {
@@ -81,7 +83,7 @@ interface Target {
 }
 
 /** What a renderer made without settings uses: no multisampling, no mip levels. */
-const PLAIN: GfxSettings = { filter: 'n64', msaa: false, scaleCap: 0, mipmaps: false, anisotropy: 1, cutout: 'hard', ao: false, aoStrength: 0, bloom: false, bloomStrength: 0, bloomThreshold: 80, bloomKnee: 40, bloomRadius: 100, sharpen: false, sharpenStrength: 0 };
+const PLAIN: GfxSettings = { filter: 'n64', msaa: false, scaleCap: 0, mipmaps: false, anisotropy: 1, cutout: 'hard', lightingMode: 'vertex', ao: false, aoStrength: 0, bloom: false, bloomStrength: 0, bloomThreshold: 80, bloomKnee: 40, bloomRadius: 100, sharpen: false, sharpenStrength: 0 };
 const MSAA_SAMPLES = 4;
 
 /**
@@ -91,7 +93,9 @@ const MSAA_SAMPLES = 4;
 const mipmappable = (tile: { maskS: number; maskT: number }, tex: GpuTexture): boolean =>
   tex.mipmapped && (tile.maskS === 0 || 1 << tile.maskS === tex.width / tex.scale) && (tile.maskT === 0 || 1 << tile.maskT === tex.height / tex.scale);
 
-const FLOATS_PER_VERTEX = 10;
+/** Words per vertex: position, colour and uv, and in pixel lighting mode a fifth word of four signed bytes (normal x, y, z and 1 for a triangle lit per pixel). */
+const VERTEX_WORDS = 10;
+const LIT_VERTEX_WORDS = 11;
 const MAX_TEXTURES = 512;
 /** Texture unit that uploads bind on: units 0 and 1 hold the two tiles the combiner reads and must not be disturbed. */
 const UPLOAD_UNIT = 2;
@@ -108,7 +112,7 @@ const physical = (addr: number): number => addr & 0x1fffffff;
 
 export class Renderer {
   cullMode: CullMode = 'normal';
-  readonly stats: RenderStats = { tasks: 0, commands: 0, batches: 0, triangles: 0, rects: 0, drawCalls: 0, unmergedDrawCalls: 0, unknown: 0, problems: [], programs: 0, compileMs: 0, textures: 0, targets: 0 };
+  readonly stats: RenderStats = { tasks: 0, commands: 0, batches: 0, triangles: 0, rects: 0, drawCalls: 0, unmergedDrawCalls: 0, unknown: 0, problems: [], programs: 0, compileMs: 0, textures: 0, targets: 0, lighting: { lit: 0, reversed: 0, mixed: 0, vertexPath: 0 } };
 
   private readonly gl: WebGL2RenderingContext;
   /** Called with the GPU milliseconds of each finished game frame (its task plus the presents that followed). */
@@ -141,6 +145,8 @@ export class Renderer {
   private lastPresented: number | null = null;
   private lastTarget: Target | null = null;
   private vertices = new Float32Array(0);
+  private vertexBytes = new Int8Array(0);
+  private words = VERTEX_WORDS;
 
   /** `texPack`: the replacement textures; by default the pack the page is served with, none where there is no page to ask (the tests). */
   constructor(readonly canvas: HTMLCanvasElement, scale = 1, settings: GfxSettings = PLAIN, readonly texPack: TexPack | null = pagePack()) {
@@ -156,13 +162,7 @@ export class Renderer {
     this.vao = gl.createVertexArray()!;
     gl.bindVertexArray(this.vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
-    const stride = FLOATS_PER_VERTEX * 4;
-    gl.enableVertexAttribArray(0);
-    gl.vertexAttribPointer(0, 4, gl.FLOAT, false, stride, 0);
-    gl.enableVertexAttribArray(1);
-    gl.vertexAttribPointer(1, 4, gl.FLOAT, false, stride, 16);
-    gl.enableVertexAttribArray(2);
-    gl.vertexAttribPointer(2, 2, gl.FLOAT, false, stride, 32);
+    this.layoutVertices();
     this.depth = gl.createRenderbuffer()!;
     this.setScale(scale);
     this.white = this.upload(1, 1, Uint8Array.of(255, 255, 255, 255), false);
@@ -171,6 +171,28 @@ export class Renderer {
       if (typeof addEventListener === 'function') bindToggleKey(this.texPack, globalThis);
       // The handle the screenshot tool (tools/tex/compare.ts) drives.
       Object.assign(globalThis, { ootTexPack: { pack: this.texPack, redraw: () => this.redraw(), boundsOf: (hashes: string[]) => this.boundsOf(new Set(hashes)), inUse: () => [...this.textureCache.values()].filter((t) => t.scale > 1).length, record: (on: boolean) => this.recordTextures(on), recorded: () => this.recorded() } });
+    }
+  }
+
+  /** Points the vertex attributes at the buffer's layout for the lighting mode in force. */
+  private layoutVertices(): void {
+    const gl = this.gl;
+    this.words = this.settings.lightingMode === 'pixel' ? LIT_VERTEX_WORDS : VERTEX_WORDS;
+    gl.bindVertexArray(this.vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+    const stride = this.words * 4;
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 4, gl.FLOAT, false, stride, 0);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 4, gl.FLOAT, false, stride, 16);
+    gl.enableVertexAttribArray(2);
+    gl.vertexAttribPointer(2, 2, gl.FLOAT, false, stride, 32);
+    if (this.words === LIT_VERTEX_WORDS) {
+      gl.enableVertexAttribArray(3);
+      gl.vertexAttribPointer(3, 4, gl.BYTE, false, stride, 40);
+    } else {
+      gl.disableVertexAttribArray(3);
+      gl.vertexAttrib4f(3, 0, 0, 0, 0);
     }
   }
 
@@ -279,8 +301,9 @@ export class Renderer {
 
   /** Applies new options; unless only the post-processing changed, the colour images and the cached textures are dropped and rebuilt as the game draws. */
   setSettings(settings: GfxSettings): void {
-    const effectsOnly = (Object.keys(settings) as (keyof GfxSettings)[]).every((k) => k.startsWith('ao') || k.startsWith('bloom') || k.startsWith('sharpen') || settings[k] === this.settings[k]);
+    const effectsOnly = (Object.keys(settings) as (keyof GfxSettings)[]).every((k) => k === 'lightingMode' || k.startsWith('ao') || k.startsWith('bloom') || k.startsWith('sharpen') || settings[k] === this.settings[k]);
     this.settings = { ...settings };
+    this.layoutVertices();
     // The effects act at present time only: the images and textures stay.
     if (effectsOnly) return;
     this.setScale(this.scale);
@@ -349,6 +372,12 @@ export class Renderer {
     s.rects = 0;
     s.unknown = result.unknown.length;
     s.problems = result.problems.slice(0, 8);
+    if (result.lighting) {
+      s.lighting.lit += result.lighting.lit;
+      s.lighting.reversed += result.lighting.reversed;
+      s.lighting.mixed += result.lighting.mixed;
+      s.lighting.vertexPath += result.lighting.vertexPath;
+    }
     this.projection = occlusionOn(this.settings) ? fitProjection(result.batches) : null;
     try {
       this.drawRuns(mergeRuns(result.batches));
@@ -504,7 +533,7 @@ export class Renderer {
     if (vertices > 0) {
       gl.bindVertexArray(this.vao);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
-      gl.bufferData(gl.ARRAY_BUFFER, v.subarray(0, vertices * FLOATS_PER_VERTEX), gl.STREAM_DRAW);
+      gl.bufferData(gl.ARRAY_BUFFER, v.subarray(0, vertices * this.words), gl.STREAM_DRAW);
     }
     let first = 0;
     for (const [i, run] of runs.entries()) {
@@ -644,11 +673,17 @@ export class Renderer {
     this.stats.triangles += n / 3;
     this.stats.unmergedDrawCalls++;
     for (let i = 0; i < n; i++) {
-      const o = (first + i) * FLOATS_PER_VERTEX;
+      const o = (first + i) * this.words;
       v.set(b.positions.subarray(i * 4, i * 4 + 4), o);
       v.set(b.colors.subarray(i * 4, i * 4 + 4), o + 4);
       v[o + 8] = b.uvs[i * 2]!;
       v[o + 9] = b.uvs[i * 2 + 1]!;
+      if (this.words === LIT_VERTEX_WORDS) {
+        // Normal bytes are whole numbers except on vertices a clip made; those round.
+        const bytes = this.vertexBytes, at = (o + VERTEX_WORDS) * 4;
+        const n = b.normals;
+        for (let k = 0; k < 4; k++) bytes[at + k] = n ? Math.round(n[i * 4 + k]!) : 0;
+      }
     }
     return first + n;
   }
@@ -677,12 +712,16 @@ export class Renderer {
       v[o + 9] = t0 + (py - y0) * stepT;
     };
     const order: [number, number][] = [[x0, y0], [x1, y0], [x0, y1], [x1, y0], [x1, y1], [x0, y1]];
-    order.forEach(([px, py], i) => corner(px, py, (first + i) * FLOATS_PER_VERTEX));
+    order.forEach(([px, py], i) => corner(px, py, (first + i) * this.words));
+    if (this.words === LIT_VERTEX_WORDS) for (let i = 0; i < 6; i++) this.vertices[(first + i) * this.words + VERTEX_WORDS] = 0;
     return first + 6;
   }
 
   private scratch(vertices: number): Float32Array {
-    if (this.vertices.length < vertices * FLOATS_PER_VERTEX) this.vertices = new Float32Array(vertices * FLOATS_PER_VERTEX * 2);
+    if (this.vertices.length < vertices * this.words) {
+      this.vertices = new Float32Array(vertices * this.words * 2);
+      this.vertexBytes = new Int8Array(this.vertices.buffer);
+    }
     return this.vertices;
   }
 
@@ -690,11 +729,12 @@ export class Renderer {
     const gl = this.gl;
     const state = run.state;
     const cutout = this.settings.cutout === 'smooth' && this.samples > 0 && run.triangles && (state.geometryMode & Geo.ZBUFFER) !== 0;
-    const spec = specOf(state, { filter: this.settings.filter, mip: this.settings.mipmaps && run.triangles, cutout, smoothTexels: this.softTextures(state) });
+    const spec = specOf(state, { filter: this.settings.filter, mip: this.settings.mipmaps && run.triangles, cutout, smoothTexels: this.softTextures(state), pixelLight: run.lights !== null });
     const { program, spec: used } = this.program(spec);
     gl.useProgram(program.gl);
     this.applyRaster(state, run.triangles, used);
     this.applyUniforms(program, state, run.triangles, used.mip);
+    if (used.pixelLight && run.lights) this.applyLights(program, run.lights);
     gl.drawArrays(gl.TRIANGLES, first, count);
     this.stats.drawCalls++;
   }
@@ -790,6 +830,14 @@ export class Renderer {
     gl.uniform4fv(u('uTexA'), a);
     gl.uniform4fv(u('uTexB'), m);
     gl.uniform4fv(u('uTexC'), c);
+  }
+
+  private applyLights(program: Program, lights: LightSet): void {
+    const gl = this.gl;
+    gl.uniform3f(this.uniform(program, 'uLightAmbient'), ...lights.ambient);
+    gl.uniform3fv(this.uniform(program, 'uLightColor'), lights.colors);
+    gl.uniform3fv(this.uniform(program, 'uLightDir'), lights.dirs);
+    gl.uniform1i(this.uniform(program, 'uLightCount'), lights.count);
   }
 
   // ---- Programs and textures ---------------------------------------------------------------------------------------
