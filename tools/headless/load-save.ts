@@ -43,10 +43,10 @@ export function guestRam(ram: Uint8Array): GuestRam {
 }
 
 /** Why the game cannot take a record now, or undefined when it can. */
-export function unsafeReason(mem: GuestRam): string | undefined {
+export function unsafeReason(mem: GuestRam, fromTitle = false): string | undefined {
   const play = playState((a) => mem.rd32(a));
   if (!play) return 'the game is not in a scene yet (starting up, or in the file select)';
-  if (mem.rd32(GAME_MODE) !== 0) return 'the game is at the title screen';
+  if (!fromTitle && mem.rd32(GAME_MODE) !== 0) return 'the game is at the title screen';
   if (mem.rd32(play.context + RUNNING) === 0) return 'the game is leaving this scene';
   if (mem.rd8(play.context + TRANSITION_TRIGGER) !== 0 || mem.rd8(play.context + TRANSITION_PHASE) !== 0) return 'a scene transition is in progress';
   return undefined;
@@ -70,8 +70,8 @@ export function isRecord(record: Uint8Array): boolean {
  * then ends the running play state into a new one at the record's entrance. Throws UnsafeStateError with the reason when
  * the game is not in a state where that is safe, and leaves the memory untouched.
  */
-export function loadRecordIntoPlay(mem: GuestRam, record: Uint8Array, slot: number): Warp {
-  const reason = unsafeReason(mem);
+export function loadRecordIntoPlay(mem: GuestRam, record: Uint8Array, slot: number, fromTitle = false): Warp {
+  const reason = unsafeReason(mem, fromTitle);
   if (reason) throw new UnsafeStateError(reason);
   if (!isRecord(record)) throw new Error('that is not a save record');
   const play = playState((a) => mem.rd32(a)) as PlayState;
@@ -90,6 +90,7 @@ export function loadRecordIntoPlay(mem: GuestRam, record: Uint8Array, slot: numb
   const entrance = entranceFor(scene, mem.rd32(SAVE_CONTEXT + 0x04));
   mem.write32(SAVE_CONTEXT + CUTSCENE, 0);
   mem.write32(SAVE_CONTEXT + PENDING_CUTSCENE, ((mem.rd32(SAVE_CONTEXT + PENDING_CUTSCENE) & 0xffff0000) | NO_PENDING_CUTSCENE) >>> 0);
+  if (fromTitle) mem.write32(GAME_MODE, 0);
   // requestEntrance takes the table entry the game will load, which is the index plus the variant the init derives.
   requestEntrance((a) => mem.rd32(a), (a, v) => mem.write32(a, v), play, entrance + setupVariantFor((a) => mem.rd32(a)));
   return { scene, entrance };
@@ -104,11 +105,6 @@ const START_HOLD = 6;
 
 /** The record's init word is zero before the code is loaded and holds the link address until the overlay is loaded (docs/re/input.md). */
 const FILE_SELECT_INIT = FILE_SELECT_RECORD + RECORD.init;
-
-/** Whether a scene of the game itself is loaded (not the title's demo scene or the file select). */
-export function sceneRunning(mem: GuestRam): boolean {
-  return playState((a) => mem.rd32(a)) !== undefined && mem.rd32(GAME_MODE) === 0;
-}
 
 /** Whether the game has loaded the file select overlay since it started. */
 export function fileSelectReached(mem: GuestRam): boolean {

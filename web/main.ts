@@ -14,8 +14,9 @@ import { formatBreakdown } from '../tools/gfx/profile.ts';
 import { fetchWasm, preloadModule } from './wasm.ts';
 import { mark, timingLines } from './timing.ts';
 import { FramePacer, loadHz, saveHz, type Hz } from './mode.ts';
-import { AutoStart, fileSelectReached, guestRam } from '../tools/headless/load-save.ts';
-import { FileEntry, parseBootParams, type BootParams } from './boot-params.ts';
+import { AutoStart, fileSelectReached, guestRam, loadRecordIntoPlay, unsafeReason } from '../tools/headless/load-save.ts';
+import { playState } from '../tools/headless/state.ts';
+import { parseBootParams, type BootParams } from './boot-params.ts';
 import { getRecord } from '../tools/saves/image.ts';
 import { backToFileSelect, loadSaveFile, loadSlotIntoPlay, type SaveTarget } from './save-actions.ts';
 import { pickSaveFile } from './save-picker.ts';
@@ -151,8 +152,6 @@ const memoryModel = new MemoryModel();
 applyCheats(bridge.freezes, store.get().cheats);
 // Presses Start after the game started over, until the file select is reached.
 let autoStart: AutoStart | null = null;
-// Drives the inputs of the `file` URL parameter until the file is entered.
-let fileEntry: FileEntry | null = null;
 let noticeTimer = 0;
 const input = new Input();
 const touch = new TouchControls(document.getElementById('touch-layer') as HTMLElement);
@@ -414,12 +413,6 @@ async function loop(): Promise<void> {
           pad.buttons |= autoStart.buttons();
           if (!autoStart.active) autoStart = null;
         }
-        if (fileEntry) {
-          const entry = fileEntry.step();
-          pad.buttons |= entry.buttons;
-          if (entry.y !== 0) pad.y = entry.y;
-          if (fileEntry.outcome !== 'running') fileEntry = null;
-        }
         game.setPad(pad);
         await game.frame();
         saves?.flush().catch((err) => setStatus(`Could not store the save: ${err instanceof Error ? err.message : String(err)}`, true));
@@ -519,6 +512,24 @@ async function untilSettled(): Promise<boolean> {
   return false;
 }
 
+const SETTLE_FRAMES = 1500;
+
+/** Runs frames back to back, with no input and no picture, until `done` holds; false when it does not within SETTLE_FRAMES. */
+async function runUntil(g: Game, done: () => boolean): Promise<boolean> {
+  g.setPad({ buttons: 0, x: 0, y: 0 });
+  for (let i = 0; i < SETTLE_FRAMES && !done(); i++) await g.frame();
+  return done();
+}
+
+/** Puts a record of the save memory in play without the title or the file select: runs to the title's demo scene, loads the record into the save context there and runs until the scene is settled. */
+async function enterFile(g: Game, record: Uint8Array, slot: number): Promise<string> {
+  const mem = () => guestRam(g.ram());
+  if (!(await runUntil(g, () => playState((a) => mem().rd32(a)) !== undefined))) return 'Could not enter the save file: the game did not reach a scene';
+  const { scene } = loadRecordIntoPlay(mem(), record, slot, true);
+  if (!(await runUntil(g, () => unsafeReason(mem()) === undefined))) return 'Could not enter the save file: the scene did not settle';
+  return `Entered save file ${slot + 1} (scene ${scene})`;
+}
+
 /** Applies the URL parameters in order: save state, save file, warp. A parameter that cannot be applied is reported and the game keeps running. */
 async function applyBootParams(params: BootParams): Promise<void> {
   const problems = [...params.problems];
@@ -548,17 +559,14 @@ async function applyBootParams(params: BootParams): Promise<void> {
     const g = game;
     if (!g) return;
     const record = getRecord(g.saveMemory.read(), file - 1);
-    if (!record) problems.push(`Save file ${file} is empty; staying at the file select`);
-    report();
-    await betweenFrames(() => {
-      if (params.state !== undefined) g.reset();
-      return '';
-    });
-    const entry = new FileEntry(record ? file - 1 : null, () => guestRam(g.ram()));
-    fileEntry = entry;
-    while (entry.outcome === 'running') await sleep(100);
-    entered = entry.outcome === 'entered';
-    if (entry.outcome === 'gave-up') problems.push(`Could not enter save file ${file}`);
+    if (!record) {
+      problems.push(`Save file ${file} is empty`);
+    } else {
+      const message = await betweenFrames(() => enterFile(g, record, file - 1));
+      showNotice(message);
+      entered = message.startsWith('Entered');
+      if (!entered) problems.push(message);
+    }
   }
   if (params.warp !== undefined) {
     const entrance = params.warp;
