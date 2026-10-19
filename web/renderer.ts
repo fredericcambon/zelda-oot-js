@@ -7,8 +7,9 @@ import { Geo } from '../tools/gfx/opcodes.ts';
 import { CycleType, cycleTypeOf, fragmentSource, OtherL, shiftScale, specKey, specOf, VERTEX_SHADER, type ShaderSpec } from './shader.ts';
 import { MAX_SCALE, type GfxSettings } from './gfx-settings.ts';
 import { texturesRead } from '../tools/tex/used.ts';
+import { effectsOn, FULLSCREEN_VERTEX, occlusionOn, PostFx, type SceneDepth } from './post-fx.ts';
+import { fitProjection, type ProjectionFit } from './ao.ts';
 import { isLowContrast, softened } from './low-contrast.ts';
-import { effectsOn, FULLSCREEN_VERTEX, PostFx } from './post-fx.ts';
 import { bindToggleKey, scaleOf, hashImage, pagePack, type TexPack } from './tex-pack.ts';
 
 export const SCREEN_W = 320;
@@ -75,10 +76,12 @@ interface Target {
   /** The image as it was before the first HUD draw, when there was one (see `Renderer.drawRuns`). */
   scene: { texture: WebGLTexture; framebuffer: WebGLFramebuffer } | null;
   sceneSplit: boolean;
+  /** The depth buffer as it was when the scene was complete (with the occlusion on), in the task `task`, with the projection of that task's main draws. */
+  depth: { texture: WebGLTexture; framebuffer: WebGLFramebuffer; task: number; projection: ProjectionFit } | null;
 }
 
 /** What a renderer made without settings uses: no multisampling, no mip levels. */
-const PLAIN: GfxSettings = { filter: 'n64', msaa: false, scaleCap: 0, mipmaps: false, anisotropy: 1, cutout: 'hard', bloom: false, bloomStrength: 0, bloomThreshold: 80, bloomKnee: 40, bloomRadius: 100, sharpen: false, sharpenStrength: 0 };
+const PLAIN: GfxSettings = { filter: 'n64', msaa: false, scaleCap: 0, mipmaps: false, anisotropy: 1, cutout: 'hard', ao: false, aoStrength: 0, bloom: false, bloomStrength: 0, bloomThreshold: 80, bloomKnee: 40, bloomRadius: 100, sharpen: false, sharpenStrength: 0 };
 const MSAA_SAMPLES = 4;
 
 /**
@@ -121,6 +124,8 @@ export class Renderer {
   private readonly presentProgram: Program;
   private readonly fx: PostFx;
   private taskId = 0;
+  /** The projection of the main 3D draws of the task being drawn; null without the occlusion or without such draws. */
+  private projection: ProjectionFit | null = null;
   private readonly buffer: WebGLBuffer;
   private readonly vao: WebGLVertexArrayObject;
   private readonly depth: WebGLRenderbuffer;
@@ -274,12 +279,17 @@ export class Renderer {
 
   /** Applies new options; unless only the post-processing changed, the colour images and the cached textures are dropped and rebuilt as the game draws. */
   setSettings(settings: GfxSettings): void {
-    const effectsOnly = (Object.keys(settings) as (keyof GfxSettings)[]).every((k) => k.startsWith('bloom') || k.startsWith('sharpen') || settings[k] === this.settings[k]);
+    const effectsOnly = (Object.keys(settings) as (keyof GfxSettings)[]).every((k) => k.startsWith('ao') || k.startsWith('bloom') || k.startsWith('sharpen') || settings[k] === this.settings[k]);
     this.settings = { ...settings };
     // The effects act at present time only: the images and textures stay.
     if (effectsOnly) return;
     this.setScale(this.scale);
     this.clearTextures();
+  }
+
+  /** The fit of the last task's main projection (see `fitProjection`); null when the occlusion is off or no draw gave one. */
+  get depthProjection(): Readonly<ProjectionFit> | null {
+    return this.projection;
   }
 
   get options(): Readonly<GfxSettings> {
@@ -339,10 +349,12 @@ export class Renderer {
     s.rects = 0;
     s.unknown = result.unknown.length;
     s.problems = result.problems.slice(0, 8);
+    this.projection = occlusionOn(this.settings) ? fitProjection(result.batches) : null;
     try {
       this.drawRuns(mergeRuns(result.batches));
     } finally {
       this.resolveTargets();
+      this.captureDepths();
       this.gpuTimer.end();
     }
     if (this.textureLog) this.logTextures(result);
@@ -387,7 +399,9 @@ export class Renderer {
       return;
     }
     if (effectsOn(this.settings) && target.hasScene) {
-      this.fx.run(target.sceneSplit ? target.scene!.texture : target.texture, target.sceneSplit ? target.texture : null, this.canvas.width, this.canvas.height, this.settings);
+      const d = target.depth && target.depth.task === target.task ? target.depth : null;
+      const depth: SceneDepth | null = d && occlusionOn(this.settings) ? { texture: d.texture, a: d.projection.a, b: d.projection.b } : null;
+      this.fx.run(target.sceneSplit ? target.scene!.texture : target.texture, target.sceneSplit ? target.texture : null, depth, this.canvas.width, this.canvas.height, this.settings);
       gl.bindVertexArray(this.vao);
       return;
     }
@@ -428,7 +442,7 @@ export class Renderer {
       gl.colorMask(true, true, true, true);
       gl.clearColor(0, 0, 0, 1);
       gl.clear(gl.COLOR_BUFFER_BIT);
-      t = { texture, framebuffer, samples, dirty: samples !== null, task: 0, hasScene: false, scene: null, sceneSplit: false };
+      t = { texture, framebuffer, samples, dirty: samples !== null, task: 0, hasScene: false, scene: null, sceneSplit: false, depth: null };
       this.targets.set(key, t);
     }
     return t;
@@ -445,6 +459,10 @@ export class Renderer {
     if (t.scene) {
       gl.deleteTexture(t.scene.texture);
       gl.deleteFramebuffer(t.scene.framebuffer);
+    }
+    if (t.depth) {
+      gl.deleteTexture(t.depth.texture);
+      gl.deleteFramebuffer(t.depth.framebuffer);
     }
   }
 
@@ -527,6 +545,40 @@ export class Renderer {
     }
   }
 
+  /** An image whose scene was not followed by HUD draws holds its scene as it is at the end of the task: the depth is copied then. */
+  private captureDepths(): void {
+    if (!occlusionOn(this.settings)) return;
+    for (const t of this.targets.values()) if (t.task === this.taskId && t.hasScene && !t.sceneSplit) this.copyDepth(t);
+  }
+
+  /**
+   * Copies the depth buffer into a texture the occlusion can read. A multisampled buffer is resolved by the copy (one sample per pixel), which suits it:
+   * the occlusion works on the pixels of the finished image.
+   */
+  private copyDepth(t: Target): void {
+    const gl = this.gl;
+    const projection = this.projection;
+    if (!projection) return;
+    const { width, height } = this.canvas;
+    if (!t.depth) {
+      const texture = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, width, height, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      const framebuffer = gl.createFramebuffer()!;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, texture, 0);
+      t.depth = { texture, framebuffer, task: 0, projection };
+    }
+    gl.disable(gl.SCISSOR_TEST);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, t.samples ? t.samples.framebuffer : t.framebuffer);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, t.depth.framebuffer);
+    gl.blitFramebuffer(0, 0, width, height, 0, 0, width, height, gl.DEPTH_BUFFER_BIT, gl.NEAREST);
+    t.depth.task = t.task;
+    t.depth.projection = projection;
+  }
+
   /** Copies what has been drawn into the image so far into its scene texture. */
   private copyScene(t: Target): void {
     const gl = this.gl;
@@ -551,6 +603,7 @@ export class Renderer {
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, t.framebuffer);
     gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, t.scene.framebuffer);
     gl.blitFramebuffer(0, 0, width, height, 0, 0, width, height, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    if (occlusionOn(this.settings)) this.copyDepth(t);
   }
 
   private scissorRect(state: DrawState): { x: number; y: number; w: number; h: number } {

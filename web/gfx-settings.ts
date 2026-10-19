@@ -22,6 +22,10 @@ export interface GfxSettings {
   anisotropy: number;
   /** Edges of cut-out textures (foliage, fences) in 3D scenes. */
   cutout: CutoutMode;
+  /** Soft contact shadows in corners and under objects of the 3D scene, from its depth (never the HUD or the sky). */
+  ao: boolean;
+  /** Strength of the occlusion, 0 to 100. */
+  aoStrength: number;
   /** A soft glow around the bright parts of the 3D scene (never the HUD). */
   bloom: boolean;
   /** Strength of the bloom, 0 to 100. */
@@ -50,6 +54,8 @@ export const defaultSettings = (mobile: boolean): GfxSettings => ({
   mipmaps: true,
   anisotropy: mobile ? 2 : 4,
   cutout: 'smooth',
+  ao: true,
+  aoStrength: 40,
   bloom: true,
   bloomStrength: 30,
   bloomThreshold: 80,
@@ -79,6 +85,8 @@ export function parseSettings(text: string | null, mobile: boolean): GfxSettings
   if (typeof raw.mipmaps === 'boolean') settings.mipmaps = raw.mipmaps;
   if (typeof raw.scaleCap === 'number' && Number.isFinite(raw.scaleCap) && raw.scaleCap >= 0) settings.scaleCap = raw.scaleCap;
   if (typeof raw.anisotropy === 'number' && Number.isInteger(raw.anisotropy) && raw.anisotropy >= 1 && raw.anisotropy <= 8) settings.anisotropy = raw.anisotropy;
+  if (typeof raw.ao === 'boolean') settings.ao = raw.ao;
+  if (isStrength(raw.aoStrength)) settings.aoStrength = raw.aoStrength;
   if (typeof raw.bloom === 'boolean') settings.bloom = raw.bloom;
   if (typeof raw.sharpen === 'boolean') settings.sharpen = raw.sharpen;
   if (isStrength(raw.bloomStrength)) settings.bloomStrength = raw.bloomStrength;

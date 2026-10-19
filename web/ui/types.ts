@@ -12,6 +12,8 @@ export interface UiState {
   /** Percent of the motion between game frames that is shown, and of a game frame it takes to catch up. */
   strength: number;
   span: number;
+  ao: boolean;
+  aoStrength: number;
   bloom: boolean;
   bloomStrength: number;
   bloomThreshold: number;
@@ -66,6 +68,8 @@ export interface UiActions {
   setBloomThreshold(percent: number): void;
   setBloomKnee(percent: number): void;
   setBloomRadius(percent: number): void;
+  setAo(on: boolean): void;
+  setAoStrength(percent: number): void;
   setSharpen(on: boolean): void;
   setSharpenStrength(percent: number): void;
   toggleHz(): void;
