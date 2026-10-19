@@ -1,7 +1,9 @@
-// `npm run tex -- compare [--out out/tex-compare] [--pack out/texpack]`: opens the page in headless Chrome with the game in Kokiri Forest (save state 1),
-// walks Link to six places and, at each, freezes the game on one frame and draws that frame twice, with the original textures and with the pack.
-// Writes `view-N-original.png`, `view-N-pack.png`, a 1:1 crop of each where they differ most, and `index.html` side by side. Needs `dist/` and the
-// pack. The game runs against a copy of the saves folder, so the saves of the machine are not touched. Pictures come from the cartridge: `out/`.
+// `npm run tex -- compare [--out out/tex-compare] [--pack out/texpack] [--places hyrule-field,market,...]`: opens the page in headless Chrome with the game in
+// a place (save state 1, then a warp to the place's entrance; Kokiri Forest is the state itself), walks Link and, at each view, freezes the game on one frame
+// and draws that frame with the original textures and with each variant of the pack. In every place a moving capture counts the textures drawn and those
+// with an entry. Writes `<place>-N-<view>-<original|a|b|c|d>.png`, `moving-<place>.json`, a sheet of the textures drawn per place (`sheet-<place>-N.png`: the
+// original and the replacement of each, with its hash) and `index.html` with a swipe slider per picture. Needs `dist/` and the pack. The game runs against a
+// copy of the saves folder, so the saves of the machine are not touched. Pictures come from the cartridge: `out/`.
 import { type ChildProcess, spawn } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -11,7 +13,7 @@ import type { RgbaImage } from '../gfx/types.ts';
 import { savesDir } from '../../web/saves-endpoint.ts';
 import { decodePng } from './png-read.ts';
 import type { TextureRecord } from './collect.ts';
-import { analyzeMoving, type TextureFacts } from './moving.ts';
+import { analyzeMoving, type MovingReport, type TextureFacts } from './moving.ts';
 import { VARIANTS, type PackStats } from './upscale.ts';
 
 export interface CompareOptions {
@@ -21,19 +23,44 @@ export interface CompareOptions {
   dump?: string;
   /** Variants of the pack to capture (default: all that exist). */
   variants?: string[];
+  /** Names of `PLACES` to capture (default: every place but Kokiri Forest, which the trial covered). */
+  places?: string[];
   chrome: string;
   port: number;
   log?: (line: string) => void;
 }
 
-/** Keys held, in order, to reach each place from the one before (`code` of the keyboard event, milliseconds held). */
-const VIEWS: { name: string; walk: [string, number][] }[] = [
+type Walk = [string, number][];
+
+/** Keys held, in order, to reach each view from the one before (`code` of the keyboard event, milliseconds held). */
+const FOREST_VIEWS: { name: string; walk: Walk }[] = [
   { name: 'house-front', walk: [] },
   { name: 'path-south', walk: [['ArrowDown', 1500]] },
   { name: 'cliff-west', walk: [['ArrowLeft', 2500]] },
   { name: 'up-the-slope', walk: [['ArrowUp', 3000]] },
   { name: 'east', walk: [['ArrowRight', 3500]] },
   { name: 'far-corner', walk: [['ArrowDown', 3000], ['ArrowLeft', 1500]] },
+];
+const AHEAD_VIEWS: { name: string; walk: Walk }[] = [{ name: 'arrival', walk: [] }, { name: 'ahead', walk: [['ArrowUp', 2500]] }];
+
+export interface Place {
+  name: string;
+  label: string;
+  /** Table entry warped to after save state 1 is loaded (`docs/re/entrances.md`, the first of the run for the scene and spawn, day); none: the state itself. */
+  entrance?: number;
+  views: { name: string; walk: Walk }[];
+}
+
+export const PLACES: readonly Place[] = [
+  { name: 'kokiri', label: 'Kokiri Forest', views: FOREST_VIEWS },
+  { name: 'hyrule-field', label: 'Hyrule Field', entrance: 381, views: AHEAD_VIEWS },
+  { name: 'kakariko', label: 'Kakariko Village', entrance: 219, views: AHEAD_VIEWS },
+  { name: 'market', label: 'Market', entrance: 177, views: AHEAD_VIEWS },
+  { name: 'deku-tree', label: 'Inside the Deku Tree', entrance: 0, views: AHEAD_VIEWS },
+  { name: 'dodongo', label: "Dodongo's Cavern", entrance: 4, views: AHEAD_VIEWS },
+  { name: 'forest-temple', label: 'Forest Temple', entrance: 361, views: AHEAD_VIEWS },
+  { name: 'zora-domain', label: "Zora's Domain", entrance: 264, views: AHEAD_VIEWS },
+  { name: 'gerudo-valley', label: 'Gerudo Valley', entrance: 279, views: AHEAD_VIEWS },
 ];
 
 const CROP_W = 480, CROP_H = 360;
@@ -120,6 +147,8 @@ interface Crop {
 }
 
 interface Shot {
+  id: string;
+  place: string;
   name: string;
   crops: Crop[];
   /** Per variant: share of pixels where its picture differs from the original's by more than 8 in some channel, and how many textures it replaced. */
@@ -136,7 +165,7 @@ interface VariantInfo {
   seams: { wrapping: number; worse: number };
 }
 
-export async function compare({ out, pack, dump = 'out/texdump', variants: wanted, chrome, port, log = console.log }: CompareOptions): Promise<void> {
+export async function compare({ out, pack, dump = 'out/texdump', variants: wanted, places, chrome, port, log = console.log }: CompareOptions): Promise<void> {
   const variants = VARIANTS.filter((v) => (!wanted || wanted.includes(v.name)) && existsSync(join(pack, v.name, 'index.json'))).map((v) => v.name);
   if (variants.length === 0) throw new Error(`no texture pack at ${pack}: run npm run tex -- dump, then npm run tex -- upscale`);
   const info: VariantInfo[] = variants.map((name) => ({ name, ...(JSON.parse(readFileSync(join(pack, name, 'index.json'), 'utf8')) as Omit<VariantInfo, 'name'>) }));
@@ -148,6 +177,9 @@ export async function compare({ out, pack, dump = 'out/texdump', variants: wante
   const outDir = resolve(out);
   mkdirSync(outDir, { recursive: true });
   const shots: Shot[] = [];
+  const movings: (MovingReport & { place: string })[] = [];
+  const sheets: string[] = [];
+  const toSheet: { place: Place; hashes: string[] }[] = [];
   const facts = Object.values((JSON.parse(readFileSync(join(dump, 'index.json'), 'utf8')) as { textures: Record<string, TextureRecord> }).textures);
   // Close-ups are centred on the on-screen area drawn with a texture of the kind, in the views (1-based) that show it. Bush: the plants' leaf texture
   // (a 32x32 cut-out that clamps). Wall: the forest's cliff face (two textures). Both picked by looking at where each texture is drawn.
@@ -188,23 +220,30 @@ export async function compare({ out, pack, dump = 'out/texdump', variants: wante
     await call('Page.navigate', { url: `http://localhost:${port}/` });
     await waitFor('the page', async () => ((await evaluate('document.readyState')) === 'complete' ? true : undefined));
     await evaluate("localStorage.setItem('zelda-oot-js:60hz', '1'); localStorage.setItem('oot.texpack', '1'); localStorage.removeItem('oot.gfx'); localStorage.removeItem('oot.smooth')");
-    await call('Page.navigate', { url: `http://localhost:${port}/#debug` });
-    await call('Page.reload');
-    await waitFor('the first game frame', async () => {
-      const marks = (await evaluate('JSON.stringify(globalThis.ootTiming ?? {})')) as string;
-      if (JSON.parse(marks).firstFrame !== undefined) return true;
-      if ((await evaluate("document.getElementById('status')?.className")) === 'error') throw new Error(String(await evaluate("document.getElementById('status').textContent")));
-      return undefined;
-    });
-    await evaluate(`globalThis.ootTexPack.pack.setVariant('${variants[0]}')`);
-    await waitFor('the texture pack', async () => ((await evaluate('globalThis.ootTexPack?.pack.available === true')) ? true : undefined));
-    await tap('KeyM', 'm');
-    await tap('Digit6', '6');
-    await sleep(4000);
+    const known = new Map(facts.map((t) => [t.hash, t]));
+    const sheetSeen = new Set<string>();
+    let first = true;
+
+    // Loads a place: save state 1, then the warp to its entrance (the page's URL parameters), the game running with the first variant.
+    const enter = async (place: Place): Promise<void> => {
+      await call('Page.navigate', { url: 'about:blank' });
+      await call('Page.navigate', { url: `http://localhost:${port}/?state=1${place.entrance === undefined ? '' : `&warp=${place.entrance}`}#debug` });
+      await waitFor('the first game frame', async () => {
+        const marks = (await evaluate('JSON.stringify(globalThis.ootTiming ?? {})')) as string;
+        if (JSON.parse(marks).firstFrame !== undefined) return true;
+        if ((await evaluate("document.getElementById('status')?.className")) === 'error') throw new Error(String(await evaluate("document.getElementById('status').textContent")));
+        return undefined;
+      });
+      await evaluate(`globalThis.ootTexPack.pack.setVariant('${variants[0]}')`);
+      await waitFor('the texture pack', async () => ((await evaluate('globalThis.ootTexPack?.pack.available === true')) ? true : undefined));
+      if (first) await tap('KeyM', 'm');
+      first = false;
+      // The state loads, then the warp ends the scene into the entrance; give both time to settle (the loading screen included).
+      await sleep(place.entrance === undefined ? 4000 : 12000);
+    };
 
     // Moving capture: the same walk with the first variant, every texture each graphics task draws recorded (web/renderer.ts). The walk runs twice: the
     // first pass asks for the replacements, the second is recorded, so that a texture that was never replaced is not a texture still on its way.
-    const known = new Map(facts.map((t) => [t.hash, t]));
     const walk = async (): Promise<void> => {
       for (const code of ['ArrowLeft', 'ArrowDown', 'ArrowRight', 'ArrowUp']) {
         await key('keyDown', code);
@@ -212,84 +251,108 @@ export async function compare({ out, pack, dump = 'out/texdump', variants: wante
         await key('keyUp', code);
       }
     };
-    await walk();
-    await evaluate('globalThis.ootTexPack.record(true)');
-    await walk();
-    const recorded = (await evaluate('globalThis.ootTexPack.recorded()')) as { frames: string[][]; facts: Record<string, TextureFacts> };
-    await evaluate('globalThis.ootTexPack.record(false)');
-    const moving = analyzeMoving(recorded.frames, recorded.facts, known);
-    writeFileSync(join(outDir, 'moving.json'), JSON.stringify(moving, null, 1));
-    rmSync(join(outDir, 'unresolved'), { recursive: true, force: true });
-    mkdirSync(join(outDir, 'unresolved'), { recursive: true });
-    for (const u of moving.unresolved) {
-      const f = recorded.facts[u.hash];
-      if (f?.rgba) writeFileSync(join(outDir, 'unresolved', `${u.hash}.png`), encodePng(f.width, f.height, Buffer.from(f.rgba, 'base64')));
-    }
-    log(`moving: ${moving.tasks} graphics tasks, ${moving.textures} textures drawn, ${moving.inPack} with an entry in the pack, ${moving.flickering.length} that went from replaced back to original, ${moving.unresolved.length} without an entry`);
-    for (const u of moving.unresolved) log(`  ${u.hash} (${u.tasks} tasks): ${u.reason}`);
-    await tap('Digit6', '6');
-    await sleep(4000);
+    const movingCapture = async (place: Place): Promise<string[]> => {
+      await walk();
+      await evaluate('globalThis.ootTexPack.record(true)');
+      await walk();
+      const recorded = (await evaluate('globalThis.ootTexPack.recorded()')) as { frames: string[][]; facts: Record<string, TextureFacts> };
+      await evaluate('globalThis.ootTexPack.record(false)');
+      const moving = analyzeMoving(recorded.frames, recorded.facts, known);
+      writeFileSync(join(outDir, `moving-${place.name}.json`), JSON.stringify(moving, null, 1));
+      const dir = join(outDir, 'unresolved', place.name);
+      rmSync(dir, { recursive: true, force: true });
+      mkdirSync(dir, { recursive: true });
+      for (const u of moving.unresolved) {
+        const f = recorded.facts[u.hash];
+        if (f?.rgba) writeFileSync(join(dir, `${u.hash}.png`), encodePng(f.width, f.height, Buffer.from(f.rgba, 'base64')));
+      }
+      const share = moving.textures === 0 ? 0 : (moving.inPack / moving.textures) * 100;
+      log(`${place.label} moving: ${moving.tasks} graphics tasks, ${moving.textures} textures drawn, ${moving.inPack} with an entry in the pack (${share.toFixed(1)}%), ${moving.flickering.length} that went from replaced back to original, ${moving.unresolved.length} without an entry`);
+      for (const u of moving.unresolved) log(`  ${u.hash} (${u.tasks} tasks): ${u.reason}`);
+      movings.push({ place: place.label, ...moving });
+      return [...new Set(recorded.frames.flat().map((e) => e.slice(0, 16)))];
+    };
 
     const screenshot = async (): Promise<RgbaImage> => {
       const url = (await evaluate("document.getElementById('screen').toDataURL('image/png')")) as string;
       return decodePng(Buffer.from(url.split(',')[1]!, 'base64'));
     };
-    for (const [n, view] of VIEWS.slice(0, Number(process.env.TEX_VIEWS ?? VIEWS.length)).entries()) {
-      for (const [code, ms] of view.walk) {
-        await key('keyDown', code);
-        await sleep(ms);
-        await key('keyUp', code);
+    const save = (img: RgbaImage, file: string): void => writeFileSync(join(outDir, file), encodePng(img.width, img.height, img.rgba));
+    const chosen = places ?? PLACES.filter((q) => q.name !== 'kokiri').map((q) => q.name);
+    const wantedPlaces = PLACES.filter((p) => chosen.includes(p.name));
+    if (wantedPlaces.length === 0) throw new Error(`no such place; the places are ${PLACES.map((p) => p.name).join(', ')}`);
+    for (const place of wantedPlaces) {
+      await enter(place);
+      let drawn = await movingCapture(place);
+      // A warp now and then leaves the page drawing nothing; the place is loaded once more.
+      if (movings.at(-1)!.tasks === 0) {
+        movings.pop();
+        await enter(place);
+        drawn = await movingCapture(place);
       }
-      await sleep(1500);
-      // Let the replacements the walk asked for arrive while the game runs, then hold the frame.
-      await waitFor('the replacements', async () => (((await evaluate('globalThis.ootTexPack.pack.summary().pending')) as number) === 0 ? true : undefined));
-      await evaluate('window.ootHold(true)');
-      await sleep(400);
-      const draw = async (variant: string | null): Promise<RgbaImage> => {
-        if (variant) await evaluate(`globalThis.ootTexPack.pack.setVariant('${variant}')`);
-        await evaluate(`globalThis.ootTexPack.pack.enabled = ${variant !== null}`);
-        // Switching clears the textures; the replacements are fetched when the frame is drawn, and the frame is drawn again once they are in.
-        await evaluate('globalThis.ootTexPack.redraw()');
-        await waitFor('the replacements', async () => (((await evaluate('globalThis.ootTexPack.pack.summary().pending')) as number) === 0 ? true : undefined));
-        await evaluate('globalThis.ootTexPack.redraw()');
-        return screenshot();
-      };
-      const id = `view-${n + 1}-${view.name}`;
-      const original = await draw(null);
-      const save = (img: RgbaImage, file: string): void => writeFileSync(join(outDir, file), encodePng(img.width, img.height, img.rgba));
-      save(original, `${id}-original.png`);
-      const crops: Crop[] = [];
-      for (const [name, { hashes, views }] of Object.entries(closeUps)) {
-        if (!views.includes(n + 1)) continue;
-        const box = (await evaluate(`globalThis.ootTexPack.boundsOf(${JSON.stringify(hashes)})`)) as { x: number; y: number; w: number; h: number } | null;
-        if (!box) continue;
-        const w = Math.min(CROP_W, original.width), h = Math.min(CROP_H, original.height);
-        crops.push({ name, w, h, x: Math.round(Math.min(original.width - w, Math.max(0, box.x + box.w / 2 - w / 2))), y: Math.round(Math.min(original.height - h, Math.max(0, box.y + box.h / 2 - h / 2))) });
+      if (place.entrance === undefined) {
+        await tap('Digit6', '6');
+        await sleep(4000);
       }
-      for (const c of crops) save(cropImage(original, c.x, c.y, c.w, c.h), `${id}-${c.name}-original.png`);
-      const changed: Shot['changed'] = {};
-      const replaced: Shot['replaced'] = {};
-      for (const v of variants) {
-        const picture = await draw(v);
-        const summary = (await evaluate('globalThis.ootTexPack.pack.summary()')) as { replaced: number; seen: number };
-        save(picture, `${id}-${v}.png`);
-        for (const c of crops) save(cropImage(picture, c.x, c.y, c.w, c.h), `${id}-${c.name}-${v}.png`);
-        let differing = 0;
-        for (let i = 0; i < original.rgba.length; i += 4) {
-          if (Math.max(Math.abs(original.rgba[i]! - picture.rgba[i]!), Math.abs(original.rgba[i + 1]! - picture.rgba[i + 1]!), Math.abs(original.rgba[i + 2]! - picture.rgba[i + 2]!)) > 8) differing++;
+      for (const [n, view] of place.views.slice(0, Number(process.env.TEX_VIEWS ?? place.views.length)).entries()) {
+        for (const [code, ms] of view.walk) {
+          await key('keyDown', code);
+          await sleep(ms);
+          await key('keyUp', code);
         }
-        changed[v] = differing / (original.rgba.length / 4);
-        replaced[v] = summary;
-        log(`${id} ${v}: ${(changed[v]! * 100).toFixed(1)}% of pixels differ by more than 8; replaced ${summary.replaced} of ${summary.seen} textures seen so far`);
+        await sleep(1500);
+        // Let the replacements the walk asked for arrive while the game runs, then hold the frame.
+        await waitFor('the replacements', async () => (((await evaluate('globalThis.ootTexPack.pack.summary().pending')) as number) === 0 ? true : undefined));
+        await evaluate('window.ootHold(true)');
+        await sleep(400);
+        const draw = async (variant: string | null): Promise<RgbaImage> => {
+          if (variant) await evaluate(`globalThis.ootTexPack.pack.setVariant('${variant}')`);
+          await evaluate(`globalThis.ootTexPack.pack.enabled = ${variant !== null}`);
+          // Switching clears the textures; the replacements are fetched when the frame is drawn, and the frame is drawn again once they are in.
+          await evaluate('globalThis.ootTexPack.redraw()');
+          await waitFor('the replacements', async () => (((await evaluate('globalThis.ootTexPack.pack.summary().pending')) as number) === 0 ? true : undefined));
+          await evaluate('globalThis.ootTexPack.redraw()');
+          return screenshot();
+        };
+        const id = `${place.name}-${n + 1}-${view.name}`;
+        const original = await draw(null);
+        save(original, `${id}-original.png`);
+        const crops: Crop[] = [];
+        for (const [name, { hashes, views }] of Object.entries(place.name === 'kokiri' ? closeUps : {})) {
+          if (!views.includes(n + 1)) continue;
+          const box = (await evaluate(`globalThis.ootTexPack.boundsOf(${JSON.stringify(hashes)})`)) as { x: number; y: number; w: number; h: number } | null;
+          if (!box) continue;
+          const w = Math.min(CROP_W, original.width), h = Math.min(CROP_H, original.height);
+          crops.push({ name, w, h, x: Math.round(Math.min(original.width - w, Math.max(0, box.x + box.w / 2 - w / 2))), y: Math.round(Math.min(original.height - h, Math.max(0, box.y + box.h / 2 - h / 2))) });
+        }
+        for (const c of crops) save(cropImage(original, c.x, c.y, c.w, c.h), `${id}-${c.name}-original.png`);
+        const changed: Shot['changed'] = {};
+        const replaced: Shot['replaced'] = {};
+        for (const v of variants) {
+          const picture = await draw(v);
+          const summary = (await evaluate('globalThis.ootTexPack.pack.summary()')) as { replaced: number; seen: number };
+          save(picture, `${id}-${v}.png`);
+          for (const c of crops) save(cropImage(picture, c.x, c.y, c.w, c.h), `${id}-${c.name}-${v}.png`);
+          let differing = 0;
+          for (let i = 0; i < original.rgba.length; i += 4) {
+            if (Math.max(Math.abs(original.rgba[i]! - picture.rgba[i]!), Math.abs(original.rgba[i + 1]! - picture.rgba[i + 1]!), Math.abs(original.rgba[i + 2]! - picture.rgba[i + 2]!)) > 8) differing++;
+          }
+          changed[v] = differing / (original.rgba.length / 4);
+          replaced[v] = summary;
+          log(`${id} ${v}: ${(changed[v]! * 100).toFixed(1)}% of pixels differ by more than 8; replaced ${summary.replaced} of ${summary.seen} textures seen so far`);
+        }
+        const again = await draw(null);
+        await evaluate('globalThis.ootTexPack.pack.enabled = true; window.ootHold(false)');
+        const roundTrip = Buffer.compare(Buffer.from(original.rgba), Buffer.from(again.rgba)) === 0;
+        shots.push({ id, place: place.label, name: view.name, crops, changed, replaced, roundTrip });
+        log(`${id}: original again identical: ${roundTrip}`);
       }
-      const again = await draw(null);
-      await evaluate('globalThis.ootTexPack.pack.enabled = true; window.ootHold(false)');
-      const roundTrip = Buffer.compare(Buffer.from(original.rgba), Buffer.from(again.rgba)) === 0;
-      shots.push({ name: view.name, crops, changed, replaced, roundTrip });
-      log(`${id}: original again identical: ${roundTrip}`);
+      toSheet.push({ place, hashes: drawn.filter((h) => !sheetSeen.has(h)) });
+      for (const h of drawn) sheetSeen.add(h);
     }
+    for (const { place, hashes } of toSheet) sheets.push(...(await contactSheets(place.name, hashes, { call, evaluate, dump, pack: join(pack, variants[0]!), outDir })));
     cdp.close();
-    writeFileSync(join(outDir, 'index.html'), page(shots, info));
+    writeFileSync(join(outDir, 'index.html'), page(shots, info, movings, sheets));
     log(`written to ${outDir}${'/'}index.html`);
   } finally {
     for (const c of children) if (c.pid) spawn('taskkill', ['/pid', String(c.pid), '/t', '/f'], { stdio: 'ignore' });
@@ -305,21 +368,65 @@ export async function compare({ out, pack, dump = 'out/texdump', variants: wante
   }
 }
 
-function page(shots: Shot[], info: VariantInfo[]): string {
+const SHEET_CELLS = 56;
+/** The side, in sheet pixels, a replacement is shown at most: larger ones are scaled down, the original is shown at the same size. */
+const SHEET_MAX = 128;
+
+interface SheetTools {
+  call: <T = Record<string, unknown>>(method: string, params?: object) => Promise<T>;
+  evaluate: (expression: string) => Promise<unknown>;
+  dump: string;
+  pack: string;
+  outDir: string;
+}
+
+/**
+ * Pictures of the textures a place drew, 56 to a picture: each shows the original (hard pixels) and the pack's replacement, both at the replacement's
+ * size, under its hash; a texture with no file in the pack has a red frame. Used to find the replacements that look worse than their originals.
+ */
+async function contactSheets(place: string, hashes: string[], { call, evaluate, dump, pack, outDir }: SheetTools): Promise<string[]> {
+  const files: string[] = [];
+  const data = (file: string): string => `data:image/png;base64,${readFileSync(file).toString('base64')}`;
+  await call('Page.navigate', { url: 'about:blank' });
+  for (let k = 0; k * SHEET_CELLS < hashes.length; k++) {
+    const cells = hashes.slice(k * SHEET_CELLS, (k + 1) * SHEET_CELLS).flatMap((h) => {
+      const original = join(dump, `${h}.png`);
+      if (!existsSync(original)) return [];
+      const img = decodePng(readFileSync(original));
+      const scale = Math.min(2, SHEET_MAX / Math.max(img.width, img.height));
+      const size = `width:${Math.round(img.width * scale)}px;height:${Math.round(img.height * scale)}px`;
+      const replacement = join(pack, `${h}.png`);
+      const has = existsSync(replacement);
+      return [`<div class="c${has ? '' : ' none'}"><div class="p"><img style="${size};image-rendering:pixelated" src="${data(original)}">${has ? `<img style="${size}" src="${data(replacement)}">` : ''}</div><span>${h} ${img.width}x${img.height}</span></div>`];
+    });
+    const html = `<!doctype html><meta charset="utf-8"><style>body{margin:0;background:#4a4a4a;font:10px monospace;color:#fff;width:1600px}
+      .c{display:inline-block;margin:4px;padding:3px;background:#383838;vertical-align:top}.c.none{outline:2px solid #e33}.p{display:flex;gap:3px}.c span{display:block;margin-top:2px}</style>${cells.join('')}`;
+    await evaluate(`document.open(); document.write(${JSON.stringify(html)}); document.close(); Promise.all([...document.images].map((i) => i.decode().catch(() => {})))`);
+    const height = (await evaluate('document.body.scrollHeight')) as number;
+    await call('Emulation.setDeviceMetricsOverride', { width: 1600, height, deviceScaleFactor: 1, mobile: false });
+    const { data: png } = await call<{ data: string }>('Page.captureScreenshot', { format: 'png' });
+    const file = `sheet-${place}-${k + 1}.png`;
+    writeFileSync(join(outDir, file), Buffer.from(png, 'base64'));
+    files.push(file);
+  }
+  return files;
+}
+
+function page(shots: Shot[], info: VariantInfo[], movings: (MovingReport & { place: string })[], sheets: string[]): string {
   const mib = (n: number): string => (n / 1048576).toFixed(1);
   const rows = info.map((v) => `<tr><td>${v.name}</td><td>${v.label}</td><td>${v.stats.textures}</td><td>${mib(v.stats.bytes)}</td><td>${mib((v.stats.bytes * 4) / 3)}</td><td>${(v.stats.bytes / v.stats.originalBytes).toFixed(1)}x</td><td>${v.stats.modelSeconds}</td><td>${v.stats.otherSeconds}</td><td>${(v.stats.modelSeconds + v.stats.otherSeconds).toFixed(1)}</td><td>${v.seams.worse} of ${v.seams.wrapping}</td></tr>`).join('\n');
   const options = ['original', ...info.map((v) => v.name)].map((n) => `<option value="${n}">${n === 'original' ? 'original' : `${n}: ${info.find((v) => v.name === n)!.label}`}</option>`).join('');
   const swipe = (base: string, crop = false): string => `<div class="swipe${crop ? ' crop' : ''}" data-base="${base}"><img class="under"><img class="top"><div class="bar"></div><span class="l"></span><span class="r"></span></div>`;
   const sections = shots.map((s) => `
 <section>
-  <h2>${s.name}</h2>
+  <h2>${s.place}: ${s.name}</h2>
   <p>${info.map((v) => `${v.name}: ${(s.changed[v.name]! * 100).toFixed(1)}% of pixels differ by more than 8/255, ${s.replaced[v.name]!.replaced} of ${s.replaced[v.name]!.seen} distinct textures seen so far replaced`).join('; ')}. Original drawn again after the packs: ${s.roundTrip ? 'identical' : 'DIFFERENT'}.</p>
-  ${swipe(`view-${shots.indexOf(s) + 1}-${s.name}`)}
-  ${s.crops.map((c) => `<h3>${c.name} close-up (${c.w}x${c.h} at 1:1 of the ${s.name} picture)</h3>${swipe(`view-${shots.indexOf(s) + 1}-${s.name}-${c.name}`, true)}`).join('\n')}
+  ${swipe(s.id)}
+  ${s.crops.map((c) => `<h3>${c.name} close-up (${c.w}x${c.h} at 1:1 of the ${s.name} picture)</h3>${swipe(`${s.id}-${c.name}`, true)}`).join('\n')}
 </section>`).join('\n');
   return `<!doctype html>
 <meta charset="utf-8">
-<title>Kokiri Forest: original textures against four pack variants</title>
+<title>Original textures against the pack</title>
 <style>
   body { background: #181818; color: #ddd; font: 15px sans-serif; margin: 1.5em; }
   h3 { color: #9c9; font-weight: normal; }
@@ -335,7 +442,7 @@ function page(shots: Shot[], info: VariantInfo[]): string {
   .swipe span { position: absolute; top: .4em; padding: .1em .5em; background: #000a; color: #fff; }
   .swipe .l { left: .4em; } .swipe .r { right: .4em; }
 </style>
-<h1>Kokiri Forest: original textures against four pack variants</h1>
+<h1>Original textures against the pack</h1>
 <p>Each picture is one game frame drawn by the page's renderer (default filter settings) once per texture set. Drag the divider: the left side shows the first selection, the right side the second. Alpha of every variant is a plain bicubic enlargement of the original's, never touched by the model. Close-ups are 1:1 crops of the same frames, zoomed by your browser with hard pixels.</p>
 <table>
 <tr><th>variant</th><th>what</th><th>textures</th><th>MiB RGBA8</th><th>MiB with mips</th><th>vs originals</th><th>model s</th><th>other s</th><th>total s</th><th>wrap seams worse than bilinear</th></tr>
@@ -343,6 +450,12 @@ ${rows}
 </table>
 <p>Memory is for the ${info[0]!.stats.textures} replaced textures only (originals: ${mib(info[0]!.stats.originalBytes)} MiB RGBA8). Model time is shared by variants of the same factor (a and b share the x2 run, c and d the x4 run); other = padding, blending, alpha, seam check and PNG writing.</p>
 <div class="bar2">left: <select id="left">${options}</select> right: <select id="right">${options.replace('<option value="a">', '<option value="a" selected>')}</select></div>
+<h2>Moving capture: textures drawn and textures with an entry (first variant)</h2>
+<table>
+<tr><th>place</th><th>graphics tasks</th><th>textures drawn</th><th>with an entry</th><th>without</th><th>share</th><th>replaced then original again</th></tr>
+${movings.map((m) => `<tr><td>${m.place}</td><td>${m.tasks}</td><td>${m.textures}</td><td>${m.inPack}</td><td>${m.unresolved.length}</td><td>${m.textures ? ((m.inPack / m.textures) * 100).toFixed(1) : '-'}%</td><td>${m.flickering.length}</td></tr>`).join('')}
+</table>
+<p>Sheets of the textures drawn (original left, replacement right, red frame: no entry): ${sheets.map((f) => `<a href="${f}">${f}</a>`).join(' ')}</p>
 ${sections}
 <script>
 const boxes = [...document.querySelectorAll('.swipe')];

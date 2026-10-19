@@ -2,7 +2,7 @@
 // answers for every texture it has: per graphics task the textures drawn, each as `<hash><state>`, state `+` replaced, `~` in the pack but not loaded
 // yet, `-` not in the pack.
 import type { TextureRecord } from './collect.ts';
-import { skipReason } from './upscale.ts';
+import { loadExcluded, skipReason } from './upscale.ts';
 
 export interface TextureFacts {
   width: number;
@@ -27,6 +27,7 @@ export interface MovingReport {
 }
 
 export function analyzeMoving(frames: string[][], facts: Record<string, TextureFacts>, dump: Map<string, TextureRecord>): MovingReport {
+  const excluded = loadExcluded();
   const state = new Map<string, { replaced: boolean; flicker: boolean; none: number; draws: number }>();
   let pendingDraws = 0;
   for (const frame of frames) {
@@ -47,7 +48,7 @@ export function analyzeMoving(frames: string[][], facts: Record<string, TextureF
       const record = dump.get(hash);
       const f = facts[hash];
       const reason = record
-        ? `in the dump, left original: ${skipReason(record) ?? 'it has a replacement in the dump but the pack does not list it'}`
+        ? `in the dump, left original: ${skipReason(record, excluded) ?? 'it has a replacement in the dump but the pack does not list it'}`
         : `not in the dump (${f?.width}x${f?.height}, format ${f?.fmt}.${f?.siz}, ${f?.unloaded ?? 0} texels not loaded)`;
       return { hash, tasks: t.none, reason };
     });
