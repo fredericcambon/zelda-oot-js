@@ -44,7 +44,7 @@ export function encodePngSmall(width: number, height: number, rgba: Uint8Array):
   const bpp = opaque ? 3 : 4;
   const stride = width * bpp;
   const px = new Uint8Array(stride * height);
-  if (opaque) for (let i = 0, o = 0; i < rgba.length; i += 4) px.set(rgba.subarray(i, i + 3), o), (o += 3);
+  if (opaque) for (let i = 0, o = 0; i < rgba.length; i += 4, o += 3) px.set(rgba.subarray(i, i + 3), o);
   else px.set(rgba);
   const header = new Uint8Array(13);
   const dv = new DataView(header.buffer);
