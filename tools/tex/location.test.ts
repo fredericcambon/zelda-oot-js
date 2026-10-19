@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -32,6 +32,13 @@ describe('texture trial location', () => {
     record(SHA1);
     expect(romSha1(dist)).toBe(SHA1);
     expect(texDirs(dist)).toEqual({ dump: join(tmp, 'cache', 'tex', SHA1, 'dump'), pack: join(tmp, 'cache', 'tex', SHA1, 'pack') });
+  });
+
+  it('guards the folder against an older cache: a readable manifest dated far ahead', () => {
+    record(SHA1);
+    const { dump } = texDirs(dist);
+    const guard = join(dump, '..', 'entry.json');
+    expect(statSync(guard).mtimeMs).toBeGreaterThan(Date.now() + 365 * 86_400_000);
   });
 
   it('has no folders without a recorded ROM', () => {
