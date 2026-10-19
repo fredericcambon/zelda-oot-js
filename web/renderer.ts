@@ -7,6 +7,7 @@ import { Geo } from '../tools/gfx/opcodes.ts';
 import { CycleType, cycleTypeOf, fragmentSource, OtherL, shiftScale, specKey, specOf, VERTEX_SHADER, type ShaderSpec } from './shader.ts';
 import { MAX_SCALE, type GfxSettings } from './gfx-settings.ts';
 import { texturesRead } from '../tools/tex/used.ts';
+import { isLowContrast, softened } from './low-contrast.ts';
 import { effectsOn, FULLSCREEN_VERTEX, PostFx } from './post-fx.ts';
 import { bindToggleKey, scaleOf, hashImage, pagePack, type TexPack } from './tex-pack.ts';
 
@@ -636,13 +637,21 @@ export class Renderer {
     const gl = this.gl;
     const state = run.state;
     const cutout = this.settings.cutout === 'smooth' && this.samples > 0 && run.triangles && (state.geometryMode & Geo.ZBUFFER) !== 0;
-    const spec = specOf(state, { filter: this.settings.filter, mip: this.settings.mipmaps && run.triangles, cutout });
+    const spec = specOf(state, { filter: this.settings.filter, mip: this.settings.mipmaps && run.triangles, cutout, smoothTexels: this.softTextures(state) });
     const { program, spec: used } = this.program(spec);
     gl.useProgram(program.gl);
     this.applyRaster(state, run.triangles, used);
     this.applyUniforms(program, state, run.triangles, used.mip);
     gl.drawArrays(gl.TRIANGLES, first, count);
     this.stats.drawCalls++;
+  }
+
+  /** Whether every texture the draw reads is a soft gradient: the 3-point filter would only cut its contours along diagonals. */
+  private softTextures(state: DrawState): boolean {
+    if (this.settings.filter !== 'n64' || ((state.otherModeH >>> 12) & 3) === 0) return false;
+    const read = texturesRead(state);
+    const used = state.textures.filter((t, i) => t && read[i]);
+    return used.length > 0 && used.every((t) => isLowContrast(t!));
   }
 
   // ---- State -------------------------------------------------------------------------------------------------------
@@ -859,7 +868,7 @@ ${source}`);
       const k = replacement ? scaleOf(image, replacement) : 0;
       tex = replacement && k > 0
         ? this.upload(replacement.width, replacement.height, replacement, this.settings.mipmaps, k)
-        : this.upload(image.width, image.height, image.rgba);
+        : this.upload(image.width, image.height, this.settings.filter === 'n64' && isLowContrast(image) ? softened(image) : image.rgba);
       tex.hash = hash;
       this.textureCache.set(image.id, tex);
     }

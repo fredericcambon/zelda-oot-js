@@ -70,7 +70,8 @@ function fakeContext() {
 
 describe('Renderer with a texture pack', () => {
   const rgba = { r: 0, g: 0, b: 0, a: 0 };
-  const texels = Uint8Array.from({ length: 32 }, (_, i) => (i % 4 === 3 ? 255 : i));
+  // Alternating dark and bright texels: not a soft gradient, so the renderer uploads them as they are.
+  const texels = Uint8Array.from({ length: 32 }, (_, i) => (i % 4 === 3 ? 255 : (i >> 2) % 2 ? 200 : 0));
   const tile = { fmt: 0, siz: 3, line: 0, tmem: 0, palette: 0, cmT: 0, maskT: 1, shiftT: 0, cmS: 0, maskS: 2, shiftS: 0, uls: 8, ult: 4, lrs: 0, lrt: 0, sized: true };
   const state = (): DrawState => ({
     geometryMode: 0, otherModeH: 0, otherModeL: 0, combine: { ...decodeCombine(0, 0), cycles: [{ rgb: [1, 0, 1, 0], alpha: [0, 0, 0, 0] }, { rgb: [0, 0, 0, 0], alpha: [0, 0, 0, 0] }] }, primColor: { ...rgba, minLod: 0, lodFrac: 0 },
