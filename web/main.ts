@@ -484,7 +484,7 @@ async function boot(): Promise<void> {
     applyTuning();
     setStatus('Running');
     void loop();
-    void applyBootParams(parseBootParams(location.search));
+    if (!captureMode) void applyBootParams(parseBootParams(location.search));
   } catch (err) {
     setStatus(err instanceof Error ? err.message : String(err), true);
   }
