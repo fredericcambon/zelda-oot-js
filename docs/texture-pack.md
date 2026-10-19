@@ -2,6 +2,8 @@
 
 Local, optional packs of enlarged textures (four variants), to judge before any full pack. Everything derived from the cartridge stays on this machine, in the shared cache folder `~/.zelda-oot-js/cache/tex/<ROM SHA-1>/` (`OOT_CACHE_DIR` moves the cache; see "Location" below), outside any worktree so that deleting a worktree loses nothing; nothing is published (the Pages build copies no pack).
 
+**Rebuilt into the cache (2026-10-19, after the worktree copies were lost).** `dump --all`: 1,560 visits, 6,625 unique textures, 0 volatile, 303,022 graphics tasks, 101 of 101 scenes, 1,523 visits ok and 37 failed: the same numbers as the first run, in about 35 minutes (about 1.2 visits per second; each of the 4 hangs costs the 120 s timeout). 115 MiB. `upscale --variants a` (with `exclude.json`): 4,528 textures enlarged, 4,529 files with `index.json`, 66 MiB on disk (99.1 MiB as RGBA8, originals 24.8 MiB), model 393 s + 37 s; 2,097 left original (539 screen-size, 49 excluded, 1,509 seen in fewer than 3 tasks); 16 of 1,970 wrapping axes with a seam worse than plain bilinear's. Moving capture of `compare --variants a` (8 places, 0 that went from replaced back to original): 950 textures drawn, 924 with an entry, 97.3% (Hyrule Field 150 of 153, Kakariko Village 162 of 165, Market 110 of 114, Inside the Deku Tree 65 of 70, Dodongo's Cavern 132 of 136, Forest Temple 61 of 63, Zora's Domain 102 of 104, Gerudo Valley 142 of 145). The table under "Coverage" below is the earlier run.
+
 ## Location
 
 All three commands default to `~/.zelda-oot-js/cache/tex/<ROM SHA-1>/` (`OOT_CACHE_DIR` overrides the cache folder; the SHA-1 is the one `npm run port` recorded in `dist/assets/manifest.json`, so a build of `dist/` is needed first):

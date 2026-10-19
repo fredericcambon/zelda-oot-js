@@ -1,6 +1,6 @@
 // Where the texture trial keeps its files: `<cache>/tex/<ROM SHA-1>/{dump,pack,texpack-work}` in the shared cache (tools/port/cache.ts), so a deleted
 // worktree takes nothing with it. The ROM's SHA-1 is the one `npm run port` recorded in `<dist>/assets/manifest.json`.
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { defaultCacheDir } from '../port/cache.ts';
 
@@ -22,6 +22,10 @@ export function texRoot(dist: string): string | undefined {
 export function texDirs(dist: string): { dump: string; pack: string } {
   const root = texRoot(dist);
   if (!root) throw new Error(`no ROM recorded in ${join(dist, 'assets', 'manifest.json')}: run npm run port -- --rom <path> first, or pass the folders explicitly`);
+  // A cache without the `tex` exemption (an older checkout) deletes every folder of the cache that has no readable `entry.json`; an empty one keeps this folder.
+  mkdirSync(root, { recursive: true });
+  const guard = join(root, 'entry.json');
+  if (!existsSync(guard)) writeFileSync(guard, JSON.stringify({ version: 1, files: [], bytes: 0 }));
   return { dump: join(root, 'dump'), pack: join(root, 'pack') };
 }
 
