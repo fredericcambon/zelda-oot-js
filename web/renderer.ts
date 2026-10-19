@@ -833,7 +833,8 @@ export class Renderer {
     const decal = ((l >>> OtherL.ZMODE_SHIFT) & 3) === 3;
     if (decal && depthOn) {
       gl.enable(gl.POLYGON_OFFSET_FILL);
-      gl.polygonOffset(-1, -1);
+      // The offset follows the slope of the decal in pixels of the canvas, which are `scale` times smaller than the console's: the tolerance has to grow with it.
+      gl.polygonOffset(-2 * this.scale, -1);
     } else gl.disable(gl.POLYGON_OFFSET_FILL);
 
     const cullFront = (state.geometryMode & Geo.CULL_FRONT) !== 0, cullBack = (state.geometryMode & Geo.CULL_BACK) !== 0;
