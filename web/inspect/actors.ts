@@ -8,6 +8,8 @@ import { Refused } from './queue.ts';
 export interface ActorRow extends Actor {
   /** Straight-line distance to Link; null when Link is not in the scene. */
   distance: number | null;
+  /** The same distance using only x and z; null when Link is not in the scene. */
+  flat: number | null;
 }
 
 export interface ActorGroup {
@@ -39,7 +41,7 @@ export function readSnapshot(mem: GuestRam, refusal: string | undefined): Actors
   let count = 0;
   for (const list of readActors(rd32, play)) {
     if (list.actors.length === 0) continue;
-    const rows = list.actors.map((a): ActorRow => ({ ...a, distance: link ? Math.hypot(a.position.x - link.x, a.position.y - link.y, a.position.z - link.z) : null }));
+    const rows = list.actors.map((a): ActorRow => ({ ...a, distance: link ? Math.hypot(a.position.x - link.x, a.position.y - link.y, a.position.z - link.z) : null, flat: link ? Math.hypot(a.position.x - link.x, a.position.z - link.z) : null }));
     rows.sort((a, b) => (a.distance ?? 0) - (b.distance ?? 0) || a.id - b.id);
     count += rows.length;
     groups.push({ category: list.category, rows });
@@ -66,7 +68,7 @@ export const GO_TO_OFFSET = 50;
 const LINK_SECOND_POSITION = 0x38;
 
 /** Puts Link next to the actor at `addr`; call between frames. Throws a refusal that says why when it cannot. */
-export function goToActor(bridge: Bridge, addr: number): string {
+export function goToActor(bridge: Bridge, addr: number, name: (id: number) => string = (id) => `actor ${id}`): string {
   const mem = bridge.writable();
   const rd32 = (a: number) => mem.rd32(a);
   const play = playState(rd32);
@@ -86,5 +88,5 @@ export function goToActor(bridge: Bridge, addr: number): string {
     mem.write32(link.addr + base + 4, word(spot.y));
     mem.write32(link.addr + base + 8, word(spot.z));
   }
-  return `Link moved next to actor ${target.id}`;
+  return `Link moved next to ${name(target.id)}`;
 }

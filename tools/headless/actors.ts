@@ -3,8 +3,8 @@ import { ACTOR_POSITION, CTX_ACTOR_LISTS, type PlayState, type Vec3 } from './st
 
 /** Lists in the context: the update walk at 0x800253e4 counts 0x60 / 8 of them (`addiu s6, zero, 96` at 0x80025418). */
 export const ACTOR_CATEGORIES = 12;
-/** Offsets in an actor record: id (halfword), category (byte), room (signed byte), the position triple at `ACTOR_POSITION`, rotation, and the links. */
-export const ACTOR_FIELDS = { id: 0x00, category: 0x02, room: 0x03, rotation: 0x30, prev: 0x120, next: 0x124 } as const;
+/** Offsets in an actor record: id (halfword), category (byte), room (signed byte), the spawn parameter (halfword), the object slot (signed byte), the position triple at `ACTOR_POSITION`, rotation, and the links. */
+export const ACTOR_FIELDS = { id: 0x00, category: 0x02, room: 0x03, param: 0x1c, objectSlot: 0x1e, rotation: 0x30, prev: 0x120, next: 0x124 } as const;
 /** Size the record is read to when it is shown: the next pointer ends the fields known here. */
 export const ACTOR_RECORD_SIZE = 0x128;
 /** Byte in the context that the insert and remove routines (0x800255c4, 0x8002560c) keep as the number of actors in all lists. */
@@ -16,6 +16,10 @@ export interface Actor {
   id: number;
   category: number;
   room: number;
+  /** The halfword the spawner stores from its last argument (docs/re/actors.md, "Spawn"). */
+  param: number;
+  /** Slot of the actor's object in the object table, as the spawner's lookup at 0x80081bd8 returned it; negative while none. */
+  objectSlot: number;
   position: Vec3;
   /** Halfwords at `ACTOR_FIELDS.rotation`: x, y, z. */
   rotation: [number, number, number];
@@ -41,6 +45,7 @@ const signed16 = (n: number) => (n << 16) >> 16;
 
 export function readActor(rd32: (addr: number) => number, addr: number): Actor {
   const first = rd32(addr) >>> 0;
+  const spawn = rd32(addr + ACTOR_FIELDS.param) >>> 0;
   const rot = (off: number) => {
     const word = rd32(addr + ACTOR_FIELDS.rotation + (off & ~3)) >>> 0;
     return signed16(off & 2 ? word & 0xffff : word >>> 16);
@@ -50,6 +55,8 @@ export function readActor(rd32: (addr: number) => number, addr: number): Actor {
     id: first >>> 16,
     category: (first >>> 8) & 0xff,
     room: (first << 24) >> 24,
+    param: spawn >>> 16,
+    objectSlot: (spawn << 16) >> 24,
     position: { x: floatOf(rd32, addr + ACTOR_POSITION), y: floatOf(rd32, addr + ACTOR_POSITION + 4), z: floatOf(rd32, addr + ACTOR_POSITION + 8) },
     rotation: [rot(0), rot(2), rot(4)],
   };
