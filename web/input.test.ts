@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Button, mergePads, padFromGamepad, padFromKeys, STICK_MAX, type PadSnapshot } from './input.ts';
+import { Button, connectNotice, GamepadTracker, mergePads, padFromGamepad, padFromKeys, STICK_MAX, type PadInfo, type PadSnapshot } from './input.ts';
 
 const pad = (pressed: number[] = [], axes: number[] = [0, 0, 0, 0]): PadSnapshot => ({
   buttons: Array.from({ length: 17 }, (_, i) => ({ pressed: pressed.includes(i) })),
@@ -59,5 +59,38 @@ describe('merge', () => {
   it('ORs buttons and keeps the larger stick deflection', () => {
     const m = mergePads({ buttons: Button.A, x: 10, y: -80 }, { buttons: Button.B, x: -40, y: 5 });
     expect(m).toEqual({ buttons: Button.A | Button.B, x: -40, y: -80 });
+  });
+});
+
+describe('GamepadTracker', () => {
+  const info = (index: number, mapping = 'standard', connected = true): PadInfo => ({ ...pad(), index, id: `pad ${index}`, mapping, connected });
+
+  it('announces a connection and a disconnection', () => {
+    const notes: string[] = [];
+    const t = new GamepadTracker((n) => notes.push(n));
+    t.connected(info(1));
+    t.disconnected(1);
+    expect(notes).toEqual(['Controller connected: pad 1', 'Controller disconnected']);
+  });
+  it('says so when the mapping is not standard', () => {
+    expect(connectNotice({ id: 'x', mapping: '' })).toContain('non-standard mapping');
+  });
+  it('prefers the pad of the last connect event, and still reads a non-standard one', () => {
+    const t = new GamepadTracker();
+    const list = [info(0), null, info(2, '')];
+    t.connected(list[2]!);
+    expect(t.pick(list)?.index).toBe(2);
+  });
+  it('falls back to a standard pad, then any pad, and to none', () => {
+    const t = new GamepadTracker();
+    expect(t.pick([info(0, ''), info(1)])?.index).toBe(1);
+    expect(t.pick([info(0, '')])?.index).toBe(0);
+    expect(t.pick([info(0, 'standard', false), null])).toBeNull();
+  });
+  it('drops the active pad when it goes away', () => {
+    const t = new GamepadTracker();
+    t.connected(info(3));
+    t.disconnected(3);
+    expect(t.pick([info(0)])?.index).toBe(0);
   });
 });

@@ -5,6 +5,7 @@ import type { InventorySnapshot } from '../inspect/inventory.ts';
 import type { ActorsSnapshot } from '../inspect/actors.ts';
 import type { Cheat } from '../inspect/cheats.ts';
 import type { MemorySnapshot, SearchKind, ValueType } from '../inspect/memory.ts';
+import type { PadView } from '../input.ts';
 import type { Entrance, WarpSnapshot } from '../inspect/warp.ts';
 
 /** What the panels show; the game loop and the controls write it. */
@@ -87,6 +88,8 @@ export interface UiActions {
   cycleCull(): void;
   toggleControls(): void;
   toggleFullscreen(): void;
+  /** The connected gamepad's live state, or null while the browser reports none. */
+  padView(): PadView | null;
   setOverlay(on: boolean): void;
   saveSlot(slot: number): void;
   loadSlot(slot: number): void;
