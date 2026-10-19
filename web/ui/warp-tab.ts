@@ -2,8 +2,13 @@ import { html } from 'htm/preact';
 import type { VNode } from 'preact';
 import { useMemo, useState } from 'preact/hooks';
 import { entranceName, loadBookmarks, loadSceneLabels, saveBookmarks, saveSceneLabels, search, type Bookmark } from '../inspect/warp.ts';
+import { CONDITIONAL_CARD_SCENES, scenesWithCard } from '../inspect/title-cards.ts';
+import { useTitleCards } from './icons.ts';
+import { useLabels } from './label-edit.ts';
+import { labels } from './labels.ts';
 import type { TabProps } from './types.ts';
 import { Button } from './widgets.ts';
+import './warp.css';
 
 const MAX_ROWS = 100;
 
@@ -13,6 +18,7 @@ interface TextProps {
   placeholder: string;
   onInput: (value: string) => void;
   onEnter?: () => void;
+  onBlur?: () => void;
 }
 
 // A text field takes keys while it has the focus; Enter and Escape give the focus back to the game.
@@ -22,7 +28,46 @@ function Text(p: TextProps): VNode {
     if (e.key === 'Enter' || e.key === 'Escape') (e.currentTarget as HTMLInputElement).blur();
   };
   return html`<input id=${p.id} type="text" value=${p.value} placeholder=${p.placeholder} autocomplete="off" spellcheck=${false}
-    onInput=${(e: Event) => p.onInput((e.currentTarget as HTMLInputElement).value)} onKeyDown=${done} />` as VNode;
+    onInput=${(e: Event) => p.onInput((e.currentTarget as HTMLInputElement).value)} onKeyDown=${done} onBlur=${p.onBlur} />` as VNode;
+}
+
+const hex = (n: number, width: number) => `0x${n.toString(16).toUpperCase().padStart(width, '0')}`;
+
+// Labels the Warp tab kept of its own before the shared store existed move there once.
+let migrated = false;
+function migrateSceneLabels(): void {
+  if (migrated) return;
+  migrated = true;
+  const old = loadSceneLabels();
+  for (const [scene, text] of Object.entries(old)) if (labels.get('scene', scene) === undefined) labels.set('scene', scene, text);
+  if (Object.keys(old).length > 0) saveSceneLabels({});
+}
+
+// The label applies when the field loses the focus, so that a space typed between words is not trimmed away.
+function SceneLabelField({ scene }: { scene: number }): VNode {
+  const [draft, setDraft] = useState<string | null>(null);
+  const apply = () => {
+    if (draft !== null) labels.set('scene', scene, draft);
+    setDraft(null);
+  };
+  return html`<${Text} id="scene-label" value=${draft ?? labels.get('scene', scene) ?? ''} placeholder="label" onInput=${setDraft} onBlur=${apply} />` as VNode;
+}
+
+interface PlaceProps {
+  scene: number;
+  /** The entrance, when the line names one. */
+  entry?: number;
+  card: string | null;
+}
+
+// Where a scene is: its title card when the game shows one, the user's label when there is one, and the numbers in small print.
+function Place({ scene, entry, card }: PlaceProps): VNode {
+  const mine = labels.get('scene', scene);
+  const ids = entry === undefined ? `scene ${hex(scene, 2)} (${scene})` : entranceName(scene, entry);
+  return html`<div class="place">
+    ${card && html`<img class="card" src=${card} alt="" width="144" height="24" title=${CONDITIONAL_CARD_SCENES.includes(scene) ? 'The game draws this card only while one of its save flags is set' : 'The area name the game shows on entering'} />`}
+    <div class="names">${mine && html`<div class="yours">${mine}</div>`}<div class="ids">${ids}</div></div>
+  </div>` as VNode;
 }
 
 const fixed = (n: number) => (Number.isFinite(n) ? n.toFixed(1) : '?');
@@ -32,10 +77,14 @@ export function WarpTab({ state: s, actions: a }: TabProps): VNode {
   const [query, setQuery] = useState('');
   const [name, setName] = useState('');
   const [bookmarks, setBookmarks] = useState<Bookmark[]>(() => loadBookmarks());
-  const [sceneLabels, setSceneLabels] = useState<Record<number, string>>(() => loadSceneLabels());
+  useLabels();
+  migrateSceneLabels();
+  const cards = useTitleCards();
   const rows = useMemo(() => a.entrances() ?? [], [live !== null]);
   const found = useMemo(() => search(rows, query), [rows, query]);
-  const label = (scene: number) => sceneLabels[scene];
+  const language = live?.language ?? 0;
+  const shown = useMemo(() => (cards ? scenesWithCard(cards, rows) : new Set<number>()), [cards, rows]);
+  const cardOf = (scene: number): string | null => (cards && shown.has(scene) ? cards.url(scene, language) : null);
 
   const storeBookmarks = (next: Bookmark[]) => {
     setBookmarks(next);
@@ -47,20 +96,12 @@ export function WarpTab({ state: s, actions: a }: TabProps): VNode {
     storeBookmarks([...bookmarks, { label: name.trim() || entranceName(live.scene, live.entry), entry: live.entry, scene: live.scene }]);
     setName('');
   };
-  const setSceneLabel = (scene: number, text: string) => {
-    const next = { ...sceneLabels };
-    if (text) next[scene] = text;
-    else delete next[scene];
-    setSceneLabels(next);
-    saveSceneLabels(next);
-  };
-
   return html`<div class="tab warp">
     <section>
       <h3>Now</h3>
       ${live
         ? html`<div id="warp-now">
-            <div id="warp-scene">scene ${`0x${live.scene.toString(16).toUpperCase().padStart(2, '0')}`} (${live.scene})${label(live.scene) ? ` · ${label(live.scene)}` : ''}</div>
+            <div id="warp-scene"><${Place} scene=${live.scene} card=${cardOf(live.scene)} /></div>
             <div id="warp-entrance">${live.entry === null ? 'entrance: not one of the table\'s for this scene (redirected)' : `entrance 0x${live.entry.toString(16).toUpperCase().padStart(3, '0')} (${live.entry})`}</div>
             <div id="warp-position">${live.position ? `position x ${fixed(live.position.x)}  y ${fixed(live.position.y)}  z ${fixed(live.position.z)}` : 'position: Link is not in the scene'}</div>
           </div>`
@@ -88,7 +129,7 @@ export function WarpTab({ state: s, actions: a }: TabProps): VNode {
       <${Text} id="warp-search" value=${query} placeholder="search by scene or entrance number (85 or 0x55)" onInput=${setQuery} />
       <table class="slots"><tbody>
         ${found.slice(0, MAX_ROWS).map((r) => html`<tr key=${r.entry} class="entrance">
-          <td>${entranceName(r.scene, r.entry)}${label(r.scene) && html`<div class="note">${label(r.scene)}</div>`}</td>
+          <td><${Place} scene=${r.scene} entry=${r.entry} card=${cardOf(r.scene)} /></td>
           <td><${Button} class="entrance-go" disabled=${!r.valid} title=${r.valid ? '' : 'This entrance names a scene the game does not have'} onClick=${() => a.warp(r.entry)}>Warp<//></td>
         </tr>`)}
       </tbody></table>
@@ -98,7 +139,7 @@ export function WarpTab({ state: s, actions: a }: TabProps): VNode {
     ${live && html`<section>
       <h3>Name this scene</h3>
       <p class="hint">Your own label for scene ${live.scene}, kept in this browser only.</p>
-      <${Text} id="scene-label" value=${label(live.scene) ?? ''} placeholder="label" onInput=${(t: string) => setSceneLabel(live.scene, t)} />
+      <${SceneLabelField} key=${live.scene} scene=${live.scene} />
     </section>`}
   </div>` as VNode;
 }

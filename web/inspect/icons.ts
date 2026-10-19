@@ -35,7 +35,7 @@ function slice(file: Uint8Array, bytes: number, index: number): Uint8ClampedArra
   return index >= 0 && at + bytes <= file.length ? new Uint8ClampedArray(file.slice(at, at + bytes)) : null;
 }
 
-function fileOf(cartridge: Uint8Array, e: FileEntry): Uint8Array {
+export function fileOf(cartridge: Uint8Array, e: FileEntry): Uint8Array {
   if (!e.compressed) return cartridge.subarray(e.romStart, e.romStart + (e.virtualEnd - e.virtualStart));
   if (!isYaz0(cartridge, e.romStart)) throw new Error(`file ${e.index} is marked compressed but is not`);
   return yaz0Decode(cartridge.subarray(e.romStart, e.romEnd));

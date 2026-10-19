@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import { loadCartridge } from '../cartridge.ts';
 import { ITEM_SIZE, QUEST_SIZE, readPictures, type Pictures } from '../inspect/icons.ts';
+import { CARD_HEIGHT, CARD_WIDTH, readTitleCards, type TitleCards } from '../inspect/title-cards.ts';
 
 export interface Icons {
   /** An image URL for item picture `index`, or null while the pictures load, or when there is none. */
@@ -12,11 +13,12 @@ export interface Icons {
 
 const NONE: Icons = { item: () => null, quest: () => null, error: null };
 
-function urlOf(rgba: Uint8ClampedArray | null, size: number): string | null {
+function urlOf(rgba: Uint8ClampedArray | null, width: number, height = width): string | null {
   if (!rgba) return null;
   const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = size;
-  canvas.getContext('2d')!.putImageData(new ImageData(rgba as Uint8ClampedArray<ArrayBuffer>, size, size), 0, 0);
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext('2d')!.putImageData(new ImageData(rgba as Uint8ClampedArray<ArrayBuffer>, width, height), 0, 0);
   return canvas.toDataURL();
 }
 
@@ -34,11 +36,18 @@ function iconsFor(pictures: Pictures): Icons {
   };
 }
 
-let loading: Promise<Icons> | undefined;
+interface Art {
+  icons: Icons;
+  cards: TitleCards | null;
+}
 
-/** The page fetches the pack again (the browser serves it from its cache) and keeps only the two picture files. */
-function loadIcons(): Promise<Icons> {
-  loading ??= loadCartridge(() => {}).then((cartridge) => iconsFor(readPictures(cartridge))).catch((err: unknown) => ({ ...NONE, error: err instanceof Error ? err.message : String(err) }));
+let loading: Promise<Art> | undefined;
+
+/** The page fetches the pack again (the browser serves it from its cache) and keeps only the pictures it needs. */
+function loadArt(): Promise<Art> {
+  loading ??= loadCartridge(() => {})
+    .then((image) => ({ icons: iconsFor(readPictures(image)), cards: cardsOf(image) }))
+    .catch((err: unknown) => ({ icons: { ...NONE, error: err instanceof Error ? err.message : String(err) }, cards: null }));
   return loading;
 }
 
@@ -47,10 +56,50 @@ export function useIcons(): Icons {
   const [icons, setIcons] = useState<Icons>(NONE);
   useEffect(() => {
     let live = true;
-    void loadIcons().then((i) => live && setIcons(i));
+    void loadArt().then((a) => live && setIcons(a.icons));
     return () => {
       live = false;
     };
   }, []);
   return icons;
+}
+
+export interface CardImages {
+  /** The scene's file table index for its card, or null when its record names none. */
+  file(scene: number): number | null;
+  /** An image URL for the scene's card in `language`, or null when it has none. */
+  url(scene: number, language: number): string | null;
+}
+
+function cardImagesFor(cards: TitleCards): CardImages {
+  const urls = new Map<string, string | null>();
+  return {
+    file: (scene) => cards.file(scene),
+    url(scene, language) {
+      const key = `${scene}:${language}`;
+      if (!urls.has(key)) urls.set(key, urlOf(cards.card(scene, language), CARD_WIDTH, CARD_HEIGHT));
+      return urls.get(key)!;
+    },
+  };
+}
+
+/** The title cards, read from the game's own data; null until they are loaded, and when the data has none. */
+export function useTitleCards(): CardImages | null {
+  const [cards, setCards] = useState<CardImages | null>(null);
+  useEffect(() => {
+    let live = true;
+    void loadArt().then((a) => live && a.cards && setCards(cardImagesFor(a.cards)));
+    return () => {
+      live = false;
+    };
+  }, []);
+  return cards;
+}
+
+function cardsOf(image: Uint8Array): TitleCards | null {
+  try {
+    return readTitleCards(image);
+  } catch {
+    return null;
+  }
 }
