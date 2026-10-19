@@ -76,8 +76,17 @@ const SPAN_KEY = 'oot.smooth.span';
 // The video rate is chosen when the game boots, so the button only changes what the next page load boots.
 const bootHz: Hz = loadHz();
 
+let gfx = loadSettings();
+
 const store = new Store<UiState>({
   smooth: readSmooth(),
+  bloom: gfx.bloom,
+  bloomStrength: gfx.bloomStrength,
+  bloomThreshold: gfx.bloomThreshold,
+  bloomKnee: gfx.bloomKnee,
+  bloomRadius: gfx.bloomRadius,
+  sharpen: gfx.sharpen,
+  sharpenStrength: gfx.sharpenStrength,
   strength: readTuning(STRENGTH_KEY, 0, 100, 50),
   span: readTuning(SPAN_KEY, 25, 100, 50),
   bootHz,
@@ -116,7 +125,6 @@ const setStatus = (text: string, error = false) => {
   status.classList.toggle('ok', text === 'Running');
 };
 
-let gfx = loadSettings();
 // The 3D image has as many pixels as the canvas has on the display, within the settings' cap.
 const displayScale = () => renderScale(canvas.clientWidth, devicePixelRatio, gfx);
 
@@ -250,9 +258,12 @@ function toggleMute(): void {
   store.set({ muted: audio.toggleMute() });
 }
 
-// F cycles the texture filter, G switches multisampling, H the mip levels with anisotropic taps and V the cut-out edges.
+const stepStrength = (value: number, up: boolean): number => Math.min(100, Math.max(0, Math.round(value / 10) * 10 + (up ? 10 : -10)));
+// F cycles the texture filter, G switches multisampling, H the mip levels with anisotropic taps and V the cut-out edges. B and U switch the bloom and the
+// sharpening; , and . lower and raise the bloom strength, - and = the sharpening strength, in steps of 10.
 function changeGfx(change: Partial<GfxSettings>, text: string): void {
   gfx = { ...gfx, ...change };
+  store.set({ bloom: gfx.bloom, bloomStrength: gfx.bloomStrength, bloomThreshold: gfx.bloomThreshold, bloomKnee: gfx.bloomKnee, bloomRadius: gfx.bloomRadius, sharpen: gfx.sharpen, sharpenStrength: gfx.sharpenStrength });
   renderer.setSettings(gfx);
   if (!saveSettings(gfx)) showNotice('The browser did not keep the graphics settings');
   else showNotice(text);
@@ -269,6 +280,16 @@ addEventListener('keydown', (e) => {
     changeGfx({ cutout }, `Cut-out edges: ${cutout}${cutout === 'smooth' && !gfx.msaa ? ' (needs multisampling)' : ''}`);
   } else if (e.key === 'h' || e.key === 'H') {
     changeGfx({ mipmaps: !gfx.mipmaps }, `Mip levels: ${gfx.mipmaps ? 'off' : 'on'}`);
+  } else if (e.key === 'b' || e.key === 'B') {
+    changeGfx({ bloom: !gfx.bloom }, `Bloom: ${gfx.bloom ? 'off' : `on, ${gfx.bloomStrength}`}`);
+  } else if (e.key === 'u' || e.key === 'U') {
+    changeGfx({ sharpen: !gfx.sharpen }, `Sharpening: ${gfx.sharpen ? 'off' : `on, ${gfx.sharpenStrength}`}`);
+  } else if (e.key === ',' || e.key === '.') {
+    const bloomStrength = stepStrength(gfx.bloomStrength, e.key === '.');
+    changeGfx({ bloom: true, bloomStrength }, `Bloom strength: ${bloomStrength}`);
+  } else if (e.key === '-' || e.key === '=') {
+    const sharpenStrength = stepStrength(gfx.sharpenStrength, e.key === '=');
+    changeGfx({ sharpen: true, sharpenStrength }, `Sharpening strength: ${sharpenStrength}`);
   }
 });
 let resizeTimer = 0;
@@ -347,7 +368,7 @@ function updateOverlay(): void {
     `unknown commands ${s.unknown}  problems ${s.problems.length}`,
     `programs ${s.programs} (${s.compileMs.toFixed(0)} ms to build)  textures ${s.textures}  colour images ${s.targets}`,
     game ? `video framebuffer 0x${game.framebuffer().toString(16)}` : '',
-    `culling ${renderer.cullMode}  resolution ${renderer.resolutionScale.toFixed(2)}x (${canvas.width}x${canvas.height})  filter ${gfx.filter}  msaa ${renderer.msaaSamples || 'off'}  mips ${gfx.mipmaps ? `on, ${gfx.anisotropy} taps` : 'off'}  cutout ${renderer.msaaSamples ? gfx.cutout : 'hard'}`,
+    `culling ${renderer.cullMode}  resolution ${renderer.resolutionScale.toFixed(2)}x (${canvas.width}x${canvas.height})  filter ${gfx.filter}  msaa ${renderer.msaaSamples || 'off'}  bloom ${gfx.bloom ? gfx.bloomStrength : 'off'}  sharpen ${gfx.sharpen ? gfx.sharpenStrength : 'off'}  mips ${gfx.mipmaps ? `on, ${gfx.anisotropy} taps` : 'off'}  cutout ${renderer.msaaSamples ? gfx.cutout : 'hard'}`,
     g ? `audio tasks ${g.audioTasks}  sound ${audio.state === 'running' ? `on, level ${audio.level().toFixed(3)}` : 'off: press a key'}` : '',
     ...audio.status(),
     g?.renderError ? `render error: ${g.renderError}` : '',
@@ -477,6 +498,13 @@ const actions: UiActions = {
     writeTuning(SPAN_KEY, percent);
     store.set({ span: percent });
   },
+  setBloom: (bloom) => changeGfx({ bloom }, `Bloom: ${bloom ? `on, ${gfx.bloomStrength}` : 'off'}`),
+  setBloomStrength: (bloomStrength) => changeGfx({ bloom: true, bloomStrength }, `Bloom strength: ${bloomStrength}`),
+  setBloomThreshold: (bloomThreshold) => changeGfx({ bloom: true, bloomThreshold }, `Bloom threshold: ${bloomThreshold}`),
+  setBloomKnee: (bloomKnee) => changeGfx({ bloom: true, bloomKnee }, `Bloom soft knee: ${bloomKnee}`),
+  setBloomRadius: (bloomRadius) => changeGfx({ bloom: true, bloomRadius }, `Bloom radius: ${bloomRadius}`),
+  setSharpen: (sharpen) => changeGfx({ sharpen }, `Sharpening: ${sharpen ? `on, ${gfx.sharpenStrength}` : 'off'}`),
+  setSharpenStrength: (sharpenStrength) => changeGfx({ sharpen: true, sharpenStrength }, `Sharpening strength: ${sharpenStrength}`),
   toggleHz() {
     const wantedHz: Hz = store.get().wantedHz === 60 ? 50 : 60;
     if (!saveHz(wantedHz)) showNotice('The browser did not keep the 60 Hz choice');
