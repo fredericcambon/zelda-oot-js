@@ -165,7 +165,6 @@ applyCheats(bridge.freezes, store.get().cheats);
 // Presses Start after the game started over, until the file select is reached.
 let autoStart: AutoStart | null = null;
 let noticeTimer = 0;
-const input = new Input();
 const touch = new TouchControls(document.getElementById('touch-layer') as HTMLElement);
 const audio = new AudioOutput();
 const fastForward = new FastForward();
@@ -203,6 +202,7 @@ addEventListener('touchend', enableSound);
 addEventListener('pointerup', enableSound);
 addEventListener('touchend', enableSound);
 
+const input = new Input(window, (text) => showNotice(text));
 const showNotice = (text: string) => {
   notice.textContent = text;
   notice.hidden = false;
@@ -647,6 +647,7 @@ const actions: UiActions = {
   cycleCull,
   toggleControls: () => store.set({ controlsHidden: touch.toggleHidden() }),
   toggleFullscreen,
+  padView: () => input.view(),
   setOverlay(on) {
     overlay.hidden = !on;
     store.set({ overlayShown: on });

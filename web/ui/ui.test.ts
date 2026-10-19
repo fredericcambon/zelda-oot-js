@@ -4,6 +4,7 @@ import { Store } from './store.ts';
 import { countName, FIELD_NAMES, slotName } from './inventory-names.ts';
 import { nextItem } from './inventory-tab.ts';
 import { Labels } from './labels.ts';
+import { pressedNames } from './controller.ts';
 import { isTyping } from './typing.ts';
 
 const memory = () => {
@@ -136,5 +137,13 @@ describe('item slot clicks', () => {
     expect(nextItem(7, 7)).toBe(8);
     expect(nextItem(7, 8)).toBe(0xff);
     expect(nextItem(0, 99)).toBe(0xff);
+  });
+});
+
+describe('pressedNames', () => {
+  const view = (pressed: number[]) => ({ id: 'x', mapping: 'standard', buttons: Array.from({ length: 17 }, (_, i) => pressed.includes(i)), axes: [] });
+  it('names mapped buttons and folds the d-pad into one entry', () => {
+    expect(pressedNames(view([0, 7, 15]))).toEqual(['A (south)', 'RT', 'D-pad']);
+    expect(pressedNames(view([8]))).toEqual([]);
   });
 });

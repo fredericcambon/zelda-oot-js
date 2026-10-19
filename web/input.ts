@@ -79,21 +79,90 @@ export function mergePads(a: PadState, b: PadState): PadState {
   return { buttons: a.buttons | b.buttons, x: pick(a.x, b.x), y: pick(a.y, b.y) };
 }
 
-/** Collects keyboard events and polls the first connected standard gamepad. */
+/** What the Controller section shows of a pad. */
+export interface PadView {
+  id: string;
+  mapping: string;
+  buttons: boolean[];
+  axes: number[];
+}
+
+/** The browser Gamepad fields the tracker reads. */
+export interface PadInfo extends PadSnapshot {
+  index: number;
+  id: string;
+  mapping: string;
+  connected: boolean;
+}
+
+/** The notice for a pad the browser just reported. */
+export function connectNotice(pad: { id: string; mapping: string }): string {
+  const base = `Controller connected: ${pad.id}`;
+  return pad.mapping === 'standard' ? base : `${base} (non-standard mapping: standard button numbers assumed, some buttons may differ)`;
+}
+
+/**
+ * Which pad drives the game: the one the last gamepadconnected event named, else the first connected one.
+ * A pad whose mapping is not 'standard' is still read with the standard indices.
+ */
+export class GamepadTracker {
+  private active: number | null = null;
+
+  constructor(private readonly notify: (text: string) => void = () => {}) {}
+
+  connected(pad: PadInfo): void {
+    this.active = pad.index;
+    this.notify(connectNotice(pad));
+  }
+
+  disconnected(index: number): void {
+    if (this.active === index) this.active = null;
+    this.notify('Controller disconnected');
+  }
+
+  /** The pad to read among `list` (as `navigator.getGamepads()` gives it). */
+  pick(list: ReadonlyArray<PadInfo | null>): PadInfo | null {
+    const live = list.filter((g): g is PadInfo => !!g?.connected);
+    const chosen = live.find((g) => g.index === this.active)
+      ?? live.find((g) => g.mapping === 'standard')
+      ?? live[0]
+      ?? null;
+    this.active = chosen?.index ?? null;
+    return chosen;
+  }
+}
+
+export function viewOf(pad: PadInfo): PadView {
+  return { id: pad.id, mapping: pad.mapping, buttons: pad.buttons.map((b) => b.pressed), axes: [...pad.axes] };
+}
+
+/** Collects keyboard events and polls the active gamepad; both work together, whatever element has the focus. */
 export class Input {
   private readonly held = new Set<string>();
+  private readonly pads: GamepadTracker;
+  private readonly getPads: () => ReadonlyArray<PadInfo | null>;
 
-  constructor(target: Window = window) {
+  constructor(target: Window = window, notify: (text: string) => void = () => {}) {
+    this.pads = new GamepadTracker(notify);
+    this.getPads = () => Array.from(navigator.getGamepads?.() ?? []) as ReadonlyArray<PadInfo | null>;
     target.addEventListener('keydown', this.onKey);
     target.addEventListener('keyup', this.onKey);
     target.addEventListener('blur', this.onBlur);
+    target.addEventListener('gamepadconnected', (e) => this.pads.connected((e as GamepadEvent).gamepad));
+    target.addEventListener('gamepaddisconnected', (e) => this.pads.disconnected((e as GamepadEvent).gamepad.index));
   }
 
   /** The pad as it is right now. */
   poll(): PadState {
     const keys = padFromKeys(this.held);
-    const gp = Array.from(navigator.getGamepads?.() ?? []).find((g) => g?.connected && g.mapping === 'standard');
+    const gp = this.pads.pick(this.getPads());
     return gp ? mergePads(keys, padFromGamepad(gp)) : keys;
+  }
+
+  /** The active pad's raw state for display, or null while none is seen. */
+  view(): PadView | null {
+    const gp = this.pads.pick(this.getPads());
+    return gp ? viewOf(gp) : null;
   }
 
   private readonly onKey = (e: KeyboardEvent): void => {
