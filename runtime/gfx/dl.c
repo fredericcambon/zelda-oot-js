@@ -1119,7 +1119,21 @@ static void push_rect_batch(uint32_t kind, uint32_t state, int32_t xl, int32_t y
   VEC_PUSH(out_batch_lights, 0);
 }
 
+// The overworld minimap's entrance icons (code at 0x8006d76c-0x8006d958) come from per-map tables whose pointers sit at 0x80119d10 + 0x48
+// (x), + 0x4c (y) and + 0x50 (flag word), indexed by the s16 at 0x800f348c (0 in Hyrule Field). A map without icon has x=1, y=0, flag 0xffff
+// in its row, and the code still draws the 8x8 icon for a flag of 0xffff: a rectangle from (1,0) to (9,8), 36 and 32 in 10.2 units.
+// On a television it lies in the overscan; here it would show in the picture's corner, so it is skipped when the row is such a placeholder.
+static int is_unused_icon_rect(uint32_t w0, uint32_t w1) {
+  if ((w0 & 0xffffff) != 0x024020 || (w1 & 0xffffff) != 0x004000) return 0;
+  const uint32_t maps = rd_u32(0x119d10u) & 0x7fffffu;
+  const int32_t row = rd_s16(0xf348cu);
+  if (maps == 0 || row < 0 || row >= 24) return 0;
+  const size_t x = rd_u32(maps + 0x48) & 0x7fffffu, y = rd_u32(maps + 0x4c) & 0x7fffffu, flag = rd_u32(maps + 0x50) & 0x7fffffu;
+  return rd_s16(x + 2 * (size_t)row) == 1 && rd_s16(y + 2 * (size_t)row) == 0 && rd_u16(flag + 2 * (size_t)row) == 0xffff;
+}
+
 static void tex_rect(uint32_t w0, uint32_t w1, uint32_t half1, uint32_t half2) {
+  if (is_unused_icon_rect(w0, w1)) return;
   finish_batch();
   const int tile = (int)((w1 >> 24) & 7);
   const uint32_t state = take_snapshot(tile);
