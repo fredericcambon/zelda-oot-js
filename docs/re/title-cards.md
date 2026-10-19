@@ -51,4 +51,4 @@ The Warp tab shows a card for a scene when its record names a card file and at l
 
 ## Notes for other code
 
-- `web/inspect/warp.ts` takes `SCENE_COUNT = 102` from `gaps.md`; the scene table has 101 records, so entrances naming scene 101 (148 to 151) count as valid there although the record is display-list data.
+- The generated section of `gaps.md` ("Scene and entrance tables") still says 102 records; the table ends at record 101, whose start word is 0 (the sweep's own rule, `countSceneRecords` in `tools/sweep/scenes.ts`: the first record with start >= end), as the hand-written lines of `gaps.md` say (101). `SCENE_COUNT` in `web/inspect/warp.ts` is 101, so the four entrances naming scene 101 (148 to 151) are refused like the other entrances past the table.

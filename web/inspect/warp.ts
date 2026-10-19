@@ -6,8 +6,8 @@ import { defaultStore, type PrefStore } from '../ui/prefs.ts';
 import type { Bridge } from './bridge.ts';
 import { Refused } from './queue.ts';
 
-/** The scene table has 102 records (docs/re/gaps.md, "The entrance table has 1556 entries; the scene table 102 records"); an entry naming a scene past it cannot be entered. */
-export const SCENE_COUNT = 102;
+/** The scene table has 101 records: the record after them has start 0 and end `0xDB060020` (docs/re/title-cards.md; docs/re/gaps.md, "37 entries name a scene past the scene table (101 records)"). An entry naming a scene past it cannot be entered. */
+export const SCENE_COUNT = 101;
 
 export interface Entrance {
   /** Index in the entrance table. */
