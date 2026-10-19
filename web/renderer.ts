@@ -7,6 +7,7 @@ import { Geo } from '../tools/gfx/opcodes.ts';
 import { CycleType, cycleTypeOf, fragmentSource, OtherL, shiftScale, specKey, specOf, VERTEX_SHADER, type ShaderSpec } from './shader.ts';
 import { MAX_SCALE, type GfxSettings } from './gfx-settings.ts';
 import { texturesRead } from '../tools/tex/used.ts';
+import { effectsOn, FULLSCREEN_VERTEX, PostFx } from './post-fx.ts';
 import { bindToggleKey, scaleOf, hashImage, pagePack, type TexPack } from './tex-pack.ts';
 
 export const SCREEN_W = 320;
@@ -66,10 +67,17 @@ interface Target {
   /** With multisampling: the buffers drawn into, resolved into `texture` at the end of a task. */
   samples: { color: WebGLRenderbuffer; framebuffer: WebGLFramebuffer } | null;
   dirty: boolean;
+  /** The task that last drew into this image (`Renderer.taskId`); the two flags below describe that task. */
+  task: number;
+  /** A depth-tested triangle draw has been made: the image holds a 3D scene. */
+  hasScene: boolean;
+  /** The image as it was before the first HUD draw, when there was one (see `Renderer.drawRuns`). */
+  scene: { texture: WebGLTexture; framebuffer: WebGLFramebuffer } | null;
+  sceneSplit: boolean;
 }
 
 /** What a renderer made without settings uses: no multisampling, no mip levels. */
-const PLAIN: GfxSettings = { filter: 'n64', msaa: false, scaleCap: 0, mipmaps: false, anisotropy: 1, cutout: 'hard' };
+const PLAIN: GfxSettings = { filter: 'n64', msaa: false, scaleCap: 0, mipmaps: false, anisotropy: 1, cutout: 'hard', bloom: false, bloomStrength: 0, bloomThreshold: 80, bloomKnee: 40, bloomRadius: 100, sharpen: false, sharpenStrength: 0 };
 const MSAA_SAMPLES = 4;
 
 /**
@@ -91,14 +99,6 @@ uniform sampler2D uImage;
 out vec4 outColor;
 void main() { outColor = vec4(texture(uImage, vUv).rgb, 1.0); }
 `;
-const PRESENT_VERTEX = `#version 300 es
-out vec2 vUv;
-void main() {
-  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
-  vUv = p;
-  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
-}
-`;
 
 const physical = (addr: number): number => addr & 0x1fffffff;
 
@@ -118,6 +118,8 @@ export class Renderer {
   /** Mip-level programs that may still be built on the calling thread in this task, when the browser cannot build in parallel. */
   private syncMipBudget = 0;
   private readonly presentProgram: Program;
+  private readonly fx: PostFx;
+  private taskId = 0;
   private readonly buffer: WebGLBuffer;
   private readonly vao: WebGLVertexArrayObject;
   private readonly depth: WebGLRenderbuffer;
@@ -141,8 +143,9 @@ export class Renderer {
     this.gl = gl;
     this.settings = { ...settings };
     this.gpuTimer = new GpuTimer(gl);
+    this.fx = new PostFx(gl);
     this.parallel = gl.getExtension('KHR_parallel_shader_compile') !== null;
-    this.presentProgram = this.link(PRESENT_VERTEX, PRESENT_FRAGMENT);
+    this.presentProgram = this.link(FULLSCREEN_VERTEX, PRESENT_FRAGMENT);
     this.buffer = gl.createBuffer()!;
     this.vao = gl.createVertexArray()!;
     gl.bindVertexArray(this.vao);
@@ -260,6 +263,7 @@ export class Renderer {
     this.canvas.height = Math.round(SCREEN_H * this.scale);
     for (const t of this.targets.values()) this.deleteTarget(t);
     this.targets.clear();
+    this.fx.dispose();
     this.lastTarget = null;
     this.samples = this.settings.msaa ? this.supportedSamples() : 0;
     gl.bindRenderbuffer(gl.RENDERBUFFER, this.depth);
@@ -267,9 +271,12 @@ export class Renderer {
     else gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, this.canvas.width, this.canvas.height);
   }
 
-  /** Applies new options; the colour images and the cached textures are dropped and rebuilt as the game draws. */
+  /** Applies new options; unless only the post-processing changed, the colour images and the cached textures are dropped and rebuilt as the game draws. */
   setSettings(settings: GfxSettings): void {
+    const effectsOnly = (Object.keys(settings) as (keyof GfxSettings)[]).every((k) => k.startsWith('bloom') || k.startsWith('sharpen') || settings[k] === this.settings[k]);
     this.settings = { ...settings };
+    // The effects act at present time only: the images and textures stay.
+    if (effectsOnly) return;
     this.setScale(this.scale);
     this.clearTextures();
   }
@@ -321,6 +328,7 @@ export class Renderer {
     this.gpuTimer.begin('task');
     s.tasks++;
     this.lastResult = result;
+    this.taskId++;
     this.syncMipBudget = 1;
     s.drawCalls = 0;
     s.unmergedDrawCalls = 0;
@@ -377,6 +385,11 @@ export class Renderer {
       gl.clear(gl.COLOR_BUFFER_BIT);
       return;
     }
+    if (effectsOn(this.settings) && target.hasScene) {
+      this.fx.run(target.sceneSplit ? target.scene!.texture : target.texture, target.sceneSplit ? target.texture : null, this.canvas.width, this.canvas.height, this.settings);
+      gl.bindVertexArray(this.vao);
+      return;
+    }
     gl.useProgram(this.presentProgram.gl);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, target.texture);
@@ -414,7 +427,7 @@ export class Renderer {
       gl.colorMask(true, true, true, true);
       gl.clearColor(0, 0, 0, 1);
       gl.clear(gl.COLOR_BUFFER_BIT);
-      t = { texture, framebuffer, samples, dirty: samples !== null };
+      t = { texture, framebuffer, samples, dirty: samples !== null, task: 0, hasScene: false, scene: null, sceneSplit: false };
       this.targets.set(key, t);
     }
     return t;
@@ -427,6 +440,10 @@ export class Renderer {
     if (t.samples) {
       gl.deleteRenderbuffer(t.samples.color);
       gl.deleteFramebuffer(t.samples.framebuffer);
+    }
+    if (t.scene) {
+      gl.deleteTexture(t.scene.texture);
+      gl.deleteFramebuffer(t.scene.framebuffer);
     }
   }
 
@@ -478,10 +495,61 @@ export class Renderer {
         continue;
       }
       const count = counts[i]!;
+      this.separateScene(run);
       this.bindTarget(run.state.colorImage.addr);
       this.draw(run, first, count);
       first += count;
     }
+  }
+
+  /**
+   * Splits a 3D scene from the HUD drawn over it, for the post-processing at present time (post-fx.ts). A triangle draw with the depth buffer in use
+   * (`Geo.ZBUFFER`) is scene. A draw before the first of those in the task is scene too: the sky backdrop and other non-depth-tested 3D draws come first.
+   * Every non-depth-tested draw after it is HUD (texture rectangles, 2D triangles, and any non-Z 3D effect drawn late, which then stays unprocessed),
+   * and the first one copies the colour image, which at that point is the scene alone. Depth-tested draws after that (menu items with their own
+   * depth) are HUD as well. An image with no depth-tested draw in a task (file select, some menus) holds no scene and is presented as it is; so is the
+   * pause menu's backdrop, a texture drawn as 2D.
+   */
+  private separateScene(run: DrawRun): void {
+    if (!effectsOn(this.settings)) return;
+    const t = this.target(run.state.colorImage.addr);
+    if (t.task !== this.taskId) {
+      t.task = this.taskId;
+      t.hasScene = false;
+      t.sceneSplit = false;
+    }
+    if (run.triangles && (run.state.geometryMode & Geo.ZBUFFER) !== 0) {
+      if (!t.sceneSplit) t.hasScene = true;
+    } else if (t.hasScene && !t.sceneSplit) {
+      this.copyScene(t);
+      t.sceneSplit = true;
+    }
+  }
+
+  /** Copies what has been drawn into the image so far into its scene texture. */
+  private copyScene(t: Target): void {
+    const gl = this.gl;
+    const { width, height } = this.canvas;
+    gl.disable(gl.SCISSOR_TEST);
+    if (t.samples) {
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, t.samples.framebuffer);
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, t.framebuffer);
+      gl.blitFramebuffer(0, 0, width, height, 0, 0, width, height, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    }
+    if (!t.scene) {
+      const texture = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      const framebuffer = gl.createFramebuffer()!;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+      t.scene = { texture, framebuffer };
+    }
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, t.framebuffer);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, t.scene.framebuffer);
+    gl.blitFramebuffer(0, 0, width, height, 0, 0, width, height, gl.COLOR_BUFFER_BIT, gl.NEAREST);
   }
 
   private scissorRect(state: DrawState): { x: number; y: number; w: number; h: number } {

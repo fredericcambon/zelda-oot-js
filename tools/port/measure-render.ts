@@ -195,6 +195,9 @@ try {
   })();
 
   const results: { config: Config; rafs: ReturnType<typeof summarize>; overlay: Row }[] = [];
+  // The smooth controls are on the Graphics tab.
+  await evaluate("document.getElementById('tab-graphics').click()");
+  await sleep(300);
   for (const config of CONFIGS) {
     await evaluate(`(() => {
       const t = document.getElementById('smooth-toggle');

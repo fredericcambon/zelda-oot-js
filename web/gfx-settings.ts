@@ -22,6 +22,20 @@ export interface GfxSettings {
   anisotropy: number;
   /** Edges of cut-out textures (foliage, fences) in 3D scenes. */
   cutout: CutoutMode;
+  /** A soft glow around the bright parts of the 3D scene (never the HUD). */
+  bloom: boolean;
+  /** Strength of the bloom, 0 to 100. */
+  bloomStrength: number;
+  /** Brightness (luma, 0 to 100 for 0 to 1) above which pixels bloom. */
+  bloomThreshold: number;
+  /** Width of the soft edge around the threshold, 0 to 100 for 0 to 1; 0 is a hard cut. */
+  bloomKnee: number;
+  /** How far the glow spreads, 0 to 100: the number of blur levels. */
+  bloomRadius: number;
+  /** Contrast-adaptive sharpening of the 3D scene (never the HUD). */
+  sharpen: boolean;
+  /** Strength of the sharpening, 0 to 100. */
+  sharpenStrength: number;
 }
 
 export const STORAGE_KEY = 'oot.gfx';
@@ -36,9 +50,18 @@ export const defaultSettings = (mobile: boolean): GfxSettings => ({
   mipmaps: true,
   anisotropy: mobile ? 2 : 4,
   cutout: 'smooth',
+  bloom: true,
+  bloomStrength: 30,
+  bloomThreshold: 80,
+  bloomKnee: 40,
+  bloomRadius: 100,
+  sharpen: true,
+  sharpenStrength: 30,
 });
 
 export const isMobile = (): boolean => typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+
+const isStrength = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 100;
 
 /** The stored settings, with every field that is missing or invalid taken from the defaults. */
 export function parseSettings(text: string | null, mobile: boolean): GfxSettings {
@@ -56,6 +79,13 @@ export function parseSettings(text: string | null, mobile: boolean): GfxSettings
   if (typeof raw.mipmaps === 'boolean') settings.mipmaps = raw.mipmaps;
   if (typeof raw.scaleCap === 'number' && Number.isFinite(raw.scaleCap) && raw.scaleCap >= 0) settings.scaleCap = raw.scaleCap;
   if (typeof raw.anisotropy === 'number' && Number.isInteger(raw.anisotropy) && raw.anisotropy >= 1 && raw.anisotropy <= 8) settings.anisotropy = raw.anisotropy;
+  if (typeof raw.bloom === 'boolean') settings.bloom = raw.bloom;
+  if (typeof raw.sharpen === 'boolean') settings.sharpen = raw.sharpen;
+  if (isStrength(raw.bloomStrength)) settings.bloomStrength = raw.bloomStrength;
+  if (isStrength(raw.bloomThreshold)) settings.bloomThreshold = raw.bloomThreshold;
+  if (isStrength(raw.bloomKnee)) settings.bloomKnee = raw.bloomKnee;
+  if (isStrength(raw.bloomRadius)) settings.bloomRadius = raw.bloomRadius;
+  if (isStrength(raw.sharpenStrength)) settings.sharpenStrength = raw.sharpenStrength;
   return settings;
 }
 

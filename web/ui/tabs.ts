@@ -7,18 +7,6 @@ import { Button, Slider } from './widgets.ts';
 export function GameTab({ state: s, actions: a }: TabProps): VNode {
   return html`<div class="tab">
     <section>
-      <h3>Speed</h3>
-      <${Button} id="hz-toggle" pressed=${s.wantedHz === 60} title="Run the game at 60 Hz (20 game frames per second) instead of the PAL 50 Hz (16.7)" onClick=${a.toggleHz}>60 Hz: ${s.wantedHz === 60 ? 'on' : 'off'}<//>
-      <span id="hz-note" class="note" hidden=${s.wantedHz === s.bootHz}> applies the next time the page loads</span>
-      <p class="hint">Hold Tab to fast-forward (no sound).</p>
-    </section>
-    <section>
-      <h3>Smooth motion</h3>
-      <${Button} id="smooth-toggle" pressed=${s.smooth} title="Draw pictures between game frames, so motion follows the display's refresh rate (adds up to one game frame of delay)" onClick=${() => a.setSmooth(!s.smooth)}>Smooth<//>
-      <${Slider} id="smooth-strength" label="strength" title="How much of the motion between game frames is shown (less: nearer the game's own frames)" min=${0} max=${100} value=${s.strength} onInput=${a.setStrength} />
-      <${Slider} id="smooth-span" label="catch-up" title="How much of a game frame the motion takes to catch up (less: less delay)" min=${25} max=${100} value=${s.span} onInput=${a.setSpan} />
-    </section>
-    <section>
       <h3>Picture and sound</h3>
       <div class="row">
         <${Button} id="native-toggle" pressed=${s.native} title="Native 320x240 with hard pixels (N)" onClick=${a.toggleNative}>Native resolution<//>
@@ -37,6 +25,36 @@ export function GameTab({ state: s, actions: a }: TabProps): VNode {
       <h3>Keys</h3>
       <p class="help">Arrows: stick · Enter: Start · X: A · Z: B · Shift: Z · Q/E: L/R · IJKL: C buttons · WASD: D-pad · or a gamepad</p>
       <p class="help">C: face culling · N: native 320x240 · 5: save state · 6: load state · 7: next slot (1-4) · M: mute (sound starts at the first key press) · Tab: fast-forward</p>
+    </section>
+  </div>` as VNode;
+}
+
+export function GraphicsTab({ state: s, actions: a }: TabProps): VNode {
+  return html`<div class="tab">
+    <section>
+      <h3>Speed</h3>
+      <${Button} id="hz-toggle" pressed=${s.wantedHz === 60} title="Run the game at 60 Hz (20 game frames per second) instead of the PAL 50 Hz (16.7)" onClick=${a.toggleHz}>60 Hz: ${s.wantedHz === 60 ? 'on' : 'off'}<//>
+      <span id="hz-note" class="note" hidden=${s.wantedHz === s.bootHz}> applies the next time the page loads</span>
+      <p class="hint">Hold Tab to fast-forward (no sound).</p>
+    </section>
+    <section>
+      <h3>Smooth motion</h3>
+      <${Button} id="smooth-toggle" pressed=${s.smooth} title="Draw pictures between game frames, so motion follows the display's refresh rate (adds up to one game frame of delay)" onClick=${() => a.setSmooth(!s.smooth)}>Smooth<//>
+      <${Slider} id="smooth-strength" label="strength" title="How much of the motion between game frames is shown (less: nearer the game's own frames)" min=${0} max=${100} value=${s.strength} onInput=${a.setStrength} />
+      <${Slider} id="smooth-span" label="catch-up" title="How much of a game frame the motion takes to catch up (less: less delay)" min=${25} max=${100} value=${s.span} onInput=${a.setSpan} />
+    </section>
+    <section>
+      <h3>Bloom</h3>
+      <${Button} id="bloom-toggle" pressed=${s.bloom} title="A soft glow around the bright parts of the 3D scene, never the HUD (B)" onClick=${() => a.setBloom(!s.bloom)}>Bloom: ${s.bloom ? 'on' : 'off'}<//>
+      <${Slider} id="bloom-strength" label="intensity" title="How much glow is added (, and .)" min=${0} max=${100} value=${s.bloomStrength} onInput=${a.setBloomStrength} />
+      <${Slider} id="bloom-threshold" label="threshold" title="Brightness above which pixels glow (less: more of the picture glows)" min=${0} max=${100} value=${s.bloomThreshold} onInput=${a.setBloomThreshold} />
+      <${Slider} id="bloom-knee" label="soft knee" title="How gradually pixels start to glow around the threshold (0: a hard cut)" min=${0} max=${100} value=${s.bloomKnee} onInput=${a.setBloomKnee} />
+      <${Slider} id="bloom-radius" label="radius" title="How far the glow spreads" min=${0} max=${100} value=${s.bloomRadius} onInput=${a.setBloomRadius} />
+    </section>
+    <section>
+      <h3>Sharpening</h3>
+      <${Button} id="sharpen-toggle" pressed=${s.sharpen} title="Contrast-adaptive sharpening of the 3D scene, never the HUD (U)" onClick=${() => a.setSharpen(!s.sharpen)}>Sharpening: ${s.sharpen ? 'on' : 'off'}<//>
+      <${Slider} id="sharpen-strength" label="strength" title="How much the scene is sharpened (- and =)" min=${0} max=${100} value=${s.sharpenStrength} onInput=${a.setSharpenStrength} />
     </section>
   </div>` as VNode;
 }

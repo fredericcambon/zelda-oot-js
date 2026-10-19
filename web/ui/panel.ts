@@ -3,7 +3,7 @@ import { render, type ComponentType, type VNode } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import { clampWidth, loadPrefs, savePrefs, type PanelPrefs } from './prefs.ts';
 import type { Store } from './store.ts';
-import { DebugTab, GameTab, SavesTab } from './tabs.ts';
+import { DebugTab, GameTab, GraphicsTab, SavesTab } from './tabs.ts';
 import { ActorsTab } from './actors-tab.ts';
 import { MemoryTab } from './memory-tab.ts';
 import { InventoryTab } from './inventory-tab.ts';
@@ -21,6 +21,7 @@ interface TabDef {
 // Later tabs are added here.
 const TABS: TabDef[] = [
   { id: 'game', label: 'Game', icon: '🎮', body: GameTab },
+  { id: 'graphics', label: 'Graphics', icon: '🎨', body: GraphicsTab },
   { id: 'saves', label: 'Saves', icon: '💾', body: SavesTab },
   { id: 'warp', label: 'Warp', icon: '🌀', body: WarpTab },
   { id: 'inventory', label: 'Inventory', icon: '🎒', body: InventoryTab },
