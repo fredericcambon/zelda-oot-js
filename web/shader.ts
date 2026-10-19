@@ -79,10 +79,12 @@ export interface SpecOptions {
   mip?: boolean;
   /** Smooth cut-out edges; takes effect only on an alpha-compare or coverage-times-alpha draw that does not blend with the framebuffer. */
   cutout?: boolean;
+  /** Four-texel bilinear in place of the 3-point filter for this draw, whose textures are soft gradients (`web/low-contrast.ts`). */
+  smoothTexels?: boolean;
 }
 
 /** `filter` replaces what the draw asked for: `sharp` makes every texture nearest, `smooth` swaps the 3-point filter for bilinear. */
-export function specOf(state: DrawState, { filter = 'n64', mip = false, cutout = false }: SpecOptions = {}): ShaderSpec {
+export function specOf(state: DrawState, { filter = 'n64', mip = false, cutout = false, smoothTexels = false }: SpecOptions = {}): ShaderSpec {
   const type = cycleTypeOf(state.otherModeH);
   const cycles: 1 | 2 = type === CycleType.TWO ? 2 : 1;
   const [c0, c1] = state.combine.cycles;
@@ -99,7 +101,7 @@ export function specOf(state: DrawState, { filter = 'n64', mip = false, cutout =
     alpha: [c0.alpha, c1.alpha],
     // A copy-mode rectangle takes the texel under each pixel, whatever the filter field says.
     bilerp: type !== CycleType.COPY && ((state.otherModeH >>> 12) & 3) !== 0 && filter !== 'sharp',
-    smooth: filter === 'smooth',
+    smooth: filter === 'smooth' || smoothTexels,
     mip: mip && type !== CycleType.COPY,
     alphaCompare,
     cutout: cutout && (alphaCompare || (coverageTimesAlpha && alphaFromCoverage)) && !framebufferBlend && type !== CycleType.COPY,
