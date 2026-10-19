@@ -10,6 +10,11 @@ export type CutoutMode = 'hard' | 'smooth';
 
 export const CUTOUT_MODES: readonly CutoutMode[] = ['hard', 'smooth'];
 
+/** vertex: the game's lighting, per vertex; pixel: the same lights and normals evaluated per pixel on lit surfaces. */
+export type LightingMode = 'vertex' | 'pixel';
+
+export const LIGHTING_MODES: readonly LightingMode[] = ['vertex', 'pixel'];
+
 export interface GfxSettings {
   filter: FilterMode;
   /** 4x multisampling of the 3D framebuffer where the browser offers it. */
@@ -22,6 +27,8 @@ export interface GfxSettings {
   anisotropy: number;
   /** Edges of cut-out textures (foliage, fences) in 3D scenes. */
   cutout: CutoutMode;
+  /** Where lit surfaces are shaded (see `LightingMode`). */
+  lightingMode: LightingMode;
   /** Soft contact shadows in corners and under objects of the 3D scene, from its depth (never the HUD or the sky). */
   ao: boolean;
   /** Strength of the occlusion, 0 to 100. */
@@ -54,6 +61,7 @@ export const defaultSettings = (mobile: boolean): GfxSettings => ({
   mipmaps: true,
   anisotropy: mobile ? 2 : 4,
   cutout: 'smooth',
+  lightingMode: 'vertex',
   ao: true,
   aoStrength: 40,
   bloom: true,
@@ -81,6 +89,7 @@ export function parseSettings(text: string | null, mobile: boolean): GfxSettings
   }
   if (FILTER_MODES.includes(raw.filter as FilterMode)) settings.filter = raw.filter as FilterMode;
   if (CUTOUT_MODES.includes(raw.cutout as CutoutMode)) settings.cutout = raw.cutout as CutoutMode;
+  if (LIGHTING_MODES.includes(raw.lightingMode as LightingMode)) settings.lightingMode = raw.lightingMode as LightingMode;
   if (typeof raw.msaa === 'boolean') settings.msaa = raw.msaa;
   if (typeof raw.mipmaps === 'boolean') settings.mipmaps = raw.mipmaps;
   if (typeof raw.scaleCap === 'number' && Number.isFinite(raw.scaleCap) && raw.scaleCap >= 0) settings.scaleCap = raw.scaleCap;

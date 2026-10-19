@@ -10,6 +10,7 @@ import { CDisplayListInterpreter, type GfxTraceCore } from './c-dl.ts';
 const GFX_EXPORTS = [
   '_malloc', '_free', '_gfx_run_ram', '_gfx_result', '_gfx_reset', '_gfx_layout', '_gfx_decode_texture', '_gfx_trace_vertices', '_gfx_vertex_trace',
   '_gfx_vertex_trace_length', '_gfx_motion_record', '_gfx_motion_count', '_gfx_motion_matrices', '_gfx_motion_vertex_load_count', '_gfx_motion_vertex_loads', '_gfx_motion_input', '_gfx_motion_commit',
+  '_gfx_set_pixel_lighting', '_gfx_light_result',
 ];
 
 const BUILD_TIMEOUT_MS = 10 * 60_000;

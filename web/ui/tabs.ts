@@ -59,6 +59,10 @@ export function GraphicsTab({ state: s, actions: a }: TabProps): VNode {
       <${Slider} id="bloom-radius" label="radius" title="How far the glow spreads" min=${0} max=${100} value=${s.bloomRadius} onInput=${a.setBloomRadius} />
     </section>
     <section>
+      <h3>Lighting</h3>
+      <${Button} id="lighting-toggle" pressed=${s.lightingMode === 'pixel'} title="Experimental: light lit surfaces per pixel with the game's own lights instead of per vertex (P)" onClick=${() => a.setLightingMode(s.lightingMode === 'pixel' ? 'vertex' : 'pixel')}>Lighting: ${s.lightingMode}<//>
+    </section>
+    <section>
       <h3>Sharpening</h3>
       <${Button} id="sharpen-toggle" pressed=${s.sharpen} title="Contrast-adaptive sharpening of the 3D scene, never the HUD (U)" onClick=${() => a.setSharpen(!s.sharpen)}>Sharpening: ${s.sharpen ? 'on' : 'off'}<//>
       <${Slider} id="sharpen-strength" label="strength" title="How much the scene is sharpened (- and =)" min=${0} max=${100} value=${s.sharpenStrength} onInput=${a.setSharpenStrength} />
