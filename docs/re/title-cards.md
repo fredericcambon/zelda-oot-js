@@ -1,6 +1,6 @@
 # Title cards: the area-name pictures (PAL 1.0)
 
-Every address was read from this ROM. Addresses are main-code-file RAM addresses (`0x800116E0` base, file 28) unless stated. Reproduce the lists with `OOT_ROM=<rom> npx tsx tools/assets/title-cards-report.ts` (also writes `out/title-cards/sheet.png`, git-ignored); the observations with `tools/headless/title-card-rom.test.ts`. Scene and file numbers only: no picture or text from the ROM is committed.
+Every address was read from this ROM. Addresses are main-code-file RAM addresses (`0x800116E0` base, file 28) unless stated. Reproduce the lists with `OOT_ROM=<rom> npx tsx tools/assets/title-cards-report.ts` (also writes `out/title-cards/sheet.png`, git-ignored); the observations with `tools/headless/title-card-rom.test.ts`. No picture from the ROM is committed. The English text of the 57 title cards is committed as typed by hand in `web/inspect/card-names.ts` (docs/re/entrances.md, "Names"), at the user's request.
 
 ## Where the pictures are
 
