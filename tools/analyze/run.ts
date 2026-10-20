@@ -2,6 +2,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { replaceFile } from '../port/cache.ts';
 import { wrapAll } from '../elf-wrap/wrap.ts';
 import { loadContext } from './context.ts';
 import { ghidraInstalled, runGhidra, type GhidraFacts } from './ghidra.ts';
@@ -15,7 +16,7 @@ import type { Inventory, InvImage } from './types.ts';
 function writeIfChanged(path: string, data: Uint8Array | string): void {
   const bytes = typeof data === 'string' ? Buffer.from(data) : Buffer.from(data);
   if (existsSync(path) && readFileSync(path).equals(bytes)) return;
-  writeFileSync(path, bytes);
+  replaceFile(path, bytes);
 }
 
 export interface AnalyzeOptions {
@@ -41,7 +42,7 @@ export async function analyze(opts: AnalyzeOptions): Promise<Inventory> {
     writeIfChanged(join(elfDir, `${img.name}.elf`), img.elf);
     writeIfChanged(join(elfDir, 'plain', `${img.name}.elf`), img.elfPlain);
   }
-  writeFileSync(join(elfDir, 'layout.json'), JSON.stringify(ctx.layout, null, 2) + '\n');
+  replaceFile(join(elfDir, 'layout.json'), JSON.stringify(ctx.layout, null, 2) + '\n');
 
   const specs = buildSpecs(ctx);
   const ghidraOut = join(opts.workDir, 'ghidra', 'facts');
@@ -81,7 +82,7 @@ export async function analyze(opts: AnalyzeOptions): Promise<Inventory> {
     images,
     os,
   };
-  writeFileSync(join(opts.outDir, 'inventory.json'), JSON.stringify(inventory));
+  replaceFile(join(opts.outDir, 'inventory.json'), JSON.stringify(inventory));
   log(`wrote ${join(opts.outDir, 'inventory.json')}`);
   if (opts.coverageDoc) {
     mkdirSync(dirname(opts.coverageDoc), { recursive: true });

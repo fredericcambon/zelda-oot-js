@@ -1,6 +1,6 @@
-import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { defineConfig, type Plugin } from 'vite';
+import { defineConfig, searchForWorkspaceRoot, type Plugin } from 'vite';
 import { PACK_FILE } from './tools/assets/pack.ts';
 import { MODULE_URLS, serveGameFiles } from './web/game-files.ts';
 import { savesDir, savesMiddleware } from './web/saves-endpoint.ts';
@@ -52,10 +52,16 @@ export const DEFAULT_PORT = 5317;
 const port = Number(process.env.PORT) || DEFAULT_PORT;
 const listen = { port, strictPort: true, host: '127.0.0.1' };
 
+// node_modules is a junction to the shared deps folder (tools/deps.mjs), outside the project root, so the dev server must be allowed to read from it.
+// Vite's own cache goes to a per-worktree folder, never into the shared one.
+const modulesDir = join(import.meta.dirname, 'node_modules');
+const fsAllow = [searchForWorkspaceRoot(import.meta.dirname), ...(existsSync(modulesDir) ? [realpathSync(modulesDir)] : [])];
+
 export default defineConfig(({ mode }) => {
   const pages = mode === 'pages';
   return {
-    server: listen,
+    cacheDir: join(import.meta.dirname, '.cache', 'vite'),
+    server: { ...listen, fs: { allow: fsAllow } },
     preview: listen,
     root: 'web',
     base: pages ? '/zelda-oot-js/' : '/',

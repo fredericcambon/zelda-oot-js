@@ -1,7 +1,7 @@
 // Compiles the generated C with Emscripten: one object per file, built in parallel, then one link. Objects and the link
 // output come from the shared cache (cache.ts) when their inputs are unchanged.
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { repoRoot, type Toolchain } from '../recomp/toolchain.ts';
 import { hashFile, hashKey, type Cache } from './cache.ts';
@@ -175,6 +175,7 @@ export async function compileAll(opts: BuildOptions, extraSources: string[]): Pr
   const failures: string[] = [];
   let done = 0;
   const compileOne = async (job: (typeof jobs)[number]) => {
+    rmSync(job.path, { force: true });
     const r = await emcc(opts.toolchain, [...flags, `-I${join(repoRoot, 'runtime')}`, `-I${opts.cDir}`, '-c', job.src, '-o', job.path], repoRoot);
     if (r.code !== 0) failures.push(`${job.src}:
 ${r.output}`);
@@ -210,6 +211,7 @@ export async function link(opts: BuildOptions, objects: CompiledObject[]): Promi
   // Hundreds of objects exceed the command-line limit, so they go through a response file.
   const list = join(opts.objDir, 'objects.rsp');
   writeFileSync(list, objects.map((o) => `"${o.path.replaceAll('\\', '/')}"`).join('\n'));
+  for (const f of LINK_OUTPUTS) rmSync(join(opts.distDir, f), { force: true });
   const r = await emcc(opts.toolchain, [...LINK_FLAGS(optimize), `@${list}`, '-o', out], repoRoot);
   if (r.code !== 0) throw new Error(`link failed:\n${r.output.slice(0, 4000)}`);
   if (LINK_OUTPUTS.every((f) => existsSync(join(opts.distDir, f))) && isLinkOutput('oot.wasm', readFileSync(join(opts.distDir, 'oot.wasm')))) {

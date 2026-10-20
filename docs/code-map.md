@@ -8,6 +8,7 @@ Where to look first. Search with grep before reading whole files.
 - `runtime/tests/` C unit tests for the runtime.
 
 ## Tools (`tools/`, Node/TypeScript)
+- `tools/deps.mjs` (`npm run deps`) shared `node_modules` per lock-file hash, junctioned into the worktree (`docs/build.md`).
 - `tools/rom/` ROM reading, byte order, file table, Yaz0 (`npm run rom:extract`).
 - `tools/elf-wrap/`, `tools/recomp/` ELF wrapping and the MIPS-to-C recompiler (`emit.ts`, `generate.ts`, `fpu.ts`); recompiler tests are `*.test.ts` next to them.
 - `tools/analyze/` binary analysis (disassembler, os routines, relocs, Ghidra glue).
