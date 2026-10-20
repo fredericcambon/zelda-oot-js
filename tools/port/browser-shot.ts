@@ -6,6 +6,7 @@
 //   --seconds <n> --every <s> --from <s>   shot every s seconds up to n, skipping those before `from`
 //   --frames <n> --every-frames <k>        instead of seconds: n shots, each after k more game frames (adds `capture` to the query; names `<out>-f<frame>.png`)
 //   --save-at <seconds>    presses 5 (save state to the current slot; set OOT_SAVES_DIR so the user's folder is untouched)
+//   --phone <WxH>         emulates a touch phone of that size (844x390 is landscape) and shoots the whole page, overlay included, instead of the canvas
 //   --eval <global>        writes JSON.stringify(globalThis.<global>) after each shot to `<out>-<seconds>.txt`
 //   --region x,y,w,h       crop, in canvas pixels (the game's framebuffer coordinates)
 //   --max <px>             downscale so the longer side is at most px (default 512, 0 = full size); applies to shots, difference pictures and the sheet
@@ -35,6 +36,7 @@ const { values } = parseArgs({
     seconds: { type: 'string', default: '20' },
     every: { type: 'string', default: '2' },
     width: { type: 'string', default: '1280' },
+    phone: { type: 'string' },
     eval: { type: 'string' },
     from: { type: 'string', default: '0' },
     'save-at': { type: 'string' },
@@ -84,7 +86,9 @@ try {
   const { sessionId } = await cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true });
   const call = <T = Record<string, unknown>>(method: string, params: object = {}) => cdp.send<T>(method, params, sessionId);
   const evaluate = async (expression: string) => (await call<{ result: { value?: unknown } }>('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })).result.value;
-  await call('Emulation.setDeviceMetricsOverride', { width: Number(values.width), height: 1000, deviceScaleFactor: 1, mobile: false });
+  const [phoneW, phoneH] = values.phone ? values.phone.split('x').map(Number) : [];
+  await call('Emulation.setDeviceMetricsOverride', phoneW ? { width: phoneW, height: phoneH, deviceScaleFactor: 1, mobile: true } : { width: Number(values.width), height: 1000, deviceScaleFactor: 1, mobile: false });
+  if (phoneW) await call('Emulation.setTouchEmulationEnabled', { enabled: true });
   await call('Page.navigate', { url: `http://localhost:${port}/` });
   await waitFor('the page', async () => ((await evaluate('document.readyState')) === 'complete' ? true : undefined));
   await evaluate(`localStorage.setItem('oot.gfx', JSON.stringify({...JSON.parse(localStorage.getItem('oot.gfx') ?? '{}'), ...${JSON.stringify(settings)}}));`);
@@ -95,7 +99,7 @@ try {
   const shoot = async (label: string) => {
     const rect = (await evaluate("(() => { const r = document.getElementById('screen').getBoundingClientRect(); return JSON.stringify([r.x, r.y, r.width, r.height, document.getElementById('screen').width, document.getElementById('screen').height]); })()")) as string;
     const [x, y, width, height, cw, ch] = JSON.parse(rect) as number[];
-    const shot = await call<{ data: string }>('Page.captureScreenshot', { format: 'png', clip: { x, y, width, height, scale: 1 } });
+    const shot = await call<{ data: string }>('Page.captureScreenshot', { format: 'png', ...(phoneW ? {} : { clip: { x, y, width, height, scale: 1 } }) });
     const full = decodePng(Buffer.from(shot.data, 'base64'));
     // The region is in canvas pixels; the picture is in CSS pixels.
     let img = region ? crop(full, { x: (region.x * full.width) / cw!, y: (region.y * full.height) / ch!, w: (region.w * full.width) / cw!, h: (region.h * full.height) / ch! }) : full;
