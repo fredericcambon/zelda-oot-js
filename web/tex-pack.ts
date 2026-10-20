@@ -1,6 +1,7 @@
 // An optional local pack of replacement textures: `out/texpack/<variant>/<hash>.png` on the machine that built it (`npm run tex -- upscale`), served to
 // loopback clients only at `/texpack/<variant>/` and listed in its `index.json`. A decoded texture is looked up by `hashImage`. A replacement is a
 // whole multiple (2 or 4) of the size of the texture it stands for, and the renderer samples it with the texture's own tile settings.
+import { isMobile } from './gfx-settings.ts';
 import { hashImage, hashTexture } from '../tools/tex/hash.ts';
 
 export { hashImage, hashTexture };
@@ -152,9 +153,10 @@ export class TexPack {
 
 function readEnabled(): boolean {
   try {
-    return localStorage.getItem(STORAGE_KEY) !== '0';
+    const stored = localStorage.getItem(STORAGE_KEY);
+    return stored === null ? !isMobile() : stored !== '0';
   } catch {
-    return true;
+    return !isMobile();
   }
 }
 

@@ -58,12 +58,13 @@ export const MOBILE_SCALE_CAP = 2;
 /** The 3D image is at most this many times 320x240 (a 2560 pixel wide canvas). */
 export const MAX_SCALE = 8;
 
-export const defaultSettings = (mobile: boolean): GfxSettings => ({
+/** The desktop defaults; phones start from them with the costly effects off. */
+const baseSettings = (): GfxSettings => ({
   filter: 'n64',
   msaa: true,
-  scaleCap: mobile ? MOBILE_SCALE_CAP : 0,
+  scaleCap: 0,
   mipmaps: true,
-  anisotropy: mobile ? 2 : 4,
+  anisotropy: 4,
   cutout: 'smooth',
   lightingMode: 'vertex',
   pointLights: false,
@@ -78,6 +79,12 @@ export const defaultSettings = (mobile: boolean): GfxSettings => ({
   sharpen: true,
   sharpenStrength: 30,
 });
+
+/** What phones defaulted to before the costly effects were turned off there: stored settings equal to this were never changed by the user. */
+const previousMobileSettings = (): GfxSettings => ({ ...baseSettings(), scaleCap: MOBILE_SCALE_CAP, anisotropy: 2 });
+
+export const defaultSettings = (mobile: boolean): GfxSettings =>
+  mobile ? { ...baseSettings(), scaleCap: MOBILE_SCALE_CAP, msaa: false, anisotropy: 1, ao: false, bloom: false, sharpen: false } : baseSettings();
 
 export const isMobile = (): boolean => typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
 
@@ -111,6 +118,7 @@ export function parseSettings(text: string | null, mobile: boolean): GfxSettings
   if (isStrength(raw.bloomKnee)) settings.bloomKnee = raw.bloomKnee;
   if (isStrength(raw.bloomRadius)) settings.bloomRadius = raw.bloomRadius;
   if (isStrength(raw.sharpenStrength)) settings.sharpenStrength = raw.sharpenStrength;
+  if (mobile && JSON.stringify(settings) === JSON.stringify(previousMobileSettings())) return defaultSettings(true);
   return settings;
 }
 
