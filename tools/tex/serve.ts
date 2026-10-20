@@ -1,4 +1,4 @@
-// Serves the local texture packs (`out/texpack/<variant>/`) at `/texpack/<variant>/` to this machine only: the textures are derived from the
+// Serves the local texture packs (`<variant>/` of the pack folder) at `/texpack/<variant>/` to this machine only: the textures are derived from the
 // cartridge and are never published. Only `index.json` and `<16 hex digits>.png` in a variant folder are mapped to a path.
 import { readFileSync, statSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -8,7 +8,8 @@ import { LOOPBACK } from '../../web/saves-endpoint.ts';
 export const PACK_ROUTE = '/texpack/';
 const NAME = /^[a-z0-9-]+\/(index\.json|[0-9a-f]{16}\.png)$/;
 
-export function serveTexPack(dir: string) {
+/** `dir` is read per request: the pack folder may not exist yet when the server starts. */
+export function serveTexPack(dir: () => string | undefined) {
   return (req: IncomingMessage, res: ServerResponse, next: () => void): void => {
     const url = (req.url ?? '').split('?')[0]!;
     if (!url.startsWith(PACK_ROUTE)) return next();
@@ -18,9 +19,10 @@ export function serveTexPack(dir: string) {
       return;
     }
     const name = url.slice(PACK_ROUTE.length);
-    const file = join(dir, name);
+    const root = dir();
+    const file = root && join(root, name);
     // 404 here: left to Vite, a missing file would be answered with the page itself.
-    const stat = NAME.test(name) ? statSync(file, { throwIfNoEntry: false }) : undefined;
+    const stat = file && NAME.test(name) ? statSync(file, { throwIfNoEntry: false }) : undefined;
     if (!stat?.isFile()) {
       res.statusCode = 404;
       res.end('no such texture');
@@ -28,6 +30,6 @@ export function serveTexPack(dir: string) {
     }
     res.setHeader('Content-Type', name.endsWith('.json') ? 'application/json' : 'image/png');
     res.setHeader('Cache-Control', 'no-cache');
-    res.end(readFileSync(file));
+    res.end(readFileSync(file!));
   };
 }

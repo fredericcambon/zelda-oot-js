@@ -1,4 +1,4 @@
-// `npm run tex -- dump [--dist dist] [--out out/texdump]`: plays the scripted new game headless to Link's house under control, loads Kokiri Forest
+// `npm run tex -- dump [--dist dist] [--out <cache>/tex/<rom>/dump]`: plays the scripted new game headless to Link's house under control, loads Kokiri Forest
 // (entrance 238) and walks it, then enters the six interiors the forest's exit list names, and writes every unique decoded texture the display
 // lists used to `<out>/<hash>.png` with `index.json` (facts per texture) and `report.json` (what churns). Pictures come from the cartridge: `out/`
 // is git-ignored.

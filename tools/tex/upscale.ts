@@ -1,4 +1,4 @@
-// `npm run tex -- upscale [--dump out/texdump] [--out out/texpack] [--tool <dir>] [--python <exe>] [--variants a,b,c,d] [--pad 16] [--limit N]`: enlarges every
+// `npm run tex -- upscale [--dump <cache>/tex/<rom>/dump] [--out <cache>/tex/<rom>/pack] [--tool <dir>] [--python <exe>] [--variants a,b,c,d] [--pad 16] [--limit N]`: enlarges every
 // texture of the dump that is not volatile with a third-party model run locally (a Real-ESRGAN model of its official release, run by tools/tex/model_run.py
 // with numpy, see docs/texture-pack.md) and writes one pack per variant named by `--variants` (the others in `--out` are left as they are), `<out>/<variant>/<hash>.png` plus an `index.json` that lists the pack, the settings
 // it was made with, its texture memory and its build time. The models and the runtime are not part of the repository: they are fetched by hand into `--tool`
