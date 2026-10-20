@@ -19,7 +19,7 @@ const auth = ['-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-
 const identity = ['-c', 'user.name=pages-deploy', '-c', 'user.email=pages-deploy@localhost'];
 
 // Always run: a cache hit takes seconds, and a miss rebuilds the game after a runtime or recompiler change.
-run('npm', ['run', 'port']);
+run('npm', ['run', 'port', '--', '--no-ghidra']);
 run('npm', ['run', 'pages:build']);
 
 const remote = out('git', ['remote', 'get-url', 'origin']);
