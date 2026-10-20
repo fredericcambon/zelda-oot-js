@@ -142,11 +142,13 @@ export class Cache {
       this.drop(dir);
       return undefined;
     }
+    const placed: string[] = [];
     try {
       for (const { path } of manifest.files) {
         const target = join(dest, path);
         mkdirSync(dirname(target), { recursive: true });
         rmSync(target, { force: true });
+        placed.push(target);
         try {
           linkSync(join(dir, path), target);
         } catch {
@@ -158,7 +160,8 @@ export class Cache {
       const now = new Date();
       utimesSync(join(dir, MANIFEST), now, now);
     } catch {
-      // The destination is busy or unwritable (another process holds the file); the entry itself is sound.
+      // The destination is busy or unwritable (another process holds the file); the entry itself is sound. Nothing half-restored stays behind.
+      for (const target of placed) rmSync(target, { force: true });
       return undefined;
     }
     return { meta: manifest.meta };

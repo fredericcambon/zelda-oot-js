@@ -64,15 +64,16 @@ describe('junction', () => {
 });
 
 describe('pruneUnused', () => {
-  it('removes old hash folders except the current one', () => {
+  it('removes old ready hash folders except the current one, and nothing else', () => {
     const day = 86_400;
     const old = Date.now() / 1000 - 15 * day;
-    for (const n of ['old', 'cur', 'new']) mkdirSync(join(root, n));
-    utimesSync(join(root, 'old'), old, old);
-    utimesSync(join(root, 'cur'), old, old);
-    expect(pruneUnused(root, 'cur')).toEqual(['old']);
-    expect(existsSync(join(root, 'cur'))).toBe(true);
-    expect(existsSync(join(root, 'new'))).toBe(true);
-    expect(existsSync(join(root, 'old'))).toBe(false);
+    const [old_, cur, fresh, foreign, bare] = ['a', 'b', 'c', 'd', 'e'].map((c) => c.repeat(64)) as [string, string, string, string, string];
+    for (const n of [old_, cur, fresh, foreign, bare]) mkdirSync(join(root, n));
+    for (const n of [old_, cur, fresh]) writeFileSync(join(root, n, 'ready'), '');
+    mkdirSync(join(root, 'notes'));
+    for (const n of [old_, cur, foreign, bare, 'notes']) utimesSync(join(root, n), old, old);
+    expect(pruneUnused(root, cur)).toEqual([old_]);
+    for (const n of [cur, fresh, foreign, bare, 'notes']) expect(existsSync(join(root, n))).toBe(true);
+    expect(existsSync(join(root, old_))).toBe(false);
   });
 });

@@ -113,9 +113,9 @@ export function pruneUnused(root, keep, days = UNUSED_DAYS, now = Date.now()) {
   if (!existsSync(root)) return removed;
   for (const name of readdirSync(root)) {
     const path = join(root, name);
-    if (name === keep || name.endsWith('.lock')) continue;
+    if (name === keep || !/^[0-9a-f]{64}$/.test(name)) continue;
     try {
-      if (!statSync(path).isDirectory() || now - statSync(path).mtimeMs <= days * 86_400_000) continue;
+      if (!existsSync(join(path, READY)) || now - statSync(path).mtimeMs <= days * 86_400_000) continue;
       rmSync(path, { recursive: true, force: true });
       removed.push(name);
     } catch {
