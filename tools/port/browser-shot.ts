@@ -1,13 +1,31 @@
-// `npx tsx tools/port/browser-shot.ts --query "file=1,warp=0x422" --out out/shots/name [--settings '{"ao":false}'] [--seconds 20] [--every 2] [--eval "js"]`:
+// `npx tsx tools/port/browser-shot.ts --query "file=1,warp=0x422" --out out/shots/name [flags]`:
 // runs the dev server and headless Chrome (muted), opens the page with the query, and saves a picture of the canvas every few seconds
-// (`<out>-<seconds>.png`). `--settings` is merged over the default graphics settings (localStorage `oot.gfx`). `--ls key=value;key=value` sets other localStorage keys (`oot.smooth=0`), `--save-at <seconds>` presses 5 (save state to the current slot; set OOT_SAVES_DIR so the user's folder is untouched), `--eval <global>` writes JSON.stringify(globalThis.<global>) after each shot and its result goes to `<out>-<seconds>.txt`.
+// (`<out>-<seconds>.png`). One short line per shot (path and size), no other logs. Flags:
+//   --query <a=b,c=d>      page query (commas become &)           --settings <json|k=v;k=v>  merged over the graphics settings (localStorage `oot.gfx`)
+//   --ls k=v;k=v           other localStorage keys (`oot.smooth=0`)  --width <px>  browser width, default 1280
+//   --seconds <n> --every <s> --from <s>   shot every s seconds up to n, skipping those before `from`
+//   --frames <n> --every-frames <k>        instead of seconds: n shots, each after k more game frames (adds `capture` to the query; names `<out>-f<frame>.png`)
+//   --save-at <seconds>    presses 5 (save state to the current slot; set OOT_SAVES_DIR so the user's folder is untouched)
+//   --eval <global>        writes JSON.stringify(globalThis.<global>) after each shot to `<out>-<seconds>.txt`
+//   --region x,y,w,h       crop, in canvas pixels (the game's framebuffer coordinates)
+//   --max <px>             downscale so the longer side is at most px (default 512, 0 = full size); applies to shots, difference pictures and the sheet
+//   --diff <ref.png>       per shot: mean and max channel difference, share of pixels differing by more than 8/255 and their bounding box (in the cropped
+//                          picture, full resolution). The reference is either a full-canvas picture (cropped by --region too) or already the size of the crop
+//   --diff-out             also writes `<out>-<seconds>-diff.png`, the difference amplified four times
+//   --sheet                also writes `<out>-sheet.png`, all shots in a grid within --max
+// Example, crop plus numeric diff against an earlier full shot: `--query file=1,warp=0x422 --out out/shots/b --seconds 6 --every 6 --region 400,300,320,240 --diff out/shots/a-6.png --diff-out`
+// Needs `dist/` from `npm run port`. Pictures come from the ROM: keep them under `out/`.
 // Needs `dist/` from `npm run port`. Pictures come from the ROM: keep them under `out/`.
 import { type ChildProcess, spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { Cdp, CHROME_SILENT_FLAGS, sleep, waitFor } from './cdp.ts';
+import { contactSheet, crop, diffImage, diffStats, downscale, formatDiff, parseRegion } from '../gfx/image-ops.ts';
+import { encodePng } from '../gfx/png.ts';
+import type { RgbaImage } from '../gfx/types.ts';
+import { decodePng } from '../tex/png-read.ts';
 
 const { values } = parseArgs({
   options: {
@@ -21,6 +39,13 @@ const { values } = parseArgs({
     from: { type: 'string', default: '0' },
     'save-at': { type: 'string' },
     ls: { type: 'string', default: '' },
+    region: { type: 'string' },
+    max: { type: 'string', default: '512' },
+    diff: { type: 'string' },
+    'diff-out': { type: 'boolean', default: false },
+    frames: { type: 'string' },
+    'every-frames': { type: 'string', default: '1' },
+    sheet: { type: 'boolean', default: false },
     port: { type: 'string', default: process.env.PORT ?? '5299' },
     chrome: { type: 'string', default: 'C:/Program Files/Google/Chrome/Application/chrome.exe' },
   },
@@ -35,6 +60,13 @@ const settings: Record<string, unknown> = values.settings!.startsWith('{')
     return [k, v === 'true' ? true : v === 'false' ? false : Number.isNaN(Number(v)) ? v : Number(v)];
   }));
 mkdirSync(dirname(values.out), { recursive: true });
+const region = values.region ? parseRegion(values.region) : undefined;
+const max = Number(values.max);
+const reference = values.diff ? decodePng(readFileSync(values.diff)) : undefined;
+const frameMode = values.frames !== undefined;
+const sheet: RgbaImage[] = [];
+const small = (img: RgbaImage) => (max > 0 ? downscale(img, max) : img);
+const write = (path: string, img: RgbaImage) => writeFileSync(path, encodePng(img.width, img.height, img.rgba));
 
 const children: ChildProcess[] = [];
 const profile = mkdtempSync(join(tmpdir(), 'oot-shot-'));
@@ -57,20 +89,50 @@ try {
   await waitFor('the page', async () => ((await evaluate('document.readyState')) === 'complete' ? true : undefined));
   await evaluate(`localStorage.setItem('oot.gfx', JSON.stringify({...JSON.parse(localStorage.getItem('oot.gfx') ?? '{}'), ...${JSON.stringify(settings)}}));`);
   for (const kv of values.ls!.split(';').filter(Boolean)) await evaluate(`localStorage.setItem(${JSON.stringify(kv.split('=')[0])}, ${JSON.stringify(kv.split('=')[1])})`);
-  await call('Page.navigate', { url: `http://localhost:${port}/?${values.query.replaceAll(',', '&')}` });
+  await call('Page.navigate', { url: `http://localhost:${port}/?${(frameMode && !/(^|,)capture(=|,|$)/.test(values.query) ? `${values.query},capture` : values.query).replace(/^,/, '').replaceAll(',', '&')}` });
   await waitFor('the first game frame', async () => (JSON.parse((await evaluate('JSON.stringify(globalThis.ootTiming ?? {})')) as string).firstFrame !== undefined ? true : undefined), 120_000);
   await evaluate("document.dispatchEvent(new KeyboardEvent('keydown',{key:'m',code:'KeyM'}))");
-  const total = Number(values.seconds), every = Number(values.every);
-  for (let t = every; t <= total; t = Math.round((t + every) * 100) / 100) {
-    await sleep(every * 1000);
-    if (values['save-at'] && t === Number(values['save-at'])) for (const type of ['keyDown', 'keyUp']) await call('Input.dispatchKeyEvent', { type, key: '5', code: 'Digit5', text: type === 'keyDown' ? '5' : undefined });
-    if (t < Number(values.from)) continue;
+  const shoot = async (label: string) => {
     const rect = (await evaluate("(() => { const r = document.getElementById('screen').getBoundingClientRect(); return JSON.stringify([r.x, r.y, r.width, r.height, document.getElementById('screen').width, document.getElementById('screen').height]); })()")) as string;
     const [x, y, width, height, cw, ch] = JSON.parse(rect) as number[];
     const shot = await call<{ data: string }>('Page.captureScreenshot', { format: 'png', clip: { x, y, width, height, scale: 1 } });
-    writeFileSync(`${values.out}-${t}.png`, Buffer.from(shot.data, 'base64'));
-    console.log(`${t}s canvas ${cw}x${ch} css ${width}x${height}`);
-    if (values.eval) writeFileSync(`${values.out}-${t}.txt`, String(await evaluate(`JSON.stringify(globalThis.${values.eval})`)));
+    const full = decodePng(Buffer.from(shot.data, 'base64'));
+    // The region is in canvas pixels; the picture is in CSS pixels.
+    let img = region ? crop(full, { x: (region.x * full.width) / cw!, y: (region.y * full.height) / ch!, w: (region.w * full.width) / cw!, h: (region.h * full.height) / ch! }) : full;
+    let line = `${label} canvas ${cw}x${ch}`;
+    if (reference) {
+      const ref = region && reference.width === full.width && reference.height === full.height
+        ? crop(reference, { x: (region.x * full.width) / cw!, y: (region.y * full.height) / ch!, w: (region.w * full.width) / cw!, h: (region.h * full.height) / ch! })
+        : reference;
+      line += ` ${formatDiff(diffStats(img, ref))}`;
+      if (values['diff-out']) write(`${values.out}-${label}-diff.png`, small(diffImage(img, ref)));
+    }
+    img = small(img);
+    write(`${values.out}-${label}.png`, img);
+    sheet.push(img);
+    console.log(`${line} -> ${values.out}-${label}.png ${img.width}x${img.height}`);
+    if (values.eval) writeFileSync(`${values.out}-${label}.txt`, String(await evaluate(`JSON.stringify(globalThis.${values.eval})`)));
+  };
+  if (frameMode) {
+    const step = Number(values['every-frames']);
+    await waitFor('ootStep', async () => ((await evaluate('typeof globalThis.ootStep')) === 'function' ? true : undefined));
+    for (let n = 1; n <= Number(values.frames); n++) {
+      await evaluate(`globalThis.ootStep(${step}, 0, 0)`);
+      await shoot(`f${n * step}`);
+    }
+  } else {
+    const total = Number(values.seconds), every = Number(values.every);
+    for (let t = every; t <= total; t = Math.round((t + every) * 100) / 100) {
+      await sleep(every * 1000);
+      if (values['save-at'] && t === Number(values['save-at'])) for (const type of ['keyDown', 'keyUp']) await call('Input.dispatchKeyEvent', { type, key: '5', code: 'Digit5', text: type === 'keyDown' ? '5' : undefined });
+      if (t < Number(values.from)) continue;
+      await shoot(`${t}`);
+    }
+  }
+  if (values.sheet && sheet.length) {
+    const s = contactSheet(sheet, Math.ceil(Math.sqrt(sheet.length)), max > 0 ? max : Infinity);
+    write(`${values.out}-sheet.png`, s);
+    console.log(`sheet ${values.out}-sheet.png ${s.width}x${s.height}`);
   }
   console.log((await evaluate("document.getElementById('status')?.textContent")) ?? '');
   cdp.close();
