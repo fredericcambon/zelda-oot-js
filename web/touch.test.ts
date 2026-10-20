@@ -76,6 +76,13 @@ describe('TOUCH_BUTTONS', () => {
     expect(bits & need).toBe(need);
     for (const b of TOUCH_BUTTONS) expect(b.size).toBeGreaterThanOrEqual(48);
   });
+  it('puts L left of R, each with its own bit', () => {
+    const l = TOUCH_BUTTONS.find((b) => b.id === 'l')!;
+    const r = TOUCH_BUTTONS.find((b) => b.id === 'r')!;
+    expect(l.bit).toBe(Button.L);
+    expect(r.bit).toBe(Button.R);
+    expect(l.x + l.size).toBeLessThanOrEqual(r.x);
+  });
   it('has distinct bits and non-overlapping boxes', () => {
     for (const [i, a] of TOUCH_BUTTONS.entries()) {
       for (const b of TOUCH_BUTTONS.slice(i + 1)) {

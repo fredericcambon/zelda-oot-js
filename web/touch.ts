@@ -28,7 +28,7 @@ export interface TouchButton {
 export const CLUSTER_WIDTH = 284;
 export const CLUSTER_HEIGHT = 262;
 
-/** Buttons of the right-hand cluster: C diamond top right, A and B below it, R/Z/Start at the left. Every size is at least 48. */
+/** Buttons of the right-hand cluster: C diamond top right, A and B below it, L, Z and Start at the left, R beside L. Every size is at least 48. */
 export const TOUCH_BUTTONS: readonly TouchButton[] = [
   { id: 'cup', label: 'C▲', bit: Button.CUp, x: 174, y: 0, size: 50 },
   { id: 'cleft', label: 'C◀', bit: Button.CLeft, x: 122, y: 50, size: 50 },
@@ -36,10 +36,10 @@ export const TOUCH_BUTTONS: readonly TouchButton[] = [
   { id: 'cdown', label: 'C▼', bit: Button.CDown, x: 174, y: 100, size: 50 },
   { id: 'a', label: 'A', bit: Button.A, x: 200, y: 186, size: 68 },
   { id: 'b', label: 'B', bit: Button.B, x: 132, y: 196, size: 56 },
-  { id: 'r', label: 'R', bit: Button.R, x: 4, y: 0, size: 52 },
+  { id: 'r', label: 'R', bit: Button.R, x: 64, y: 0, size: 52 },
   { id: 'z', label: 'Z', bit: Button.Z, x: 4, y: 58, size: 52 },
   { id: 'start', label: 'Start', bit: Button.Start, x: 4, y: 130, size: 56 },
-  { id: 'l', label: 'L', bit: Button.L, x: 64, y: 0, size: 52 },
+  { id: 'l', label: 'L', bit: Button.L, x: 4, y: 0, size: 52 },
 ];
 
 /** Pointer bookkeeping for the stick and the buttons, independent of the DOM. */
