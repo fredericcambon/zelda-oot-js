@@ -21,7 +21,7 @@ Where to look first. Search with grep before reading whole files.
 - `tools/saves/` cartridge save (sram) and save-state formats.
 - `tools/sweep/` scene sweep (all scenes, loops, thumbnails).
 - `tools/tex/` texture dump, hashing and upscaled pack (`location.ts` pack folder).
-- `tools/pages/` `npm run pages:deploy`.
+- `tools/pages/` `npm run pages:deploy` (incremental sync into the cached gh-pages clone: `sync.ts`).
 - `tools/actors/` actor picture crops.
 
 ## Web (`web/`, Vite)
