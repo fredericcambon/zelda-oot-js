@@ -39,7 +39,7 @@ async function openPage() {
     const index = readFileSync('web/index.html', 'utf8');
     const viewport = /<meta name="viewport"[^>]*>/.exec(index)![0];
     const css = /<style>([\s\S]*?)<\/style>/.exec(index)![1];
-    const html = `<!doctype html>${viewport}<style>${css}</style><div id="touch-layer"></div><button id="toggle"></button><script>${js}</script>`;
+    const html = `<!doctype html>${viewport}<style>${css}</style><canvas></canvas><div id="touch-layer"></div><button id="toggle"></button><script>${js}</script>`;
     profile = createChromeProfile('touch');
     const file = join(dir, 'page.html');
     writeFileSync(file, html);
@@ -64,13 +64,16 @@ async function openPage() {
     const touch = (type: string, points: Array<{ x: number; y: number; id: number }>) =>
       send('Input.dispatchTouchEvent', { type, touchPoints: points.map((p) => ({ x: p.x, y: p.y, id: p.id })) });
 
-    await send('Emulation.setDeviceMetricsOverride', { width: 844, height: 390, deviceScaleFactor: 1, mobile: true });
-    await send('Emulation.setTouchEmulationEnabled', { enabled: true });
-    await send('Page.navigate', { url: pathToFileURL(file).href });
-    await new Promise((r) => setTimeout(r, 800));
+    const load = async (width: number, height: number) => {
+      await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: true });
+      await send('Emulation.setTouchEmulationEnabled', { enabled: true });
+      await send('Page.navigate', { url: pathToFileURL(file).href });
+      await new Promise((r) => setTimeout(r, 800));
+    };
+    await load(844, 390);
 
     const centre = async (sel: string) => JSON.parse(await evalJs(`(() => { const r = document.querySelector('${sel}').getBoundingClientRect(); return JSON.stringify({ x: r.x + r.width / 2, y: r.y + r.height / 2 }); })()`));
-  return { evalJs, touch, centre, close: () => ws.close() };
+  return { evalJs, touch, centre, load, close: () => ws.close() };
 }
 
 describe.skipIf(!chrome)('touch overlay in headless Chrome', () => {
@@ -111,6 +114,21 @@ describe.skipIf(!chrome)('touch overlay in headless Chrome', () => {
     }
     await new Promise((r) => setTimeout(r, 400));
     expect(await scale()).toBe(1);
+    page.close();
+  }, 60_000);
+
+  it('keeps every portrait control below the picture and inside the screen', async () => {
+    const page = await openPage();
+    for (const [w, h] of [[360, 640], [390, 844], [412, 915], [430, 932], [360, 800]] as Array<[number, number]>) {
+      await page.load(w, h);
+      const r = JSON.parse(await page.evalJs(`JSON.stringify({ picture: document.querySelector('canvas').getBoundingClientRect().bottom, buttons: [...document.querySelectorAll('.touch-button')].map((e) => [e.id, e.getBoundingClientRect().top, e.getBoundingClientRect().bottom]), stick: document.getElementById('touch-stick').getBoundingClientRect().top })`));
+      expect(r.picture, `${w}x${h} picture`).toBeCloseTo(w * 0.75, 0);
+      expect(r.stick, `${w}x${h} stick zone`).toBeGreaterThanOrEqual(r.picture);
+      for (const [name, top, bottom] of r.buttons) {
+        expect(top, `${w}x${h} ${name} top`).toBeGreaterThanOrEqual(r.picture);
+        expect(bottom, `${w}x${h} ${name} bottom`).toBeLessThanOrEqual(h);
+      }
+    }
     page.close();
   }, 60_000);
 });

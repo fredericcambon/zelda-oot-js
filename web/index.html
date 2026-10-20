@@ -83,7 +83,7 @@
       html.touch #status { position: fixed; padding: 0; background: none; }
       html.touch .keys { display: none; }
       html.touch .touch-only { display: block; }
-      html.touch #menu-button { display: block; position: fixed; top: calc(75vw + 65px); left: 50%; transform: translateX(-50%); width: 44px; height: 44px; z-index: 5; padding: 0; font-size: 22px; line-height: 1; color: rgba(255, 255, 255, 0.85); background: none; border: 1.8px solid rgba(255, 255, 255, 0.85); border-radius: 8px; touch-action: manipulation; }
+      html.touch #menu-button { display: block; position: fixed; top: var(--touch-menu-top, calc(75vw + 65px)); left: 50%; transform: translateX(-50%); width: var(--touch-menu-size, 44px); height: var(--touch-menu-size, 44px); z-index: 5; padding: 0; font-size: 22px; line-height: 1; color: rgba(255, 255, 255, 0.85); background: none; border: 1.8px solid rgba(255, 255, 255, 0.85); border-radius: 8px; touch-action: manipulation; }
       html.touch #dock { background: #181818; display: none; position: fixed; z-index: 4; top: auto; left: 0; right: 0; bottom: 0; width: auto; height: 60dvh; border-left: 0; border-top: 1px solid #444; touch-action: pan-y; }
       html.touch #dock.open { display: flex; }
       html.touch .tab button, html.touch .tabs button { min-height: 36px; }
@@ -99,7 +99,7 @@
       #touch-layer, #touch-layer * { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
       html.touch.touch-hidden #touch-layer, html.sheet-open #touch-layer { display: none; }
       #touch-stick { position: absolute; left: 0; top: 30.8%; width: 35.5%; height: 69.2%; pointer-events: auto; touch-action: none; }
-      @media (orientation: portrait) { #touch-stick { top: 47.9%; width: 52.6%; height: 49.8%; } }
+      @media (orientation: portrait) { #touch-stick { top: var(--touch-stick-top, 47.9%); width: 52.6%; height: auto; bottom: 0; } }
       .stick-base { position: absolute; width: 112px; height: 112px; margin: -56px 0 0 -56px; border: 1.8px solid rgba(255, 255, 255, 0.85); border-radius: 50%; }
       .stick-base[hidden] { display: none; }
       .stick-knob { position: absolute; left: 28px; top: 28px; width: 56px; height: 56px; border-radius: 50%; border: 1.8px solid rgba(255, 255, 255, 0.85); background: rgba(255, 255, 255, 0.2); box-sizing: border-box; }
