@@ -97,7 +97,7 @@ describe.skipIf(!CHROME || !built)('save states in the page', () => {
         const saves = mkdtempSync(join(tmpdir(), 'oot-page-saves-'));
         const profile = createChromeProfile('page');
         process.env.OOT_SAVES_DIR = saves;
-        const vite = await createViteServer({ configFile: resolve('vite.config.ts'), server: { port: 0, host: '127.0.0.1' }, logLevel: 'silent' });
+        const vite = await createViteServer({ configFile: resolve('vite.config.ts'), server: { port: 0, strictPort: true, host: '127.0.0.1' }, logLevel: 'silent' });
         await vite.listen();
         const debugPort = 9300 + Math.floor(Math.random() * 500);
         const chrome: ChildProcess = spawn(CHROME!, ['--headless=new', ...CHROME_SILENT_FLAGS, `--remote-debugging-port=${debugPort}`, `--user-data-dir=${profile}`, '--no-first-run', '--enable-unsafe-swiftshader', '--use-angle=swiftshader', 'about:blank'], { stdio: 'ignore' });
