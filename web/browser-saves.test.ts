@@ -2,12 +2,12 @@
 // both video rates. Needs the built game and its assets in dist/ (`npm run port`) and Chrome (CHROME_PATH or a usual place).
 import { type ChildProcess, spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createServer as createViteServer } from 'vite';
 import { describe, expect, it } from 'vitest';
+import { createChromeProfile, removeChromeProfile, removeWithRetry } from '../tools/lib/chrome-profile.ts';
 import { CHROME_SILENT_FLAGS } from '../tools/port/cdp.ts';
 
 const CHROME = [process.env.CHROME_PATH, 'C:/Program Files/Google/Chrome/Application/chrome.exe', '/usr/bin/google-chrome', '/usr/bin/chromium'].find((p) => p && existsSync(p));
@@ -95,7 +95,7 @@ describe.skipIf(!CHROME || !built)('save states in the page', () => {
     for (const endpoint of [true, false]) {
       it(`saves, selects and loads slots at ${hz} Hz ${endpoint ? 'with' : 'without'} the saves endpoint`, async () => {
         const saves = mkdtempSync(join(tmpdir(), 'oot-page-saves-'));
-        const profile = mkdtempSync(join(tmpdir(), 'oot-page-profile-'));
+        const profile = createChromeProfile('page');
         process.env.OOT_SAVES_DIR = saves;
         const vite = await createViteServer({ configFile: resolve('vite.config.ts'), server: { port: 0, host: '127.0.0.1' }, logLevel: 'silent' });
         await vite.listen();
@@ -128,14 +128,9 @@ describe.skipIf(!CHROME || !built)('save states in the page', () => {
           expect(files).toEqual(endpoint ? ['state-1.bin', 'state-1.bin.format', 'state-2.bin', 'state-2.bin.format'] : []);
         } finally {
           page?.close();
-          const exited = new Promise<void>((r) => (chrome.exitCode !== null ? r() : chrome.once('exit', () => r())));
-          chrome.kill();
-          await Promise.race([exited, new Promise((r) => setTimeout(r, 10_000))]);
+          await removeChromeProfile(profile, chrome);
           await vite.close();
-          // Chrome may still hold its profile files for a moment; a leftover temp dir must not fail the test.
-          for (const dir of [saves, profile]) {
-            await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }).catch((e) => console.warn(`could not remove ${dir}: ${e}`));
-          }
+          await removeWithRetry(saves);
         }
       }, 900_000);
     }

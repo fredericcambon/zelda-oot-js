@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { buildSync } from 'esbuild';
 import { afterAll, describe, expect, it } from 'vitest';
+import { createChromeProfile, removeChromeProfile } from '../tools/lib/chrome-profile.ts';
 import { CHROME_SILENT_FLAGS } from '../tools/port/cdp.ts';
 import { Button, STICK_MAX } from './input.ts';
 
@@ -21,9 +22,10 @@ const chrome = CANDIDATES.find((p) => p && existsSync(p));
 
 let proc: ChildProcess | undefined;
 let dir: string | undefined;
-afterAll(() => {
-  proc?.kill();
-  if (dir) setTimeout(() => rmSync(dir!, { recursive: true, force: true }), 500).unref();
+let profile: string | undefined;
+afterAll(async () => {
+  if (profile) await removeChromeProfile(profile, proc);
+  if (dir) rmSync(dir, { recursive: true, force: true });
 });
 
 interface Reply { result: { result: { value: string } } }
@@ -36,11 +38,12 @@ describe.skipIf(!chrome)('touch overlay in headless Chrome', () => {
       bundle: true, write: false, format: 'iife',
     }).outputFiles?.[0]?.text ?? '';
     const html = `<!doctype html><meta name="viewport" content="width=device-width"><style>#layer{position:fixed;inset:0}#layer *{touch-action:none}#touch-stick{position:absolute;left:0;bottom:0;width:40%;height:60%}#touch-buttons{position:absolute;right:8px;bottom:8px}.touch-button{position:absolute}</style><div id="layer"></div><button id="toggle"></button><script>${js}</script>`;
+    profile = createChromeProfile('touch');
     const file = join(dir, 'page.html');
     writeFileSync(file, html);
 
     const port = 9300 + Math.floor(Math.random() * 500);
-    proc = spawn(chrome as string, ['--headless=new', ...CHROME_SILENT_FLAGS, `--remote-debugging-port=${port}`, `--user-data-dir=${join(dir, 'profile')}`, '--no-first-run', '--window-size=844,390', 'about:blank'], { stdio: 'ignore' });
+    proc = spawn(chrome as string, ['--headless=new', ...CHROME_SILENT_FLAGS, `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, '--no-first-run', '--window-size=844,390', 'about:blank'], { stdio: 'ignore' });
     let targets: Array<{ type: string; webSocketDebuggerUrl: string }> = [];
     for (let i = 0; i < 100 && !targets.length; i++) {
       await new Promise((r) => setTimeout(r, 100));

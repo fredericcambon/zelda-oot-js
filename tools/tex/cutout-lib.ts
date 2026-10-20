@@ -1,8 +1,6 @@
 // Shared by tools/tex/cutout-compare.ts: starts the dev server and headless Chrome and drives the page over the DevTools protocol.
 import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { createChromeProfile, removeChromeProfile } from '../lib/chrome-profile.ts';
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -52,28 +50,30 @@ export class Cdp {
 export interface Session {
   cdp: Cdp;
   /** Stops the dev server and Chrome. */
-  stop(): void;
+  stop(): Promise<void>;
 }
 
 /** Starts `vite` on `port` and Chrome on `port + 1`. */
 export async function start(port: number, chrome: string): Promise<Session> {
   const children: ChildProcess[] = [];
-  const profile = mkdtempSync(join(tmpdir(), 'oot-chrome-'));
-  const stop = () => {
+  const profile = createChromeProfile('cutout');
+  let browser: ChildProcess | undefined;
+  const stop = async () => {
     for (const c of children) if (c.pid) spawnSync('taskkill', ['/pid', String(c.pid), '/t', '/f'], { stdio: 'ignore' });
-    setTimeout(() => { try { rmSync(profile, { recursive: true, force: true }); } catch { /* Chrome still holds a file */ } }, 2000).unref();
+    await removeChromeProfile(profile, browser);
   };
   try {
     children.push(spawn('npx', ['vite', '--config', 'vite.config.ts', '--port', String(port), '--strictPort'], { stdio: 'ignore', shell: true }));
     await waitFor('the dev server', async () => ((await fetch(`http://localhost:${port}/`)).ok ? true : undefined));
-    children.push(spawn(chrome, [
+    browser = spawn(chrome, [
       '--headless=new', `--remote-debugging-port=${port + 1}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check',
       '--ignore-gpu-blocklist', '--mute-audio', '--autoplay-policy=no-user-gesture-required', 'about:blank',
-    ], { stdio: 'ignore' }));
+    ], { stdio: 'ignore' });
+    children.push(browser);
     const wsUrl = await waitFor('Chrome', async () => ((await (await fetch(`http://127.0.0.1:${port + 1}/json/version`)).json()) as { webSocketDebuggerUrl: string }).webSocketDebuggerUrl);
     return { cdp: await Cdp.open(wsUrl), stop };
   } catch (err) {
-    stop();
+    await stop();
     throw err;
   }
 }

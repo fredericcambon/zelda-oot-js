@@ -17,14 +17,14 @@
 // Needs `dist/` from `npm run port`. Pictures come from the ROM: keep them under `out/`.
 // Needs `dist/` from `npm run port`. Pictures come from the ROM: keep them under `out/`.
 import { type ChildProcess, spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { parseArgs } from 'node:util';
 import { Cdp, CHROME_SILENT_FLAGS, sleep, waitFor } from './cdp.ts';
 import { contactSheet, crop, diffImage, diffStats, downscale, formatDiff, parseRegion } from '../gfx/image-ops.ts';
 import { encodePng } from '../gfx/png.ts';
 import type { RgbaImage } from '../gfx/types.ts';
+import { createChromeProfile, removeChromeProfile } from '../lib/chrome-profile.ts';
 import { decodePng } from '../tex/png-read.ts';
 
 const { values } = parseArgs({
@@ -69,15 +69,17 @@ const small = (img: RgbaImage) => (max > 0 ? downscale(img, max) : img);
 const write = (path: string, img: RgbaImage) => writeFileSync(path, encodePng(img.width, img.height, img.rgba));
 
 const children: ChildProcess[] = [];
-const profile = mkdtempSync(join(tmpdir(), 'oot-shot-'));
+const profile = createChromeProfile('shot');
+let chrome: ChildProcess | undefined;
 try {
   children.push(spawn('npx', ['vite', '--config', 'vite.config.ts', '--port', String(port), '--strictPort'], { stdio: 'ignore', shell: true }));
   await waitFor('the dev server', async () => ((await fetch(`http://localhost:${port}/`)).ok ? true : undefined), 60_000);
   const debugPort = port + 1;
-  children.push(spawn(values.chrome!, [
+  chrome = spawn(values.chrome!, [
     '--headless=new', `--remote-debugging-port=${debugPort}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check',
     '--ignore-gpu-blocklist', ...CHROME_SILENT_FLAGS, 'about:blank',
-  ], { stdio: 'ignore' }));
+  ], { stdio: 'ignore' });
+  children.push(chrome);
   const wsUrl = await waitFor('Chrome', async () => ((await (await fetch(`http://127.0.0.1:${debugPort}/json/version`)).json()) as { webSocketDebuggerUrl: string }).webSocketDebuggerUrl);
   const cdp = await Cdp.open(wsUrl);
   const { targetId } = await cdp.send<{ targetId: string }>('Target.createTarget', { url: 'about:blank' });
@@ -138,5 +140,5 @@ try {
   cdp.close();
 } finally {
   for (const c of children) if (c.pid) spawn('taskkill', ['/pid', String(c.pid), '/t', '/f'], { stdio: 'ignore' });
-  setTimeout(() => { try { rmSync(profile, { recursive: true, force: true }); } catch { /* Chrome still holds a file */ } }, 2000).unref();
+  await removeChromeProfile(profile, chrome);
 }

@@ -9,6 +9,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, write
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { encodePng } from '../gfx/png.ts';
+import { createChromeProfile, removeChromeProfile, removeWithRetry } from '../lib/chrome-profile.ts';
 import type { RgbaImage } from '../gfx/types.ts';
 import { savesDir } from '../../web/saves-endpoint.ts';
 import { decodePng } from './png-read.ts';
@@ -172,7 +173,8 @@ export async function compare({ out, pack, dump, variants: wanted, places, chrom
   const saves = mkdtempSync(join(tmpdir(), 'oot-saves-'));
   if (existsSync(savesDir())) cpSync(savesDir(), saves, { recursive: true });
   if (!existsSync(join(saves, 'state-1.bin'))) throw new Error('save state 1 (Kokiri Forest) is missing from the saves folder');
-  const profile = mkdtempSync(join(tmpdir(), 'oot-chrome-'));
+  const profile = createChromeProfile('compare');
+  let browser: ChildProcess | undefined;
   const children: ChildProcess[] = [];
   const outDir = resolve(out);
   mkdirSync(outDir, { recursive: true });
@@ -192,10 +194,11 @@ export async function compare({ out, pack, dump, variants: wanted, places, chrom
     children.push(vite);
     await waitFor('the dev server', async () => ((await fetch(`http://localhost:${port}/`)).ok ? true : undefined));
     const debugPort = port + 1;
-    children.push(spawn(chrome, [
+    browser = spawn(chrome, [
       '--headless=new', `--remote-debugging-port=${debugPort}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check',
       '--ignore-gpu-blocklist', '--mute-audio', '--autoplay-policy=no-user-gesture-required', 'about:blank',
-    ], { stdio: 'ignore' }));
+    ], { stdio: 'ignore' });
+    children.push(browser);
     const wsUrl = await waitFor('Chrome', async () => ((await (await fetch(`http://127.0.0.1:${debugPort}/json/version`)).json()) as { webSocketDebuggerUrl: string }).webSocketDebuggerUrl);
     const cdp = await Cdp.open(wsUrl);
     const { targetId } = await cdp.send<{ targetId: string }>('Target.createTarget', { url: 'about:blank' });
@@ -356,15 +359,8 @@ export async function compare({ out, pack, dump, variants: wanted, places, chrom
     log(`written to ${outDir}${'/'}index.html`);
   } finally {
     for (const c of children) if (c.pid) spawn('taskkill', ['/pid', String(c.pid), '/t', '/f'], { stdio: 'ignore' });
-    setTimeout(() => {
-      for (const dir of [profile, saves]) {
-        try {
-          rmSync(dir, { recursive: true, force: true });
-        } catch {
-          // Chrome still holds a file.
-        }
-      }
-    }, 3000).unref();
+    await removeChromeProfile(profile, browser);
+    await removeWithRetry(saves);
   }
 }
 
