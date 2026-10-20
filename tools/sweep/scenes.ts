@@ -1,12 +1,12 @@
 // The scene sweep: for each entrance of the game's entrance table, force the game into it, run a fixed number of video
 // frames and record what went wrong. One game instance carries on from entrance to entrance; after a trap or when the game
 // leaves the play state, a fresh instance replays the scripted new game up to the start frame and the sweep continues.
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readCartridge } from '../assets/write.ts';
 import type { DisplayListResult } from '../gfx/types.ts';
-import { encodePng } from '../gfx/png.ts';
+import { encodePng, encodePngSmall } from '../gfx/png.ts';
 import { HEIGHT, SoftRenderer, WIDTH } from '../gfx/raster.ts';
 import { introState, loadIntro, SAVE_FRAME } from '../headless/intro-state.ts';
 import { bootGame, type CoverageSnapshot, type Game } from '../headless/boot.ts';
@@ -110,7 +110,8 @@ export interface SweepOptions {
   dumpDir?: string;
   dumpsPerScene: number;
   /** When set, the picture shown `frame` frames after each entrance is taken is written to `dir` as `<entrance>.png`, at half size, with the title card held back. */
-  thumbs?: { dir: string; frame: number };
+  /** Take a half-size picture of each entrance at `frame` into `dir`; an entrance that has one is skipped unless `redo`. */
+  thumbs?: { dir: string; frame: number; redo: boolean };
   log: (message: string) => void;
   /** Called after each entrance with the report so far. */
   onProgress?: (report: SceneSweepReport) => void;
@@ -339,7 +340,9 @@ export async function sweepScenes(opts: SweepOptions): Promise<SceneSweepReport>
 
   const childFlag = session.game.rd32(SETUP_FLAG);
   if (childFlag === 0) throw new Error('the scripted new game starts with the age flag clear; the sweep cannot tell the ages apart');
+  const thumbFile = (entrance: number) => join(resolve(opts.thumbs!.dir), `${String(entrance).padStart(4, '0')}.png`);
   for (const entrance of opts.entrances) for (const age of opts.ages) {
+    if (opts.thumbs && !opts.thumbs.redo && existsSync(thumbFile(entrance))) continue;
     const info = table[entrance];
     if (!info) throw new Error(`entrance ${entrance} is outside the table of ${ENTRANCE_COUNT}`);
     const base: EntranceResult = {
@@ -391,7 +394,7 @@ export async function sweepScenes(opts: SweepOptions): Promise<SceneSweepReport>
         const img = session.soft.image(session.game.framebuffer());
         if (img && playState(session.game.rd32)?.scene === table[forced + session.game.rd32(SETUP_VARIANT)]?.scene) {
           mkdirSync(resolve(opts.thumbs.dir), { recursive: true });
-          writeFileSync(join(resolve(opts.thumbs.dir), `${String(entrance).padStart(4, '0')}.png`), encodePng(WIDTH / 2, HEIGHT / 2, halve(img)));
+          writeFileSync(thumbFile(entrance), encodePngSmall(WIDTH / 2, HEIGHT / 2, halve(img)));
         }
       }
       if (dumpFrames.includes(k)) {
