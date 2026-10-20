@@ -47,9 +47,16 @@ function gameFiles(pages: boolean): Plugin {
   };
 }
 
+// Port 5173 is vite's default and belongs to the Overseer app's own UI: this repo's servers never bind it.
+export const DEFAULT_PORT = 5317;
+const port = Number(process.env.PORT) || DEFAULT_PORT;
+const listen = { port, strictPort: true, host: '127.0.0.1' };
+
 export default defineConfig(({ mode }) => {
   const pages = mode === 'pages';
   return {
+    server: listen,
+    preview: listen,
     root: 'web',
     base: pages ? '/zelda-oot-js/' : '/',
     build: { outDir: pages ? pagesDir : '../dist/web', emptyOutDir: true, assetsDir: 'bundle' },

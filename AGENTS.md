@@ -35,6 +35,7 @@ Automated runs must be silent: browsers launched by tools or tests use `--mute-a
 Workers run on the user's own computer, alongside each other and the user's apps. Never take over its resources:
 - Run at most one heavy process at a time (a game build, wasm-opt, a scene sweep, a headless browser running the game). Never fan out parallel sweeps or builds.
 - Never `mkdtemp` a browser profile directory: take it from `tools/lib/chrome-profile.ts` (`createChromeProfile`, then `removeChromeProfile` after Chrome exits), which deletes it reliably and sweeps old leftovers from TEMP.
+- Never start vite or any server on port 5173 (the Overseer app's UI uses it): always pass an explicit port (`vite.config.ts` defaults to 5317, or `$PORT`).
 - Close each headless browser or game instance as soon as its result is captured, and stop every process you started before reporting done.
 - Stop only processes you started, by the pid you recorded when you started them. The done check may list processes you did not start (the Overseer preview server, vite on the task port): never stop those; report them instead.
 - Output that takes more than a few minutes to make (sweeps, texture dumps and packs, thumbnails) goes into the shared cache `~/.zelda-oot-js/cache` or is committed when the user allows it; never only into the worktree, which is deleted when the task ends.
