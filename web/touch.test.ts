@@ -89,6 +89,7 @@ describe('TOUCH_BUTTONS', () => {
     const start = TOUCH_BUTTONS.find((b) => b.id === 'start')!;
     expect(start.top).toBe(true);
     expect(TOUCH_BUTTONS.filter((b) => b.top)).toHaveLength(1);
+    expect(TOUCH_BUTTONS.find((b) => b.id === 'z')!.left).toBe(true);
     const z = TOUCH_BUTTONS.find((b) => b.id === 'z')!;
     const r = TOUCH_BUTTONS.find((b) => b.id === 'r')!;
     expect(Math.min(z.size, r.size)).toBeGreaterThan(start.size);
@@ -106,7 +107,7 @@ describe('TOUCH_BUTTONS', () => {
     for (const [i, a] of TOUCH_BUTTONS.entries()) {
       for (const b of TOUCH_BUTTONS.slice(i + 1)) {
         expect(a.bit).not.toBe(b.bit);
-        if (a.top || b.top) continue;
+        if (a.top || b.top || a.left || b.left) continue;
         const apart = a.x + a.size <= b.x || b.x + b.size <= a.x || a.y + a.size <= b.y || b.y + b.size <= a.y;
         expect(apart, `${a.id} vs ${b.id}`).toBe(true);
       }

@@ -25,6 +25,8 @@ export interface TouchButton {
   size: number;
   /** Placed alone at the top centre of the screen instead of in the cluster. */
   top?: true;
+  /** Placed alone at the left, above the stick zone, so the left thumb can hold it while the right thumb works the cluster. */
+  left?: true;
 }
 
 export const CLUSTER_WIDTH = 308;
@@ -32,7 +34,8 @@ export const CLUSTER_HEIGHT = 240;
 
 /**
  * Buttons of the right-hand cluster: A largest at the bottom right with B on its left, the C buttons as a diamond above A,
- * R and Z (big) left of the diamond, L (small) left of R. Start is small and alone at the top centre. Every size is at least 48.
+ * R (big) left of B, L (small) above it. Z (big) sits alone at the left above the stick zone and Start (small) alone at the top centre.
+ * Every size is at least 48.
  */
 export const TOUCH_BUTTONS: readonly TouchButton[] = [
   { id: 'cup', label: 'C▲', bit: Button.CUp, x: 212, y: 0, size: 48 },
@@ -42,8 +45,8 @@ export const TOUCH_BUTTONS: readonly TouchButton[] = [
   { id: 'a', label: 'A', bit: Button.A, x: 236, y: 168, size: 72 },
   { id: 'b', label: 'B', bit: Button.B, x: 164, y: 184, size: 56 },
   { id: 'l', label: 'L', bit: Button.L, x: 36, y: 0, size: 48 },
-  { id: 'r', label: 'R', bit: Button.R, x: 96, y: 0, size: 56 },
-  { id: 'z', label: 'Z', bit: Button.Z, x: 96, y: 64, size: 56 },
+  { id: 'r', label: 'R', bit: Button.R, x: 92, y: 184, size: 60 },
+  { id: 'z', label: 'Z', bit: Button.Z, x: 0, y: 0, size: 64, left: true },
   { id: 'start', label: 'Start', bit: Button.Start, x: 0, y: 0, size: 48, top: true },
 ];
 
@@ -276,6 +279,8 @@ export class TouchControls {
     cluster.style.height = `${CLUSTER_HEIGHT}px`;
     const topBar = document.createElement('div');
     topBar.id = 'touch-top';
+    const leftBar = document.createElement('div');
+    leftBar.id = 'touch-left';
     const els = new Map<string, { el: HTMLElement; bit: number }>();
     for (const b of TOUCH_BUTTONS) {
       const el = document.createElement('button');
@@ -286,11 +291,11 @@ export class TouchControls {
       el.textContent = b.label;
       el.dataset.bit = String(b.bit);
       const box = { width: `${b.size}px`, height: `${b.size}px` };
-      Object.assign(el.style, b.top ? box : { left: `${b.x}px`, top: `${b.y}px`, ...box });
+      Object.assign(el.style, b.top || b.left ? box : { left: `${b.x}px`, top: `${b.y}px`, ...box });
       els.set(b.id, { el, bit: b.bit });
-      (b.top ? topBar : cluster).append(el);
+      (b.top ? topBar : b.left ? leftBar : cluster).append(el);
     }
-    this.layer.append(cluster, topBar);
+    this.layer.append(cluster, topBar, leftBar);
 
     // A finger owns a button from touch-down on; sliding onto another button moves it there without lifting.
     const held = new Map<number, string>();
