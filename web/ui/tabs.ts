@@ -22,8 +22,6 @@ export function GameTab({ state: s, actions: a }: TabProps): VNode {
         <${Button} id="touch-toggle" onClick=${a.toggleControls}>${s.controlsHidden ? 'Show controls' : 'Hide controls'}<//>
         <${Button} id="fullscreen-toggle" onClick=${a.toggleFullscreen}>Fullscreen<//>
       </div>
-      <${Slider} id="touch-opacity" label="opacity" title="How see-through the touch controls are" min=${10} max=${100} value=${s.touchLook.opacity} onInput=${(opacity: number) => a.setTouchLook({ opacity })} />
-      <${Slider} id="touch-size" label="size" title="How large the touch buttons are" min=${60} max=${140} value=${s.touchLook.size} onInput=${(size: number) => a.setTouchLook({ size })} />
     </section>
     <${ControllerSection} actions=${a} />
     <${LabelsSection} />

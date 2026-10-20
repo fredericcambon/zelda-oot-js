@@ -159,11 +159,6 @@ export class Input {
     return gp ? mergePads(keys, padFromGamepad(gp)) : keys;
   }
 
-  /** Whether a gamepad is connected right now. */
-  hasGamepad(): boolean {
-    return this.pads.pick(this.getPads()) !== null;
-  }
-
   /** The active pad's raw state for display, or null while none is seen. */
   view(): PadView | null {
     const gp = this.pads.pick(this.getPads());

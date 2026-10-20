@@ -4,7 +4,7 @@ import { Renderer, type CullMode } from './renderer.ts';
 import { FILTER_MODES, loadSettings, renderScale, saveSettings, type GfxSettings } from './gfx-settings.ts';
 import { loadCartridge } from './cartridge.ts';
 import { Input, mergePads } from './input.ts';
-import { applyLook, loadLook, saveLook, toggleFullscreen, TouchControls } from './touch.ts';
+import { toggleFullscreen, TouchControls } from './touch.ts';
 import { indexedDbStore, SaveSync, serverHasSaves, serverStore } from './saves.ts';
 import { loadPublished, withPublishedSram, withPublishedStates } from './published-saves.ts';
 import { indexedDbStates, SaveStates, serverStates } from './savestate.ts';
@@ -107,7 +107,6 @@ const store = new Store<UiState>({
   native: false,
   cull: 'normal',
   controlsHidden: false,
-  touchLook: loadLook(),
   slot: null,
   filled: [],
   overlayShown: location.hash === '#debug',
@@ -435,7 +434,6 @@ async function loop(): Promise<void> {
       else due--;
       try {
         bridge.applyFreezes();
-        document.documentElement.classList.toggle('gamepad', input.hasGamepad());
         const pad = mergePads(input.poll(), store.get().sheetOpen ? { buttons: 0, x: 0, y: 0 } : touch.poll());
         if (autoStart) {
           pad.buttons |= autoStart.buttons();
@@ -655,12 +653,6 @@ const actions: UiActions = {
   cycleCull,
   toggleControls: () => store.set({ controlsHidden: touch.toggleHidden() }),
   toggleFullscreen,
-  setTouchLook(change) {
-    const touchLook = { ...store.get().touchLook, ...change };
-    applyLook(touchLook);
-    saveLook(touchLook);
-    store.set({ touchLook });
-  },
   padView: () => input.view(),
   setOverlay(on) {
     overlay.hidden = !on;
@@ -751,7 +743,7 @@ const actions: UiActions = {
 };
 // Touch input stops while the menu sheet covers the picture.
 store.subscribe(() => {
-  if (store.get().sheetOpen) touch.release();
+  if (store.get().sheetOpen) touch.pad.reset();
 });
 mountUi(document.getElementById('ui-root') as HTMLElement, store, actions);
 
