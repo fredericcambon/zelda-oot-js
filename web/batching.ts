@@ -51,7 +51,7 @@ export function sameDrawState(a: DrawState, b: DrawState): boolean {
       if (x !== y) return false;
       continue;
     }
-    if (x.id !== y.id || !sameTile(a.tiles[x.tile]!, b.tiles[y.tile]!)) return false;
+    if (x.id !== y.id || x.source?.addr !== y.source?.addr || x.source?.x !== y.source?.x || x.source?.y !== y.source?.y || !sameTile(a.tiles[x.tile]!, b.tiles[y.tile]!)) return false;
   }
   return specKeyOf(a) === specKeyOf(b);
 }

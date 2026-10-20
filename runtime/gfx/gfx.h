@@ -43,6 +43,10 @@ typedef struct {
   // one after it; -1 when nothing is loaded for it. The tile fields are the tile indices they were decoded for.
   int32_t texture_ref[2];
   int32_t texture_ref_tile[2];
+  // For each of those images: the colour image a game drawn into earlier (this task or before) that its texels were loaded
+  // from, as the address of that image, then the column and row of the image's first texel in it; address -1 when the
+  // texels come from memory the RDP has not drawn into (or that changed since).
+  int32_t texture_source[2][3];
   // Scale (x, y, z), then translation (x, y, z), in 10.2 fixed point screen units.
   int32_t viewport[6];
   // mode, xh, yh, xl, yl.

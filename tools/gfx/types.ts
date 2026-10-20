@@ -77,6 +77,12 @@ export interface DecodedTexture extends RgbaImage {
   siz?: number;
   /** One byte per texel, 1 where the load commands that fed the tile wrote the texel; absent or null when all of them did (runtime/gfx/gfx.h). */
   loaded?: Uint8Array | null;
+  /**
+   * Set on the images of a draw state whose texels the game loaded from a colour image it had drawn into: that image, by address, and the
+   * column and row of the texture's first texel in it. The decoded pixels are what the memory held, which the RDP's drawing never reached;
+   * the colour image has the picture (runtime/gfx/gfx.h, texture_source).
+   */
+  source?: { addr: number; x: number; y: number };
 }
 
 /** The render state a batch of primitives was drawn with. Immutable once stored in a batch. */

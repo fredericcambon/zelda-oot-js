@@ -203,6 +203,15 @@ describe('Cache', () => {
     expect(c.evict()).toBe(0);
   });
 
+  it('ignores plain files in the cache folder when evicting', () => {
+    put('src/x.bin', 'x');
+    const c = new Cache(join(root, 'cache'), 250);
+    c.store('kind', 'k', join(root, 'src'), ['x.bin']);
+    writeFileSync(join(root, 'cache', 'stray.png'), 'not a kind');
+    expect(c.evict()).toBe(0);
+    expect(existsSync(join(root, 'cache', 'kind', 'k'))).toBe(true);
+  });
+
   it('reads the cap from OOT_CACHE_MAX_GB, defaulting to 10 GB', () => {
     const saved = process.env.OOT_CACHE_MAX_GB;
     try {

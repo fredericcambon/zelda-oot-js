@@ -182,6 +182,8 @@ export class Cache {
     for (const kind of readdirSync(this.dir)) {
       if (UNMANAGED.has(kind)) continue;
       const kindDir = join(this.dir, kind);
+      // A plain file in the cache folder is not a kind of entry.
+      if (!statSync(kindDir).isDirectory()) continue;
       if (kind === 'tmp') {
         for (const t of readdirSync(kindDir)) {
           const p = join(kindDir, t);

@@ -76,6 +76,11 @@ export class SmoothFrames {
     this.tracker.push(core);
   }
 
+  /** The result of the run that kept the frame: the frame as the game drew it. Valid until the next run. */
+  current(): DisplayListResult {
+    return readResult(this.core);
+  }
+
   /**
    * The kept frame as the display list gives it, with the matrices `t` of the way from the previous frame to it (t = 1: as it
    * is). `plan` replaces the one made from the last two frames, to try other motion on the same frame.
