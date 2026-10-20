@@ -22,18 +22,21 @@ const HEAVY = [
   'web/touch-browser.test.ts',
 ];
 
+const common = {
+  testTimeout: 120_000,
+  hookTimeout: 1_800_000,
+};
+
 export default defineConfig({
   // The per-file timing cache lives in the shared build cache so that a fresh worktree starts its slowest files first.
   cacheDir: join(defaultCacheDir(), 'vitest'),
   test: {
-    testTimeout: 120_000,
-    hookTimeout: 1_800_000,
-    globalSetup: ['tools/recomp/global-setup.ts'],
     reporters: ['default', './tools/durations-reporter.ts'],
     maxWorkers: 6,
     projects: [
-      { extends: true, test: { name: 'light', include: ['tools/**/*.test.ts', 'web/**/*.test.ts'], exclude: HEAVY, maxWorkers: 6 } },
-      { extends: true, test: { name: 'heavy', include: HEAVY, maxWorkers: 2 } },
+      // The projects do not inherit the root's options: the global setup, which builds the game, must run once, not once per project.
+      { test: { ...common, name: 'light', include: ['tools/**/*.test.ts', 'web/**/*.test.ts'], exclude: HEAVY, maxWorkers: 6, globalSetup: ['tools/recomp/global-setup.ts'] } },
+      { test: { ...common, name: 'heavy', include: HEAVY, maxWorkers: 2 } },
     ],
   },
 });
