@@ -18,6 +18,20 @@ describe('graphics settings', () => {
     expect(defaultSettings(false).scaleCap).toBe(0);
   });
 
+  it('turns the costly effects off by default on mobile only', () => {
+    const mobile = defaultSettings(true);
+    expect([mobile.ao, mobile.bloom, mobile.sharpen, mobile.msaa, mobile.anisotropy]).toEqual([false, false, false, false, 1]);
+    const desktop = defaultSettings(false);
+    expect([desktop.ao, desktop.bloom, desktop.sharpen, desktop.msaa, desktop.anisotropy]).toEqual([true, true, true, true, 4]);
+  });
+
+  it('moves phones that kept the old defaults to the new ones and keeps their own choices', () => {
+    const old = { ...defaultSettings(false), scaleCap: 2, anisotropy: 2 };
+    expect(parseSettings(JSON.stringify(old), true)).toEqual(defaultSettings(true));
+    expect(parseSettings(JSON.stringify({ ...old, bloom: false }), true)).toEqual({ ...old, bloom: false });
+    expect(parseSettings(JSON.stringify(old), false)).toEqual({ ...old, scaleCap: 2, anisotropy: 2 });
+  });
+
   it('renders at the canvas size in device pixels', () => {
     const desktop = defaultSettings(false);
     expect(renderScale(960, 1, desktop)).toBe(3);
