@@ -22,6 +22,7 @@ The ROM file never enters the repo, a commit or an upload. Only the build reads 
 - `tools/` Node/TypeScript CLIs: `rom`, `elf-wrap`, `recomp`.
 - `web/` browser shell (Vite).
 - `docs/re/` reverse-engineering notes with evidence.
+- `docs/code-map.md` one line per important file or directory; read it before exploring.
 - TypeScript, Vite, Vitest, ESLint. Scripts: `npm run build|test|lint|dev`, `npm run rom:extract`.
 - Emscripten is fetched into `.tools/emsdk` by the build script when missing.
 
@@ -38,3 +39,15 @@ Workers run on the user's own computer, alongside each other and the user's apps
 - Output that takes more than a few minutes to make (sweeps, texture dumps and packs, thumbnails) goes into the shared cache `~/.zelda-oot-js/cache` or is committed when the user allows it; never only into the worktree, which is deleted when the task ends.
 - Prefer the smallest scope that answers the question (a few scenes, not all of them) and reuse existing build output instead of rebuilding.
 - If a run will take more than a few minutes of full CPU, say so in a checkpoint first.
+- The user plays games on this machine: every heavy process (game build, emcc/clang, wasm-opt, pages build, headless Chrome, sweeps) runs at Idle or BelowNormal priority, children included (PowerShell `Start-Process -PassThru` then `.PriorityClass = 'Idle'`, or `cmd /c start /low /b /wait <command>`).
+
+## Working cheaply
+
+- Capture the browser renderer (what the user plays, not the soft render) with `tools/port/browser-shot.ts`: `--region x,y,w,h` crops, `--max` 512 or less (default 512), `--diff <ref.png>` prints numbers (`--diff-out` adds a picture), `--frames n --every-frames k` steps game frames, `--sheet` makes a grid. The file header lists every flag.
+- Compare with `--diff` numbers before looking at any picture; crop tighter rather than enlarge; never read the same picture twice.
+- Never write a new capture or diff script; extend `browser-shot.ts` or `tools/gfx/image-ops.ts`.
+- Start from `docs/code-map.md`. Search `docs/re/*.md` with grep; never read `docs/re/gaps.md` whole.
+- Read files by the lines you need (grep first); do not re-read what you already have.
+- Change source with the Edit tool, not `sed -i` or `node -e` replace scripts.
+- Do broad orientation in a subagent that returns conclusions with file:line refs.
+- Send a checkpoint after each finding instead of long silent loops.
