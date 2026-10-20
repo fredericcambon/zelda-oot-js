@@ -134,6 +134,9 @@ export class TouchControls {
     if (hasCoarsePointer()) enable();
     else addEventListener('touchstart', enable, { once: true, passive: true });
 
+    // iOS ignores user-scalable=no; its pinch fires gesture events and a double tap fires dblclick.
+    for (const type of ['gesturestart', 'gesturechange', 'dblclick']) document.addEventListener(type, (e) => e.preventDefault());
+
     this.buildStick();
     this.buildButtons();
     toggle?.addEventListener('click', () => {

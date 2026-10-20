@@ -3,7 +3,7 @@
   <head>
     <link rel="icon" href="data:," />
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
     <!-- Only same-origin requests (the game files built by npm run port) are allowed. -->
     <meta
       http-equiv="Content-Security-Policy"
@@ -74,7 +74,7 @@
       #menu-button, .touch-only { display: none; }
 
       /* Touch devices: the picture fills the screen and the panel is a sheet. */
-      html.touch { overscroll-behavior: none; }
+      html.touch { overscroll-behavior: none; touch-action: none; }
       html.touch #app { --rail: 0px; }
       html.touch body { background: #111; height: 100dvh; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
       html.touch #main { inset: 0; height: 100dvh; align-items: flex-start; }
@@ -96,6 +96,7 @@
 
       #touch-layer { display: none; }
       html.touch #touch-layer { display: block; position: fixed; inset: 0; pointer-events: none; touch-action: none; }
+      #touch-layer, #touch-layer * { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
       html.touch.touch-hidden #touch-layer, html.sheet-open #touch-layer { display: none; }
       #touch-stick { position: absolute; left: 0; top: 30.8%; width: 35.5%; height: 69.2%; pointer-events: auto; touch-action: none; }
       @media (orientation: portrait) { #touch-stick { top: 47.9%; width: 52.6%; height: 49.8%; } }
