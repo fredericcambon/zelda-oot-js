@@ -43,6 +43,11 @@
 - Depth: enabled by the geometry mode's z-buffer bit, compare and update by the other-mode bits, decal mode by a polygon offset whose slope factor is twice the resolution scale (the offset follows the decal's slope per canvas pixel, which shrinks with the scale: at 3x the previous factor of 1 let the path of the title shot fail the depth test over most of its area, found by drawing it with the depth test off).
 - Fill rectangles in fill mode clear the rectangle (inclusive corners); in the other cycle types they draw through the combiner.
 
+## Capture tools for comparing a moment
+
+- `npx tsx tools/port/browser-shot.ts --query "file=1,warp=0x422" --out out/shots/name [--seconds 40 --every 2 --from 30] [--settings "ao=false;bloom=false"] [--ls "oot.smooth=0"] [--save-at 43]`: dev server and muted headless Chrome, one picture of the canvas per interval (`,` stands for `&` in the query). `--save-at` presses 5; set `OOT_SAVES_DIR` to a copy of the saves folder first so the user's states are not written.
+- `npx tsx tools/headless/state-shot.ts --state <state-N.bin> --out out/soft/name [--hz 60 --frames 120 --every 60]`: loads a browser state in Node and writes the software renderer's pictures, to tell a browser-renderer defect from one in the display list.
+
 ## Not verified against footage
 
 The ROM was not run in a browser for this work, so these are open:
