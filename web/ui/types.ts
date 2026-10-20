@@ -6,6 +6,7 @@ import type { ActorsSnapshot } from '../inspect/actors.ts';
 import type { Cheat } from '../inspect/cheats.ts';
 import type { MemorySnapshot, SearchKind, ValueType } from '../inspect/memory.ts';
 import type { PadView } from '../input.ts';
+import type { TouchLook } from '../touch.ts';
 import type { Entrance, WarpSnapshot } from '../inspect/warp.ts';
 
 /** What the panels show; the game loop and the controls write it. */
@@ -34,6 +35,8 @@ export interface UiState {
   native: boolean;
   cull: CullMode;
   controlsHidden: boolean;
+  /** Touch overlay opacity and size, in percent. */
+  touchLook: TouchLook;
   /** The save state slot (1-4) that keys 5 and 6 act on; null while save states are not available. */
   slot: number | null;
   /** Whether each save state slot holds a state; null until known. */
@@ -88,6 +91,7 @@ export interface UiActions {
   cycleCull(): void;
   toggleControls(): void;
   toggleFullscreen(): void;
+  setTouchLook(change: Partial<TouchLook>): void;
   /** The connected gamepad's live state, or null while the browser reports none. */
   padView(): PadView | null;
   setOverlay(on: boolean): void;

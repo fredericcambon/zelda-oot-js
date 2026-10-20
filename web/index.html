@@ -3,7 +3,7 @@
   <head>
     <link rel="icon" href="data:," />
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <!-- Only same-origin requests (the game files built by npm run port) are allowed. -->
     <meta
       http-equiv="Content-Security-Policy"
@@ -82,7 +82,7 @@
       html.touch #status { position: fixed; padding: 0; background: none; }
       html.touch .keys { display: none; }
       html.touch .touch-only { display: block; }
-      html.touch #menu-button { display: block; position: fixed; top: 8px; right: 8px; width: 44px; height: 44px; z-index: 5; padding: 0; font-size: 22px; line-height: 1; color: #fff; background: rgba(0, 0, 0, 0.55); border: 2px solid rgba(255, 255, 255, 0.4); border-radius: 8px; touch-action: manipulation; }
+      html.touch #menu-button { display: block; position: fixed; top: calc(env(safe-area-inset-top, 0px) + 12px); right: calc(env(safe-area-inset-right, 0px) + 12px); width: 44px; height: 44px; z-index: 5; padding: 0; font-size: 22px; line-height: 1; color: #fff; background: rgba(0, 0, 0, 0.55); border: 2px solid rgba(255, 255, 255, 0.4); border-radius: 8px; touch-action: manipulation; }
       html.touch #dock { background: #181818; display: none; position: fixed; z-index: 4; top: auto; left: 0; right: 0; bottom: 0; width: auto; height: 60dvh; border-left: 0; border-top: 1px solid #444; touch-action: pan-y; }
       html.touch #dock.open { display: flex; }
       html.touch .tab button, html.touch .tabs button { min-height: 36px; }
@@ -94,12 +94,27 @@
 
       #touch-layer { display: none; }
       html.touch #touch-layer { display: block; position: fixed; inset: 0; pointer-events: none; touch-action: none; }
-      html.touch.touch-hidden #touch-layer, html.sheet-open #touch-layer { display: none; }
-      #touch-stick { position: absolute; left: 0; bottom: 0; width: 42%; height: 62%; pointer-events: auto; touch-action: none; }
+      html.touch.touch-hidden #touch-layer, html.sheet-open #touch-layer, html.gamepad #touch-layer { display: none; }
+      html.touch #touch-layer { opacity: var(--touch-opacity, 0.5); }
+      #touch-stick { position: absolute; left: 0; bottom: 0; width: 50%; height: 55%; pointer-events: auto; touch-action: none; }
       .stick-base { position: absolute; width: 112px; height: 112px; margin: -56px 0 0 -56px; border: 2px solid rgba(255, 255, 255, 0.35); border-radius: 50%; background: rgba(255, 255, 255, 0.08); }
       .stick-base[hidden] { display: none; }
       .stick-knob { position: absolute; left: 28px; top: 28px; width: 56px; height: 56px; border-radius: 50%; background: rgba(255, 255, 255, 0.35); }
-      #touch-buttons { position: absolute; right: 8px; bottom: 8px; }
+      #touch-buttons { position: absolute; right: calc(env(safe-area-inset-right, 0px) + 12px); bottom: calc(env(safe-area-inset-bottom, 0px) + 12px); transform: scale(var(--touch-scale, 1)); transform-origin: bottom right; }
+      #touch-top { position: absolute; top: calc(env(safe-area-inset-top, 0px) + 12px); left: 50%; transform: translateX(-50%) scale(var(--touch-scale, 1)); transform-origin: top center; }
+      #touch-top .touch-button { position: static; font-size: 13px; }
+      #touch-left { position: absolute; left: calc(env(safe-area-inset-left, 0px) + 12px); bottom: calc(55% + 12px); transform: scale(var(--touch-scale, 1)); transform-origin: bottom left; }
+      #touch-left .touch-button { position: static; }
+      #touch-fullscreen { display: none; position: absolute; top: calc(env(safe-area-inset-top, 0px) + 12px); right: calc(env(safe-area-inset-right, 0px) + 64px); width: 44px; height: 44px; padding: 0; font-size: 22px; line-height: 1; color: #fff; background: rgba(0, 0, 0, 0.55); border: 2px solid rgba(255, 255, 255, 0.4); border-radius: 8px; pointer-events: auto; touch-action: manipulation; }
+      /* Nothing sits on the picture: in portrait the picture is the top 75vw, and Start and the menu go in the dark area below it; in landscape they go in the dark panel at the right. */
+      @media (orientation: portrait) {
+        #touch-top { top: calc(75vw + 8px); }
+        html.touch #menu-button { top: calc(75vw + 8px); }
+      }
+      @media (orientation: landscape) {
+        #touch-fullscreen { display: block; }
+        #touch-top { left: auto; right: calc(env(safe-area-inset-right, 0px) + 116px); transform: scale(var(--touch-scale, 1)); transform-origin: top right; }
+      }
       .touch-button { position: absolute; padding: 0; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.4); background: rgba(255, 255, 255, 0.12); color: rgba(255, 255, 255, 0.85); font: bold 16px system-ui, sans-serif; pointer-events: auto; touch-action: none; }
       .touch-button.down { background: rgba(255, 255, 255, 0.4); }
     </style>
