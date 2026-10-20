@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Button, STICK_MAX } from './input.ts';
-import { STICK_RADIUS_PX, stickFromOffset, TOUCH_BUTTONS, TouchPad } from './touch.ts';
+import { HELD_GROW_PX, normalizeLook, pickButton, STICK_RADIUS_PX, stickFromOffset, TOUCH_BUTTONS, TouchPad } from './touch.ts';
 
 describe('stickFromOffset', () => {
   it('is neutral inside the dead zone', () => {
@@ -83,13 +83,66 @@ describe('TOUCH_BUTTONS', () => {
     expect(r.bit).toBe(Button.R);
     expect(l.x + l.size).toBeLessThanOrEqual(r.x);
   });
+  it('makes A the largest button and Start small, alone at the top centre', () => {
+    const a = TOUCH_BUTTONS.find((b) => b.id === 'a')!;
+    for (const b of TOUCH_BUTTONS) if (b !== a) expect(b.size).toBeLessThan(a.size);
+    const start = TOUCH_BUTTONS.find((b) => b.id === 'start')!;
+    expect(start.top).toBe(true);
+    expect(TOUCH_BUTTONS.filter((b) => b.top)).toHaveLength(1);
+    const z = TOUCH_BUTTONS.find((b) => b.id === 'z')!;
+    const r = TOUCH_BUTTONS.find((b) => b.id === 'r')!;
+    expect(Math.min(z.size, r.size)).toBeGreaterThan(start.size);
+  });
+  it('lays the C buttons out as a diamond', () => {
+    const c = (id: string) => { const b = TOUCH_BUTTONS.find((t) => t.id === id)!; return { x: b.x + b.size / 2, y: b.y + b.size / 2 }; };
+    expect(c('cup').x).toBe(c('cdown').x);
+    expect(c('cleft').y).toBe(c('cright').y);
+    expect(c('cup').y).toBeLessThan(c('cleft').y);
+    expect(c('cleft').y).toBeLessThan(c('cdown').y);
+    expect(c('cleft').x).toBeLessThan(c('cup').x);
+    expect(c('cup').x).toBeLessThan(c('cright').x);
+  });
   it('has distinct bits and non-overlapping boxes', () => {
     for (const [i, a] of TOUCH_BUTTONS.entries()) {
       for (const b of TOUCH_BUTTONS.slice(i + 1)) {
         expect(a.bit).not.toBe(b.bit);
+        if (a.top || b.top) continue;
         const apart = a.x + a.size <= b.x || b.x + b.size <= a.x || a.y + a.size <= b.y || b.y + b.size <= a.y;
         expect(apart, `${a.id} vs ${b.id}`).toBe(true);
       }
     }
+  });
+});
+
+describe('pickButton', () => {
+  const boxes = [
+    { id: 'a', left: 130, top: 100, right: 200, bottom: 170 },
+    { id: 'b', left: 30, top: 110, right: 90, bottom: 170 },
+  ];
+  it('finds the button under the point, or none', () => {
+    expect(pickButton(boxes, 160, 130, null)).toBe('a');
+    expect(pickButton(boxes, 60, 130, null)).toBe('b');
+    expect(pickButton(boxes, 95, 130, null)).toBeNull();
+  });
+  it('slides from B to A when the finger crosses into A', () => {
+    expect(pickButton(boxes, 60, 130, 'b')).toBe('b');
+    expect(pickButton(boxes, 160, 130, 'b')).toBe('a');
+  });
+  it('grows the held button a little, only for the held one', () => {
+    expect(pickButton(boxes, 95, 130, 'b')).toBe('b');
+    expect(pickButton(boxes, 90 + HELD_GROW_PX + 1, 130, 'b')).toBeNull();
+    expect(pickButton(boxes, 120, 130, 'a')).toBe('a');
+    expect(pickButton(boxes, 120, 130, 'b')).toBeNull();
+  });
+});
+
+describe('normalizeLook', () => {
+  it('defaults to half opacity at normal size', () => {
+    expect(normalizeLook(null)).toEqual({ opacity: 50, size: 100 });
+  });
+  it('keeps valid values and clamps the rest', () => {
+    expect(normalizeLook({ opacity: 80, size: 120 })).toEqual({ opacity: 80, size: 120 });
+    expect(normalizeLook({ opacity: 0, size: 500 })).toEqual({ opacity: 10, size: 140 });
+    expect(normalizeLook({ opacity: Number.NaN })).toEqual({ opacity: 50, size: 100 });
   });
 });

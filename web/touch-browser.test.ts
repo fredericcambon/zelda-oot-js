@@ -83,6 +83,14 @@ describe.skipIf(!chrome)('touch overlay in headless Chrome', () => {
 
     await touch('touchEnd', []);
     expect(await pad()).toEqual({ buttons: 0, x: 0, y: 0 });
+
+    const b = await centre('#touch-b');
+    await touch('touchStart', [{ ...b, id: 5 }]);
+    expect((await pad()).buttons).toBe(Button.B);
+    await touch('touchMove', [{ ...a, id: 5 }]);
+    expect((await pad()).buttons).toBe(Button.A);
+    await touch('touchEnd', []);
+    expect((await pad()).buttons).toBe(0);
     ws.close();
   }, 60_000);
 });
