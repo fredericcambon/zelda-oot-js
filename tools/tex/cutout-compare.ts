@@ -121,6 +121,6 @@ try {
     console.log(`| ${m} | ${mean(r.map((x) => x.fps)).toFixed(1)} | ${mean(r.map((x) => x.lists)).toFixed(2)} | ${mean(r.map((x) => x.submit)).toFixed(2)} | ${mean(r.map((x) => x.gpu)).toFixed(2)} | ${mean(r.map((x) => x.calls)).toFixed(0)} |`);
   }
 } finally {
-  s.stop();
+  await s.stop();
   setTimeout(() => process.exit(0), 500);
 }

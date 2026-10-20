@@ -2,11 +2,9 @@
 // headless Chrome and prints the time to the first game frame, for a first visit (empty profile) and for later visits
 // (same profile, so the HTTP cache is warm). The page publishes its milestones as `globalThis.ootTiming`.
 import { type ChildProcess, spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { Cdp, CHROME_SILENT_FLAGS, sleep, waitFor } from './cdp.ts';
+import { createChromeProfile, removeChromeProfile } from '../lib/chrome-profile.ts';
+import { Cdp, CHROME_SILENT_FLAGS, waitFor } from './cdp.ts';
 
 const FIRST_FRAME_LIMIT_MS = 1500;
 const REPEAT_FRAME_LIMIT_MS = 1000;
@@ -64,14 +62,15 @@ async function visit(cdp: Cdp): Promise<Visit> {
 }
 
 const children: ChildProcess[] = [];
-const profile = mkdtempSync(join(tmpdir(), 'oot-chrome-'));
+const profile = createChromeProfile('load');
+let chrome: ChildProcess | undefined;
 try {
   const vite = spawn('npx', ['vite', '--config', 'vite.config.ts', '--port', String(port), '--strictPort'], { stdio: 'ignore', shell: true });
   children.push(vite);
   await waitFor('the dev server', async () => ((await fetch(url)).ok ? true : undefined));
 
   const debugPort = port + 1;
-  const chrome = spawn(values.chrome!, [
+  chrome = spawn(values.chrome!, [
     '--headless=new', ...CHROME_SILENT_FLAGS, `--remote-debugging-port=${debugPort}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check',
     '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required', 'about:blank',
   ], { stdio: 'ignore' });
@@ -99,6 +98,5 @@ try {
   process.exitCode = 1;
 } finally {
   for (const c of children) if (c.pid) spawn('taskkill', ['/pid', String(c.pid), '/t', '/f'], { stdio: 'ignore' });
-  await sleep(1000);
-  rmSync(profile, { recursive: true, force: true, maxRetries: 5 });
+  await removeChromeProfile(profile, chrome);
 }

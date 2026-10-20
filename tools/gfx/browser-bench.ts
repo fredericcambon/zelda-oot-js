@@ -3,10 +3,10 @@
 // picture of the 3D canvas for each run. The game is put in the scene of the first save state (key 6, `~/.zelda-oot-js/saves`)
 // and runs in the 60 Hz mode. Needs `dist/` from `npm run port`. Pictures come from the ROM, so they stay under `out/`.
 import { type ChildProcess, spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
+import { createChromeProfile, removeChromeProfile } from '../lib/chrome-profile.ts';
 
 const { values } = parseArgs({
   options: {
@@ -154,13 +154,14 @@ async function run(cdp: Cdp, screen: Screen, config: Config, outDir: string, sec
 }
 
 const children: ChildProcess[] = [];
-const profile = mkdtempSync(join(tmpdir(), 'oot-chrome-'));
+const profile = createChromeProfile('bench');
+let chrome: ChildProcess | undefined;
 try {
   const vite = spawn('npx', ['vite', '--config', 'vite.config.ts', '--port', String(port), '--strictPort'], { stdio: 'ignore', shell: true });
   children.push(vite);
   await waitFor('the dev server', async () => ((await fetch(`http://localhost:${port}/`)).ok ? true : undefined));
   const debugPort = port + 1;
-  const chrome = spawn(values.chrome!, [
+  chrome = spawn(values.chrome!, [
     '--headless=new', `--remote-debugging-port=${debugPort}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check',
     '--ignore-gpu-blocklist', '--mute-audio', '--autoplay-policy=no-user-gesture-required', 'about:blank',
   ], { stdio: 'ignore' });
@@ -176,5 +177,5 @@ try {
   cdp.close();
 } finally {
   for (const c of children) if (c.pid) spawn('taskkill', ['/pid', String(c.pid), '/t', '/f'], { stdio: 'ignore' });
-  setTimeout(() => { try { rmSync(profile, { recursive: true, force: true }); } catch { /* Chrome still holds a file */ } }, 2000).unref();
+  await removeChromeProfile(profile, chrome);
 }

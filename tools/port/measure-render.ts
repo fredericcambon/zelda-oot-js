@@ -10,6 +10,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
+import { createChromeProfile, removeChromeProfile } from '../lib/chrome-profile.ts';
 import { Cdp, CHROME_SILENT_FLAGS, sleep, waitFor } from './cdp.ts';
 
 const { values } = parseArgs({
@@ -102,6 +103,8 @@ interface Row {
 
 const children: ChildProcess[] = [];
 const work = mkdtempSync(join(tmpdir(), 'oot-measure-'));
+const profile = createChromeProfile('measure');
+let chrome: ChildProcess | undefined;
 try {
   const saves = join(work, 'saves');
   mkdirSync(saves);
@@ -114,10 +117,10 @@ try {
   await waitFor('the dev server', async () => ((await fetch(url)).ok ? true : undefined));
 
   const debugPort = port + 1;
-  const chrome = spawn(values.chrome!, [
+  chrome = spawn(values.chrome!, [
     ...(values.headless ? ['--headless=new', '--use-angle=d3d11', '--enable-gpu'] : []),
     ...CHROME_SILENT_FLAGS,
-    `--remote-debugging-port=${debugPort}`, `--user-data-dir=${join(work, 'profile')}`, '--no-first-run', '--no-default-browser-check',
+    `--remote-debugging-port=${debugPort}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check',
     '--ignore-gpu-blocklist', '--enable-webgl-developer-extensions', '--autoplay-policy=no-user-gesture-required',
     '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows',
     '--window-size=1280,960', 'about:blank',
@@ -252,10 +255,6 @@ try {
   process.exitCode = 1;
 } finally {
   for (const c of children) if (c.pid) spawn('taskkill', ['/pid', String(c.pid), '/t', '/f'], { stdio: 'ignore' });
-  await sleep(1000);
-  try {
-    rmSync(work, { recursive: true, force: true, maxRetries: 5 });
-  } catch {
-    // Chrome may still hold a profile file; the folder is in the temp directory.
-  }
+  await removeChromeProfile(profile, chrome);
+  rmSync(work, { recursive: true, force: true });
 }
