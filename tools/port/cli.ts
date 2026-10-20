@@ -121,7 +121,7 @@ async function main(): Promise<number> {
     }
     return 0;
   } catch (err) {
-    console.error(`error: ${err instanceof Error ? err.message : String(err)}`);
+    console.error(`error: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
     return 1;
   }
 }
