@@ -18,8 +18,8 @@ const out = (cmd: string, args: string[], cwd?: string) => execFileSync(cmd, arg
 const auth = ['-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential'];
 const identity = ['-c', 'user.name=pages-deploy', '-c', 'user.email=pages-deploy@localhost'];
 
-// The port output is a build-cache hit unless the ROM-side inputs changed, so a web-only change never rebuilds it.
-if (!['oot.js', 'oot.wasm', 'game.pack'].every((name) => existsSync(join(root, 'dist', name)))) run('npm', ['run', 'port']);
+// Always run: a cache hit takes seconds, and a miss rebuilds the game after a runtime or recompiler change.
+run('npm', ['run', 'port']);
 run('npm', ['run', 'pages:build']);
 
 const remote = out('git', ['remote', 'get-url', 'origin']);
