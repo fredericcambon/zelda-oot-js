@@ -1,6 +1,6 @@
 // Drives the overlay in headless Chrome with emulated touch events. Skipped when no Chrome is found (set CHROME_PATH to point at one).
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -30,14 +30,16 @@ afterAll(async () => {
 
 interface Reply { result: { result: { value: string } } }
 
-describe.skipIf(!chrome)('touch overlay in headless Chrome', () => {
-  it('sets the A bit and the stick axis from touch events, at the same time', async () => {
+async function openPage() {
     dir = mkdtempSync(join(tmpdir(), 'oot-touch-'));
     const js = buildSync({
-      stdin: { contents: "import { TouchControls } from './web/touch.ts'; window.touch = new TouchControls(document.getElementById('layer'), document.getElementById('toggle'));", resolveDir: process.cwd(), sourcefile: 'entry.ts' },
+      stdin: { contents: "import { TouchControls } from './web/touch.ts'; window.touch = new TouchControls(document.getElementById('touch-layer'), document.getElementById('toggle'));", resolveDir: process.cwd(), sourcefile: 'entry.ts' },
       bundle: true, write: false, format: 'iife',
     }).outputFiles?.[0]?.text ?? '';
-    const html = `<!doctype html><meta name="viewport" content="width=device-width"><style>#layer{position:fixed;inset:0}#layer *{touch-action:none}#touch-stick{position:absolute;left:0;bottom:0;width:40%;height:60%}#touch-buttons{position:absolute;inset:0;pointer-events:none}.touch-button{position:absolute;pointer-events:auto}</style><div id="layer"></div><button id="toggle"></button><script>${js}</script>`;
+    const index = readFileSync('web/index.html', 'utf8');
+    const viewport = /<meta name="viewport"[^>]*>/.exec(index)![0];
+    const css = /<style>([\s\S]*?)<\/style>/.exec(index)![1];
+    const html = `<!doctype html>${viewport}<style>${css}</style><div id="touch-layer"></div><button id="toggle"></button><script>${js}</script>`;
     profile = createChromeProfile('touch');
     const file = join(dir, 'page.html');
     writeFileSync(file, html);
@@ -68,6 +70,12 @@ describe.skipIf(!chrome)('touch overlay in headless Chrome', () => {
     await new Promise((r) => setTimeout(r, 800));
 
     const centre = async (sel: string) => JSON.parse(await evalJs(`(() => { const r = document.querySelector('${sel}').getBoundingClientRect(); return JSON.stringify({ x: r.x + r.width / 2, y: r.y + r.height / 2 }); })()`));
+  return { evalJs, touch, centre, close: () => ws.close() };
+}
+
+describe.skipIf(!chrome)('touch overlay in headless Chrome', () => {
+  it('sets the A bit and the stick axis from touch events, at the same time', async () => {
+    const { evalJs, touch, centre, close } = await openPage();
     const pad = async () => await evalJs('JSON.stringify(window.touch.poll())').then(JSON.parse);
 
     expect(await pad()).toEqual({ buttons: 0, x: 0, y: 0 });
@@ -86,6 +94,23 @@ describe.skipIf(!chrome)('touch overlay in headless Chrome', () => {
 
     await touch('touchEnd', []);
     expect(await pad()).toEqual({ buttons: 0, x: 0, y: 0 });
-    ws.close();
+    close();
+  }, 60_000);
+
+  it('does not zoom on a double tap next to a button or in the empty control area', async () => {
+    const page = await openPage();
+    const scale = async () => Number(await page.evalJs('window.visualViewport.scale'));
+    const b = await page.centre('#touch-a');
+    const spots = [{ x: b.x + 70, y: b.y }, { x: b.x, y: b.y - 90 }, { x: 420, y: 40 }];
+    for (const p of spots) {
+      for (let i = 0; i < 2; i++) {
+        await page.touch('touchStart', [{ ...p, id: 1 }]);
+        await page.touch('touchEnd', []);
+        await new Promise((r) => setTimeout(r, 60));
+      }
+    }
+    await new Promise((r) => setTimeout(r, 400));
+    expect(await scale()).toBe(1);
+    page.close();
   }, 60_000);
 });
