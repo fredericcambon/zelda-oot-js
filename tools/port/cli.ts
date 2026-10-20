@@ -12,6 +12,9 @@ import { generate } from '../recomp/generate.ts';
 import { ensureToolchain } from '../recomp/toolchain.ts';
 import { Cache, defaultCacheDir, defaultMaxBytes, hashKey, listTree, sourceHash } from './cache.ts';
 import { compileAll, DEFAULT_OPTIMIZE, link, runtimeSources } from './build.ts';
+import { lowerPriority } from './limits.ts';
+
+lowerPriority();
 
 async function main(): Promise<number> {
   const { values } = parseArgs({
@@ -99,7 +102,7 @@ async function main(): Promise<number> {
         for (const p of gen.problems.slice(0, 40)) console.error(`problem: ${p}`);
         throw new Error(`${gen.problems.length} problems while recompiling`);
       }
-      cache?.store('generated-c', key, cDir, listTree(cDir), { functions: gen.functions, files: gen.files.length });
+      cache?.store('generated-c', key, cDir, listTree(cDir), { functions: gen.functions, files: gen.files.length, cFiles: gen.files.filter((n) => n.endsWith('.c')).length, osBindings: gen.osBindings });
       return outcome(false);
     });
 

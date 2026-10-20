@@ -1,8 +1,17 @@
 // Build: make sure Emscripten is available locally, type-check, bundle the web shell.
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { constants, getPriority, setPriority } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+// Below normal for this process and the installs and bundling it starts; a lower priority already set is kept.
+const { PRIORITY_BELOW_NORMAL } = constants.priority;
+try {
+  if (getPriority() < PRIORITY_BELOW_NORMAL) setPriority(PRIORITY_BELOW_NORMAL);
+} catch {
+  // A platform that refuses still builds.
+}
 
 const root = resolve(fileURLToPath(import.meta.url), '..', '..');
 const emsdkDir = join(root, '.tools', 'emsdk');

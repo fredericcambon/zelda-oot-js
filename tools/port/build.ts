@@ -1,11 +1,11 @@
 // Compiles the generated C with Emscripten: one object per file, built in parallel, then one link. Objects and the link
 // output come from the shared cache (cache.ts) when their inputs are unchanged.
 import { spawn, spawnSync } from 'node:child_process';
-import { cpus } from 'node:os';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { repoRoot, type Toolchain } from '../recomp/toolchain.ts';
 import { hashFile, hashKey, type Cache } from './cache.ts';
+import { gate, jobLimit } from './limits.ts';
 
 /**
  * -O2 runs the recompiled game about twice as fast as -O1 and makes a wasm half the size; the game's memory is bit-identical
@@ -42,14 +42,17 @@ const EXPORTS = ['_main', '_malloc', '_free', '_oot_boot', '_oot_frame', '_oot_i
 
 const COMPILE_FLAGS = ['-ffp-contract=off', '-Wall', '-Wno-unused-label', '-Wno-unused-variable', '-Wno-unused-but-set-variable', '-Wno-unused-function'];
 
+/** Every emcc run in this process goes through it, so that no set of concurrent builds starts more than `jobLimit()` at once. */
+const emccSlots = gate();
+
 export function emcc(tc: Toolchain, args: string[], cwd: string): Promise<{ code: number; output: string }> {
-  return new Promise((resolve) => {
+  return emccSlots(() => new Promise((resolve) => {
     const child = spawn(tc.python, [tc.emcc, ...args], { cwd, env: tc.env });
     let output = '';
     child.stdout.on('data', (d: Buffer) => (output += d));
     child.stderr.on('data', (d: Buffer) => (output += d));
     child.on('close', (code) => resolve({ code: code ?? 1, output }));
-  });
+  }));
 }
 
 /** The Emscripten release in use: what decides whether two compilers produce the same object. */
@@ -101,7 +104,7 @@ export interface CompiledObject {
 }
 
 /**
- * Brings the object of every C file up to date, `cpus` compiles at a time: an object whose key is unchanged stays, one found in
+ * Brings the object of every C file up to date, `OOT_JOBS` compiles at a time: an object whose key is unchanged stays, one found in
  * the shared cache is copied from it, and the rest is compiled and stored. Returns the objects.
  */
 interface ObjectJob extends CompiledObject {
@@ -144,7 +147,7 @@ const LINK_OUTPUTS = ['oot.js', 'oot.wasm'];
 const isLinkOutput = (path: string, data: Buffer) => path !== 'oot.wasm' || (data.length > 8 && data.readUInt32BE(0) === 0x0061736d);
 
 /**
- * Brings the object of every C file up to date, `cpus` compiles at a time: an object whose key is unchanged stays, one found in
+ * Brings the object of every C file up to date, `OOT_JOBS` compiles at a time: an object whose key is unchanged stays, one found in
  * the shared cache is copied from it, and the rest is compiled and stored. Returns the objects.
  */
 export async function compileAll(opts: BuildOptions, extraSources: string[]): Promise<CompiledObject[]> {
@@ -189,7 +192,7 @@ ${r.output.slice(0, 2000)}`);
   const worker = async () => {
     for (let job = todo.shift(); job; job = todo.shift()) await compileOne(job);
   };
-  await Promise.all(Array.from({ length: Math.max(1, cpus().length - 1) }, worker));
+  await Promise.all(Array.from({ length: jobLimit() }, worker));
   if (failures.length > 0) throw new Error(`${failures.length} C files failed to compile:\n${failures.slice(0, 3).join('\n')}`);
   return jobs.map((j) => ({ path: j.path, key: j.key }));
 }
