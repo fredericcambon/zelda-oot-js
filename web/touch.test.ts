@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Button, STICK_MAX } from './input.ts';
-import { STICK_RADIUS_PX, stickFromOffset, TOUCH_BUTTONS, TouchPad } from './touch.ts';
+import { STICK_RADIUS_PX, stickFromOffset, TOUCH_BUTTONS, TouchPad, VIEW, type Box } from './touch.ts';
 
 describe('stickFromOffset', () => {
   it('is neutral inside the dead zone', () => {
@@ -70,24 +70,48 @@ describe('TouchPad', () => {
 });
 
 describe('TOUCH_BUTTONS', () => {
-  it('covers A, B, Z, R, Start and the four C buttons, each at least 48 px', () => {
-    const bits = TOUCH_BUTTONS.reduce((m, b) => m | b.bit, 0);
-    const need = Button.A | Button.B | Button.Z | Button.R | Button.Start | Button.CUp | Button.CDown | Button.CLeft | Button.CRight;
-    expect(bits & need).toBe(need);
-    for (const b of TOUCH_BUTTONS) expect(b.size).toBeGreaterThanOrEqual(48);
+  const find = (id: string) => TOUCH_BUTTONS.find((b) => b.id === id)!;
+  const cx = (r: Box) => r.x + r.w / 2;
+  const cy = (r: Box) => r.y + r.h / 2;
+
+  it('covers A, B, L, Z, R, Start and the four C buttons, each with its own bit', () => {
+    const need = Button.A | Button.B | Button.L | Button.Z | Button.R | Button.Start | Button.CUp | Button.CDown | Button.CLeft | Button.CRight;
+    expect(TOUCH_BUTTONS.reduce((m, b) => m | b.bit, 0) & need).toBe(need);
+    expect(find('l').bit).toBe(Button.L);
+    expect(find('r').bit).toBe(Button.R);
+    expect(find('z').bit).toBe(Button.Z);
   });
-  it('puts L left of R, each with its own bit', () => {
-    const l = TOUCH_BUTTONS.find((b) => b.id === 'l')!;
-    const r = TOUCH_BUTTONS.find((b) => b.id === 'r')!;
-    expect(l.bit).toBe(Button.L);
-    expect(r.bit).toBe(Button.R);
-    expect(l.x + l.size).toBeLessThanOrEqual(r.x);
+  it('labels the C buttons with arrows', () => {
+    expect(['cup', 'cleft', 'cright', 'cdown'].map((id) => find(id).label)).toEqual(['▲', '◀', '▶', '▼']);
   });
-  it('has distinct bits and non-overlapping boxes', () => {
+  it.each(['landscape', 'portrait'] as const)('puts the controls where the layout wants them in %s', (o) => {
+    const [l, z, r, a, b, up, left, right, down] = ['l', 'z', 'r', 'a', 'b', 'cup', 'cleft', 'cright', 'cdown'].map((id) => find(id)[o]);
+    const v = VIEW[o];
+    expect(l!.x + l!.w).toBeLessThanOrEqual(r!.x);
+    expect(l!.y + l!.h).toBeLessThanOrEqual(z!.y);
+    expect(z!.x).toBe(l!.x);
+    expect(r!.y).toBe(l!.y);
+    expect(cx(r!)).toBeGreaterThan(v.w / 2);
+    expect(cx(a!)).toBeGreaterThan(cx(b!));
+    expect(cy(a!)).toBeGreaterThan(cy(b!));
+    for (const c of [up!, left!, right!, down!]) expect(cx(c)).toBeGreaterThan(v.w / 2);
+    expect(cy(up!)).toBeLessThan(cy(left!));
+    expect(cy(left!)).toBe(cy(right!));
+    expect(cx(left!)).toBeLessThan(cx(right!));
+    expect(cy(down!)).toBeGreaterThan(cy(left!));
+  });
+  it.each(['landscape', 'portrait'] as const)('keeps every box inside the view and apart from the others in %s', (o) => {
+    const v = VIEW[o];
     for (const [i, a] of TOUCH_BUTTONS.entries()) {
+      const ar = a[o];
+      expect(ar.x).toBeGreaterThanOrEqual(0);
+      expect(ar.y).toBeGreaterThanOrEqual(0);
+      expect(ar.x + ar.w).toBeLessThanOrEqual(v.w);
+      expect(ar.y + ar.h).toBeLessThanOrEqual(v.h);
       for (const b of TOUCH_BUTTONS.slice(i + 1)) {
         expect(a.bit).not.toBe(b.bit);
-        const apart = a.x + a.size <= b.x || b.x + b.size <= a.x || a.y + a.size <= b.y || b.y + b.size <= a.y;
+        const br = b[o];
+        const apart = ar.x + ar.w <= br.x || br.x + br.w <= ar.x || ar.y + ar.h <= br.y || br.y + br.h <= ar.y;
         expect(apart, `${a.id} vs ${b.id}`).toBe(true);
       }
     }

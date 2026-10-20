@@ -75,19 +75,21 @@
 
       /* Touch devices: the picture fills the screen and the panel is a sheet. */
       html.touch { overscroll-behavior: none; }
+      html.touch #app { --rail: 0px; }
       html.touch body { background: #111; height: 100dvh; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
-      html.touch #main { display: block; inset: 0; height: 100dvh; }
+      html.touch #main { inset: 0; height: 100dvh; align-items: flex-start; }
       html.touch #stage { width: auto; touch-action: none; }
       html.touch canvas { width: 100vw; max-width: 100vw; }
       html.touch #status { position: fixed; padding: 0; background: none; }
       html.touch .keys { display: none; }
       html.touch .touch-only { display: block; }
-      html.touch #menu-button { display: block; position: fixed; top: 8px; right: 8px; width: 44px; height: 44px; z-index: 5; padding: 0; font-size: 22px; line-height: 1; color: #fff; background: rgba(0, 0, 0, 0.55); border: 2px solid rgba(255, 255, 255, 0.4); border-radius: 8px; touch-action: manipulation; }
+      html.touch #menu-button { display: block; position: fixed; top: calc(75vw + 65px); left: 50%; transform: translateX(-50%); width: 44px; height: 44px; z-index: 5; padding: 0; font-size: 22px; line-height: 1; color: rgba(255, 255, 255, 0.85); background: none; border: 1.8px solid rgba(255, 255, 255, 0.85); border-radius: 8px; touch-action: manipulation; }
       html.touch #dock { background: #181818; display: none; position: fixed; z-index: 4; top: auto; left: 0; right: 0; bottom: 0; width: auto; height: 60dvh; border-left: 0; border-top: 1px solid #444; touch-action: pan-y; }
       html.touch #dock.open { display: flex; }
       html.touch .tab button, html.touch .tabs button { min-height: 36px; }
       @media (orientation: landscape) {
         html.touch canvas { width: auto; height: 100dvh; max-width: none; }
+        html.touch #menu-button { transform: none; top: 112px; left: calc(14px + env(safe-area-inset-left)); }
         html.touch #dock { left: auto; top: 0; height: auto; width: min(360px, 60vw); border-top: 0; border-left: 1px solid #444; }
         html.touch .panel { padding-top: 56px; box-sizing: border-box; }
       }
@@ -95,13 +97,18 @@
       #touch-layer { display: none; }
       html.touch #touch-layer { display: block; position: fixed; inset: 0; pointer-events: none; touch-action: none; }
       html.touch.touch-hidden #touch-layer, html.sheet-open #touch-layer { display: none; }
-      #touch-stick { position: absolute; left: 0; bottom: 0; width: 42%; height: 62%; pointer-events: auto; touch-action: none; }
-      .stick-base { position: absolute; width: 112px; height: 112px; margin: -56px 0 0 -56px; border: 2px solid rgba(255, 255, 255, 0.35); border-radius: 50%; background: rgba(255, 255, 255, 0.08); }
+      #touch-stick { position: absolute; left: 0; top: 30.8%; width: 35.5%; height: 69.2%; pointer-events: auto; touch-action: none; }
+      @media (orientation: portrait) { #touch-stick { top: 47.9%; width: 52.6%; height: 49.8%; } }
+      .stick-base { position: absolute; width: 112px; height: 112px; margin: -56px 0 0 -56px; border: 1.8px solid rgba(255, 255, 255, 0.85); border-radius: 50%; }
       .stick-base[hidden] { display: none; }
-      .stick-knob { position: absolute; left: 28px; top: 28px; width: 56px; height: 56px; border-radius: 50%; background: rgba(255, 255, 255, 0.35); }
-      #touch-buttons { position: absolute; right: 8px; bottom: 8px; }
-      .touch-button { position: absolute; padding: 0; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.4); background: rgba(255, 255, 255, 0.12); color: rgba(255, 255, 255, 0.85); font: bold 16px system-ui, sans-serif; pointer-events: auto; touch-action: none; }
-      .touch-button.down { background: rgba(255, 255, 255, 0.4); }
+      .stick-knob { position: absolute; left: 28px; top: 28px; width: 56px; height: 56px; border-radius: 50%; border: 1.8px solid rgba(255, 255, 255, 0.85); background: rgba(255, 255, 255, 0.2); box-sizing: border-box; }
+      #touch-buttons { position: absolute; inset: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); pointer-events: none; }
+      .touch-button { position: absolute; padding: 0; box-sizing: border-box; border: 1.8px solid rgba(255, 255, 255, 0.85); background: none; color: rgba(255, 255, 255, 0.85); font: bold 16px system-ui, sans-serif; line-height: 1; pointer-events: auto; touch-action: none; }
+      .touch-button.circle { border-radius: 50%; }
+      .touch-button.shoulder-left { border-radius: 20px 8px 8px 20px; }
+      .touch-button.shoulder-right { border-radius: 8px 20px 20px 8px; }
+      #touch-start { font-size: 9px; }
+      .touch-button.down { background: rgba(255, 255, 255, 0.3); }
     </style>
   </head>
   <body>

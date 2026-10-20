@@ -37,7 +37,7 @@ describe.skipIf(!chrome)('touch overlay in headless Chrome', () => {
       stdin: { contents: "import { TouchControls } from './web/touch.ts'; window.touch = new TouchControls(document.getElementById('layer'), document.getElementById('toggle'));", resolveDir: process.cwd(), sourcefile: 'entry.ts' },
       bundle: true, write: false, format: 'iife',
     }).outputFiles?.[0]?.text ?? '';
-    const html = `<!doctype html><meta name="viewport" content="width=device-width"><style>#layer{position:fixed;inset:0}#layer *{touch-action:none}#touch-stick{position:absolute;left:0;bottom:0;width:40%;height:60%}#touch-buttons{position:absolute;right:8px;bottom:8px}.touch-button{position:absolute}</style><div id="layer"></div><button id="toggle"></button><script>${js}</script>`;
+    const html = `<!doctype html><meta name="viewport" content="width=device-width"><style>#layer{position:fixed;inset:0}#layer *{touch-action:none}#touch-stick{position:absolute;left:0;bottom:0;width:40%;height:60%}#touch-buttons{position:absolute;inset:0;pointer-events:none}.touch-button{position:absolute;pointer-events:auto}</style><div id="layer"></div><button id="toggle"></button><script>${js}</script>`;
     profile = createChromeProfile('touch');
     const file = join(dir, 'page.html');
     writeFileSync(file, html);
