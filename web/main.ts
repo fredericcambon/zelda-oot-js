@@ -6,6 +6,7 @@ import { loadCartridge } from './cartridge.ts';
 import { Input, mergePads } from './input.ts';
 import { toggleFullscreen, TouchControls } from './touch.ts';
 import { indexedDbStore, SaveSync, serverHasSaves, serverStore } from './saves.ts';
+import { loadPublished, withPublishedSram, withPublishedStates } from './published-saves.ts';
 import { indexedDbStates, SaveStates, serverStates } from './savestate.ts';
 import { STATE_VERSION } from '../tools/runtime/snapshot.ts';
 import { migrateToServer } from './migrate.ts';
@@ -479,7 +480,7 @@ async function boot(): Promise<void> {
     const cartridge = loadCartridge((bytes, total) => {
       if (total > 0 && performance.now() - loadStart > SLOW_LOAD_MS) setStatus(`Loading: ${(bytes / 1e6).toFixed(0)} / ${(total / 1e6).toFixed(0)} MB`);
     });
-    const [onServer, rom] = await Promise.all([serverHasSaves(), cartridge, wasm.module]);
+    const [onServer, rom] = await Promise.all([import.meta.env.MODE === 'pages' ? false : serverHasSaves(), cartridge, wasm.module]);
     const started = await startGame(rom, renderer, sound, wasm, undefined, bootHz);
     if (onServer) {
       const moved = await migrateToServer(
@@ -489,11 +490,16 @@ async function boot(): Promise<void> {
       );
       if (moved.length > 0) showNotice(`Moved saves to the saves folder: ${moved.join(', ')}`);
     }
-    const sync = new SaveSync(started.saveMemory, onServer ? serverStore() : indexedDbStore());
+    // The Pages site has no saves server: it carries the player's saves as files and a new visitor starts from them.
+    const base = import.meta.env.BASE_URL;
+    const published = import.meta.env.MODE !== 'pages' ? null : await loadPublished(base);
+    const sramStore = onServer ? serverStore() : published ? withPublishedSram(indexedDbStore(), published, base) : indexedDbStore();
+    const stateStore = onServer ? serverStates() : published ? withPublishedStates(indexedDbStates(), published, base) : indexedDbStates();
+    const sync = new SaveSync(started.saveMemory, sramStore);
     await sync.restore();
     saves = sync;
     try {
-      states = new SaveStates(started.states, onServer ? serverStates() : indexedDbStates(), STATE_VERSION, bootHz);
+      states = new SaveStates(started.states, stateStore, STATE_VERSION, bootHz);
     } catch (err) {
       console.error('save states are not available:', err);
     }

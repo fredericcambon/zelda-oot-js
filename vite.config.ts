@@ -4,6 +4,8 @@ import { defineConfig, type Plugin } from 'vite';
 import { PACK_FILE } from './tools/assets/pack.ts';
 import { MODULE_URLS, serveGameFiles } from './web/game-files.ts';
 import { savesDir, savesMiddleware } from './web/saves-endpoint.ts';
+import { publishPack, publishSaves } from './tools/pages/assets.ts';
+import { DEFAULT_VARIANT } from './web/tex-pack.ts';
 import { packDir } from './tools/tex/location.ts';
 import { serveTexPack } from './tools/tex/serve.ts';
 
@@ -29,11 +31,17 @@ function gameFiles(pages: boolean): Plugin {
     closeBundle() {
       const out = pages ? pagesDir : join(dist, 'web');
       mkdirSync(out, { recursive: true });
-      // The Pages site is the only build that carries the pack; it must be complete or the page would be dead.
+      // The Pages site is the only build that carries the pack, the texture pack and the saves; it must be complete or the page would be dead.
       const names = pages ? [...MODULE_URLS, `/${PACK_FILE}`] : MODULE_URLS;
       for (const name of names) {
         if (existsSync(join(dist, name))) copyFileSync(join(dist, name), join(out, name));
         else if (pages) throw new Error(`dist${name} is missing: run npm run port -- --rom <path> first`);
+      }
+      if (pages) {
+        const pack = packDir(dist);
+        if (!pack) throw new Error('no texture pack: build it first (npm run tex -- upscale)');
+        publishPack(pack, DEFAULT_VARIANT, out);
+        publishSaves(savesDir(), out);
       }
     },
   };

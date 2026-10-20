@@ -43,12 +43,17 @@ function readBody(req: IncomingMessage): Promise<Buffer | null> {
   });
 }
 
-function readMeta(path: string): string[] | null {
+export function readMeta(path: string): string[] | null {
   try {
     return readFileSync(path, 'utf8').split('\n');
   } catch {
     return null;
   }
+}
+
+/** The format version, saved-at time and video rate stored beside a state file (the legacy `.build` file gives format 0). */
+export function stateMeta(file: string): string[] {
+  return readMeta(`${file}.format`) ?? ['0', ...(readMeta(`${file}.build`) ?? []).slice(1)];
 }
 
 /** Answers requests under SAVES_PREFIX; anything else goes to `next`. */
@@ -68,7 +73,6 @@ export function savesMiddleware(dir: string) {
     if (!FILES.test(name)) return reply(res, 400, 'unknown save');
     const file = join(dir, `${name.replace('/', '-')}.bin`);
     const meta = `${file}.format`;
-    const legacyMeta = `${file}.build`;
     try {
       if (req.method === 'GET') {
         let data: Buffer;
@@ -79,7 +83,7 @@ export function savesMiddleware(dir: string) {
         }
         res.setHeader('Content-Type', 'application/octet-stream');
         if (name !== 'sram') {
-          const [format = '0', savedAt = '0', hz = '50'] = readMeta(meta) ?? ['0', ...(readMeta(legacyMeta) ?? []).slice(1)];
+          const [format = '0', savedAt = '0', hz = '50'] = stateMeta(file);
           res.setHeader('X-State-Format', format);
           res.setHeader('X-Saved-At', savedAt);
           res.setHeader('X-Hz', hz);
