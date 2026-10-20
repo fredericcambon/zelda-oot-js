@@ -243,6 +243,8 @@ export class TouchControls {
     const portrait = matchMedia('(orientation: portrait)');
     const rootStyle = document.documentElement.style;
     const place = () => {
+      // The visible height excludes the browser bars that innerHeight / 100vh include.
+      rootStyle.setProperty('--touch-vh', `${visualViewport?.height ?? innerHeight}px`);
       const o: Orientation = portrait.matches ? 'portrait' : 'landscape';
       const v = VIEW[o];
       let scale = 1;
@@ -268,6 +270,7 @@ export class TouchControls {
     place();
     portrait.addEventListener('change', place);
     addEventListener('resize', place);
+    visualViewport?.addEventListener('resize', place);
     requestAnimationFrame(place);
   }
 }
