@@ -1,31 +1,58 @@
-// `npm run pages:deploy`: builds the site into dist-pages/ and publishes it as the gh-pages branch of origin, then turns
-// GitHub Pages on for that branch. The branch holds one commit, replaced on every deploy.
+// `npm run pages:deploy`: builds the site into dist-pages/, mirrors it into a persistent clone of the gh-pages branch kept in the shared cache
+// (~/.zelda-oot-js/pages-repo), and commits and pushes only what changed (no force), then turns GitHub Pages on for that branch.
 import { execFileSync } from 'node:child_process';
-import { cpSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import * as os from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { syncSite } from './sync.ts';
 
-const site = resolve(import.meta.dirname, '../../dist-pages');
+// Children inherit this, so the build, git and compression all run at below-normal priority.
+os.setPriority(0, os.constants.priority.PRIORITY_BELOW_NORMAL);
+
+const root = resolve(import.meta.dirname, '../..');
+const site = join(root, 'dist-pages');
+const pagesRepo = process.env.OOT_PAGES_REPO || join(os.homedir(), '.zelda-oot-js', 'pages-repo');
 const run = (cmd: string, args: string[], cwd?: string) => execFileSync(cmd, args, { cwd, stdio: 'inherit', shell: process.platform === 'win32' && cmd === 'npm' });
 const out = (cmd: string, args: string[], cwd?: string) => execFileSync(cmd, args, { cwd, encoding: 'utf8' }).trim();
+// The GitHub CLI's login owns the repository; a cached git credential may belong to another account.
+const auth = ['-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential'];
+const identity = ['-c', 'user.name=pages-deploy', '-c', 'user.email=pages-deploy@localhost'];
 
+// The port output is a build-cache hit unless the ROM-side inputs changed, so a web-only change never rebuilds it.
+if (!['oot.js', 'oot.wasm', 'game.pack'].every((name) => existsSync(join(root, 'dist', name)))) run('npm', ['run', 'port']);
 run('npm', ['run', 'pages:build']);
 
 const remote = out('git', ['remote', 'get-url', 'origin']);
 const repo = /github\.com[/:]([^/]+\/[^/.]+)/.exec(remote)?.[1];
 if (!repo) throw new Error(`origin is not a GitHub repository: ${remote}`);
 
-const work = mkdtempSync(join(tmpdir(), 'oot-pages-'));
-try {
-  cpSync(site, work, { recursive: true });
-  writeFileSync(join(work, '.nojekyll'), '');
-  run('git', ['init', '-q', '-b', 'gh-pages'], work);
-  run('git', ['add', '-A'], work);
-  run('git', ['-c', 'user.name=pages-deploy', '-c', 'user.email=pages-deploy@localhost', 'commit', '-q', '-m', 'Deploy'], work);
-  // The GitHub CLI's login owns the repository; a cached git credential may belong to another account.
-  run('git', ['-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential', 'push', '--force', remote, 'gh-pages'], work);
-} finally {
-  rmSync(work, { recursive: true, force: true });
+if (!existsSync(join(pagesRepo, '.git'))) {
+  mkdirSync(dirname(pagesRepo), { recursive: true });
+  try {
+    run('git', [...auth, 'clone', '-q', '--branch', 'gh-pages', '--single-branch', remote, pagesRepo]);
+  } catch {
+    run('git', ['init', '-q', '-b', 'gh-pages', pagesRepo]);
+    run('git', ['remote', 'add', 'origin', remote], pagesRepo);
+  }
+} else {
+  run('git', ['remote', 'set-url', 'origin', remote], pagesRepo);
+  try {
+    run('git', [...auth, 'fetch', '-q', 'origin', 'gh-pages'], pagesRepo);
+    run('git', ['reset', '-q', '--hard', 'FETCH_HEAD'], pagesRepo);
+  } catch {
+    // No gh-pages branch on the remote yet: the copy keeps its own state.
+  }
+}
+
+writeFileSync(join(site, '.nojekyll'), '');
+const result = await syncSite(site, pagesRepo);
+run('git', ['add', '-A'], pagesRepo);
+if (out('git', ['status', '--porcelain'], pagesRepo)) {
+  run('git', [...identity, 'commit', '-q', '-m', 'Deploy'], pagesRepo);
+  run('git', [...auth, 'push', 'origin', 'gh-pages'], pagesRepo);
+  console.log(`Pushed ${result.written.length} changed and ${result.deleted.length} deleted files, ${(result.bytes / 1e6).toFixed(1)} MB of changed content.`);
+} else {
+  console.log('Nothing changed: 0 files, 0 bytes pushed.');
 }
 
 const owner = repo.split('/')[0]!.toLowerCase();
