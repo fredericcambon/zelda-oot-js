@@ -32,6 +32,15 @@ export interface TouchButton {
   portrait: Box;
 }
 
+/** Portrait: the controls start this far below the picture and keep the reference layout's proportions; when the room below the picture is shorter than PORTRAIT_EXTENT_PX they shrink to fit. */
+const PORTRAIT_GAP_PX = 12;
+/** Reference y of the topmost portrait button, the menu button's top and the stick zone's top. */
+const PORTRAIT_TOP = 310;
+const PORTRAIT_MENU_DY = 357.5 - PORTRAIT_TOP;
+const PORTRAIT_STICK_DY = 404 - PORTRAIT_TOP;
+/** Reference height from the top row to the bottom of the A button. */
+const PORTRAIT_EXTENT_PX = 734 + 36 - PORTRAIT_TOP;
+
 const circle = (cx: number, cy: number, r: number): Box => ({ x: cx - r, y: cy - r, w: 2 * r, h: 2 * r });
 
 /** Outline buttons laid out like a classic N64 emulator: L over Z at the left, R at the right, Start at the top (left of centre in landscape, clear of the HUD button icons), the C diamond at the right middle, B and A on a diagonal at the bottom right. */
@@ -232,16 +241,33 @@ export class TouchControls {
       els.push([b, el]);
     }
     const portrait = matchMedia('(orientation: portrait)');
+    const rootStyle = document.documentElement.style;
     const place = () => {
       const o: Orientation = portrait.matches ? 'portrait' : 'landscape';
       const v = VIEW[o];
+      let scale = 1;
+      let top = 0;
+      if (o === 'portrait') {
+        const area = cluster.getBoundingClientRect();
+        const picture = document.querySelector('canvas')?.getBoundingClientRect().bottom ?? innerWidth * 0.75;
+        top = Math.max(0, picture + PORTRAIT_GAP_PX - area.top);
+        scale = Math.min(1, (area.height - top) / PORTRAIT_EXTENT_PX);
+        rootStyle.setProperty('--touch-menu-top', `${area.top + top + PORTRAIT_MENU_DY * scale}px`);
+        rootStyle.setProperty('--touch-menu-size', `${44 * scale}px`);
+        rootStyle.setProperty('--touch-stick-top', `${area.top + top + PORTRAIT_STICK_DY * scale}px`);
+      } else {
+        for (const p of ['--touch-menu-top', '--touch-menu-size', '--touch-stick-top']) rootStyle.removeProperty(p);
+      }
       for (const [b, el] of els) {
         const r = b[o];
-        Object.assign(el.style, { left: `${(r.x / v.w) * 100}%`, top: `${(r.y / v.h) * 100}%`, width: `${r.w}px`, height: `${r.h}px` });
+        const px = o === 'portrait' ? `${top + (r.y - PORTRAIT_TOP) * scale}px` : `${(r.y / v.h) * 100}%`;
+        Object.assign(el.style, { left: `${(r.x / v.w) * 100}%`, top: px, width: `${r.w * scale}px`, height: `${r.h * scale}px` });
       }
     };
+    this.layer.append(cluster);
     place();
     portrait.addEventListener('change', place);
-    this.layer.append(cluster);
+    addEventListener('resize', place);
+    requestAnimationFrame(place);
   }
 }
