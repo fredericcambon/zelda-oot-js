@@ -62,9 +62,17 @@ class Page {
 
   /** Presses a digit key and returns the notice the page shows for it. */
   async press(key: string): Promise<string> {
-    await this.eval(`document.getElementById('notice').hidden = true`);
+    // The page hides a notice after 2 s, which a busy page can outlast between two polls, so the notice is recorded when it appears.
+    await this.eval(`(() => {
+      const n = document.getElementById('notice');
+      window.__notice = '';
+      window.__noticeWatch?.disconnect();
+      window.__noticeWatch = new MutationObserver(() => { if (!n.hidden && n.textContent) window.__notice = n.textContent; });
+      window.__noticeWatch.observe(n, { attributes: true, childList: true, characterData: true, subtree: true });
+      n.hidden = true;
+    })()`);
     for (const type of ['keyDown', 'keyUp']) await this.send('Input.dispatchKeyEvent', { type, key, text: key, code: `Digit${key}`, windowsVirtualKeyCode: key.charCodeAt(0) });
-    return waitFor(`a notice after ${key}`, () => this.eval<string>(`(() => { const n = document.getElementById('notice'); return n.hidden ? '' : n.textContent; })()`), 60_000);
+    return waitFor(`a notice after ${key}`, () => this.eval<string>(`window.__notice`), 60_000);
   }
 
   close(): void {
