@@ -24,6 +24,20 @@ The floor for a change to a runtime file or to anything else that reaches an obj
 
 Cold builds are slower elsewhere than here: a fresh checkout that has to fetch Emscripten, or a busy machine, takes several minutes. The cache does nothing for a cold start; a first build on a new machine pays everything once.
 
+## Limits
+
+A build or a test run must not take over the machine, so the code bounds itself; no wrapper is needed.
+
+| Setting | Default | What it bounds |
+| --- | --- | --- |
+| `OOT_JOBS` | `max(2, floor(cores / 3))` (8 on 24 cores) | emcc runs at once: compiles and links share one gate per process (`tools/port/limits.ts`), so builds that run together share the cap |
+| `EMCC_CORES` | 4 | threads Emscripten starts for one compile or link (set in the toolchain environment, `tools/recomp/toolchain.ts`) |
+| `BINARYEN_CORES` | 4 | threads wasm-opt starts during the link |
+
+`EMCC_CORES` and `BINARYEN_CORES` keep a value already set in the environment. `tools/build.mjs`, `npm run port` and the vitest global setup lower their own priority to below normal (`os.setPriority`), which their children inherit; a lower priority set by a wrapper (Idle) is kept.
+
+The test global setup builds the -O2 game, relinks it at -O1, then builds the coverage variant, one after another, serves analyse and recompile from the cache like `npm run port`, and writes the assets once (the coverage build reads them through a junction). `vitest.config.ts` runs at most 6 workers; the suites that boot the whole game or start headless Chrome form a `heavy` project limited to 2.
+
 ## What is cached
 
 Each entry is a directory under `<cache>/<kind>/<key>/` holding the files and an `entry.json` with their sizes and SHA-1 hashes.

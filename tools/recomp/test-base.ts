@@ -1,6 +1,6 @@
 // The one -O2 build of the game that the ROM-gated suites share. global-setup.ts builds it before any test file runs; the
 // suites read it back with loadBase().
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadContext } from '../analyze/context.ts';
@@ -8,7 +8,7 @@ import { analyze } from '../analyze/run.ts';
 import type { Inventory } from '../analyze/types.ts';
 import { classify } from '../assets/classify.ts';
 import { buildManifest, readCartridge, writeAssets } from '../assets/write.ts';
-import { Cache, defaultCacheDir, defaultMaxBytes } from '../port/cache.ts';
+import { Cache, defaultCacheDir, defaultMaxBytes, hashKey, listTree, sourceHash } from '../port/cache.ts';
 import { compileAll, link, runtimeSources, type BuildOptions, type CompiledObject } from '../port/build.ts';
 import { generate } from './generate.ts';
 import { ensureToolchain } from './toolchain.ts';
@@ -40,25 +40,52 @@ function linkVariant(opts: BuildOptions, optimize: string, objects: CompiledObje
 }
 
 /**
- * Analyses and recompiles the game, then compiles and links the -O2 build and the -DOOT_COVERAGE build (for the sweep suite) side
- * by side, each with its assets, so that one link overlaps the other's compiles; the objects of the -O2 build are also linked
- * at -O1 for the cross-build state test. Whatever is up to date or cached is reused.
+ * Analyses and recompiles the game (served from the shared cache when unchanged, like `npm run port`), writes the assets once,
+ * then compiles and links the -O2 build, the -O1 relink of its objects (for the cross-build state test) and the -DOOT_COVERAGE
+ * build (for the sweep suite), one after another so that the machine runs one build at a time.
  */
 export async function buildGames(rom: string, log: (msg: string) => void): Promise<void> {
-  const inventory = await analyze({ romPath: rom, outDir: BASE_DIR, workDir: join(BASE_DIR, 'work'), useGhidra: false });
   const ctx = loadContext(rom);
-  const base = { ...baseOptions(), log };
-  const gen = generate(ctx, inventory, base.cDir);
-  const summary: Summary = { problems: gen.problems, functions: gen.functions, osBindings: gen.osBindings, cFiles: gen.files.filter((n) => n.endsWith('.c')).length };
-  writeFileSync(join(BASE_DIR, 'summary.json'), JSON.stringify(summary));
-  if (gen.problems.length > 0) return;
+  const cache = testCache();
+  const base = { ...baseOptions(), cache, log };
+  const analysisKey = hashKey('analysis', ctx.sha1, sourceHash(['tools/analyze/run.ts'], ['data', 'tools/analyze/ghidra']), 'own-discovery-only');
+  let inventory: Inventory;
+  if (cache.restore('analysis', analysisKey, BASE_DIR)) inventory = JSON.parse(readFileSync(join(BASE_DIR, 'inventory.json'), 'utf8')) as Inventory;
+  else {
+    inventory = await analyze({ romPath: rom, outDir: BASE_DIR, workDir: join(BASE_DIR, 'work'), useGhidra: false });
+    cache.store('analysis', analysisKey, BASE_DIR, ['inventory.json', ...listTree(join(BASE_DIR, 'elf')).map((f) => `elf/${f}`)]);
+  }
+  const generatedKey = hashKey('generated-c', analysisKey, sourceHash(['tools/recomp/generate.ts'], ['data']));
+  rmSync(base.cDir, { recursive: true, force: true });
+  // An entry stored by `npm run port` before the summary fields existed lacks them and is regenerated.
+  const meta = cache.restore('generated-c', generatedKey, base.cDir)?.meta as Summary | undefined;
+  if (meta && typeof meta.osBindings === 'number' && typeof meta.cFiles === 'number') {
+    writeFileSync(join(BASE_DIR, 'summary.json'), JSON.stringify({ problems: [], functions: meta.functions, osBindings: meta.osBindings, cFiles: meta.cFiles } satisfies Summary));
+  } else {
+    rmSync(base.cDir, { recursive: true, force: true });
+    const gen = generate(ctx, inventory, base.cDir);
+    const cFiles = gen.files.filter((n) => n.endsWith('.c')).length;
+    writeFileSync(join(BASE_DIR, 'summary.json'), JSON.stringify({ problems: gen.problems, functions: gen.functions, osBindings: gen.osBindings, cFiles } satisfies Summary));
+    if (gen.problems.length > 0) return;
+    cache.store('generated-c', generatedKey, base.cDir, listTree(base.cDir), { functions: gen.functions, files: gen.files.length, cFiles, osBindings: gen.osBindings });
+  }
+  const assetsDir = join(base.distDir, 'assets');
+  writeAssets(ctx.rom, buildManifest(ctx.sha1, ctx.rom.length, classify(ctx, inventory)), assetsDir);
+
+  const objects = await compileAll(base, runtimeSources());
+  await link(base, objects);
+  await linkVariant(base, '-O1', objects);
+
   const coverage = { ...base, objDir: join(COVERAGE_DIR, 'obj'), distDir: join(COVERAGE_DIR, 'dist'), coverage: true };
-  await Promise.all([base, coverage].map(async (opts) => {
-    const objects = await compileAll(opts, runtimeSources());
-    const extra = opts === base ? [linkVariant(opts, '-O1', objects)] : [];
-    await Promise.all([link(opts, objects), ...extra]);
-    writeAssets(ctx.rom, buildManifest(ctx.sha1, ctx.rom.length, classify(ctx, inventory)), join(opts.distDir, 'assets'));
-  }));
+  const coverageObjects = await compileAll(coverage, runtimeSources());
+  await link(coverage, coverageObjects);
+  shareAssets(assetsDir, join(coverage.distDir, 'assets'));
+}
+
+/** Makes `to` read the assets of `from`, as a junction (no privilege needed on Windows), so that the 1,500 files are written once. */
+function shareAssets(from: string, to: string): void {
+  rmSync(to, { recursive: true, force: true });
+  symlinkSync(from, to, 'junction');
 }
 
 export function loadCoverage(): { moduleUrl: string; dist: string } {

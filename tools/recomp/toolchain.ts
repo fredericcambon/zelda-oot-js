@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { toolThreadEnv } from '../port/limits.ts';
 
 export const repoRoot = resolve(fileURLToPath(import.meta.url), '..', '..', '..');
 
@@ -25,7 +26,7 @@ export function findToolchain(): Toolchain | undefined {
   return {
     python: bundled ?? (process.platform === 'win32' ? 'python' : 'python3'),
     emcc,
-    env: { ...process.env, EM_CONFIG: join(emsdk, '.emscripten') },
+    env: { ...toolThreadEnv(), EM_CONFIG: join(emsdk, '.emscripten') },
   };
 }
 
