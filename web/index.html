@@ -106,7 +106,15 @@
       #touch-left { position: absolute; left: calc(env(safe-area-inset-left, 0px) + 12px); bottom: calc(55% + 12px); transform: scale(var(--touch-scale, 1)); transform-origin: bottom left; }
       #touch-left .touch-button { position: static; }
       #touch-fullscreen { display: none; position: absolute; top: calc(env(safe-area-inset-top, 0px) + 12px); right: calc(env(safe-area-inset-right, 0px) + 64px); width: 44px; height: 44px; padding: 0; font-size: 22px; line-height: 1; color: #fff; background: rgba(0, 0, 0, 0.55); border: 2px solid rgba(255, 255, 255, 0.4); border-radius: 8px; pointer-events: auto; touch-action: manipulation; }
-      @media (orientation: landscape) { #touch-fullscreen { display: block; } }
+      /* Nothing sits on the picture: in portrait the picture is the top 75vw, and Start and the menu go in the dark area below it; in landscape they go in the dark panel at the right. */
+      @media (orientation: portrait) {
+        #touch-top { top: calc(75vw + 8px); }
+        html.touch #menu-button { top: calc(75vw + 8px); }
+      }
+      @media (orientation: landscape) {
+        #touch-fullscreen { display: block; }
+        #touch-top { left: auto; right: calc(env(safe-area-inset-right, 0px) + 116px); transform: scale(var(--touch-scale, 1)); transform-origin: top right; }
+      }
       .touch-button { position: absolute; padding: 0; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.4); background: rgba(255, 255, 255, 0.12); color: rgba(255, 255, 255, 0.85); font: bold 16px system-ui, sans-serif; pointer-events: auto; touch-action: none; }
       .touch-button.down { background: rgba(255, 255, 255, 0.4); }
     </style>
