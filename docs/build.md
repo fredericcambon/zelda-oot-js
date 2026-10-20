@@ -38,7 +38,15 @@ A build or a test run must not take over the machine, so the code bounds itself;
 
 The test global setup builds the -O2 game, relinks it at -O1, then builds the coverage variant, one after another, serves analyse and recompile from the cache like `npm run port`, and writes the assets once (the coverage build reads them through a junction). `vitest.config.ts` runs at most 6 workers; the suites that boot the whole game or start headless Chrome form a `heavy` project limited to 2.
 
+## Shared dependencies
+
+`npm run deps` (`tools/deps.mjs`, plain Node) hashes `package-lock.json` (sha256) and runs `npm ci` once into `~/.zelda-oot-js/deps/<hash>/` (`OOT_DEPS_DIR` overrides), at below-normal priority, under a lock file so two worktrees never install at once. It then makes `<worktree>/node_modules` a directory junction to that folder's `node_modules`; a missing or empty folder is replaced, a real folder with content is left alone and reported. Hash folders not used for 14 days are removed. Nothing may write into the shared folder: vite (`cacheDir`) and ESLint keep their caches in the worktree's `.cache/`, and `vite.config.ts` lets the dev server read the junction's real path.
+
+Measured here at Idle priority (3455 files, 96 MB in `node_modules`): `npm ci` in a fresh folder 8.5 s and 96 MB written; the first `npm run deps` for a lock file costs the same once; a fresh worktree afterwards takes 0.1 s and writes one junction.
+
 ## What is cached
+
+Restores place files as hard links to the entry (a copy across volumes), so they write no file contents; a file whose size and modification time match the manifest is not hashed again. Anything that rewrites a restored file must replace it (`replaceFile` in `cache.ts`, or delete it first), never write it in place, or the entry would change.
 
 Each entry is a directory under `<cache>/<kind>/<key>/` holding the files and an `entry.json` with their sizes and SHA-1 hashes.
 
@@ -110,4 +118,4 @@ Notes:
 - The intro states are in `<cache>/intro-state/`, one file per build (the hash of `oot.wasm`, the controller script and the frames), made by the first suite that asks while the others wait on a lock file. They hold ROM-derived data and stay out of the repository. The sweep (`fromIntroState`) and the smooth-motion test load them too.
 - `gfx/smooth` records 170 frames, not 120: the game draws 20 frames per second, so 120 frames give about 40 comparisons and the kept `comparisons > 50` assert needs about 50.
 - The wall-clock asserts of the sweep (frames per second) and the port (seconds) only log their number now.
-- vitest's per-file timing cache is in `<cache>/vitest/`, so a fresh worktree starts its slowest files first. `npm run lint` keeps an ESLint cache in `node_modules/.cache/eslint/`, and `npm run build` no longer runs `tsc` (lint does).
+- vitest's per-file timing cache is in `<cache>/vitest/`, so a fresh worktree starts its slowest files first. `npm run lint` keeps an ESLint cache in `.cache/eslint/` (vite's cache is in `.cache/vite/`; both per worktree and git-ignored), and `npm run build` no longer runs `tsc` (lint does).

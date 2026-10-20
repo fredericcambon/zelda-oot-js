@@ -1,7 +1,8 @@
 // Recompiles every function of the inventory into C: one file per image, a shared header, a dispatch
 // table per image and the weak bindings through which the runtime replaces the OS routines.
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { replaceFile } from '../port/cache.ts';
 import type { RomContext } from '../analyze/context.ts';
 import { buildSpecs, type ImageSpec } from '../analyze/image.ts';
 import { decode } from '../analyze/mips.ts';
@@ -71,7 +72,7 @@ export function generate(ctx: RomContext, inv: Inventory, outDir: string): Gener
   // Unchanged files keep their modification time so that the C compiler can skip them.
   const emit = (name: string, text: string) => {
     const path = join(outDir, name);
-    if (!existsSync(path) || readFileSync(path, 'utf8') !== text) writeFileSync(path, text);
+    if (!existsSync(path) || readFileSync(path, 'utf8') !== text) replaceFile(path, text);
     files.push(name);
   };
 

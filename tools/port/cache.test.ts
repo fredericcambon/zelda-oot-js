@@ -1,9 +1,9 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { linkKey, planObjects, type BuildOptions } from './build.ts';
-import { Cache, defaultMaxBytes, hashKey, sourceHash } from './cache.ts';
+import { Cache, defaultMaxBytes, hashKey, replaceFile, sourceHash } from './cache.ts';
 
 let root: string;
 beforeEach(() => {
@@ -125,6 +125,39 @@ describe('Cache', () => {
     expect(readFileSync(join(root, 'dest/a/x.bin'), 'utf8')).toBe('hello');
     expect(readFileSync(join(root, 'dest/y.bin'), 'utf8')).toBe('world');
     expect(c.restore('kind', 'other', join(root, 'dest2'))).toBeUndefined();
+  });
+
+  it('restores by hard link and leaves the entry intact when the restored file is replaced', () => {
+    put('src/x.bin', 'data');
+    const c = cache();
+    c.store('kind', 'k', join(root, 'src'), ['x.bin']);
+    c.restore('kind', 'k', join(root, 'dest'));
+    expect(statSync(join(root, 'dest/x.bin')).ino).toBe(statSync(join(root, 'cache/kind/k/x.bin')).ino);
+    replaceFile(join(root, 'dest/x.bin'), 'changed');
+    expect(readFileSync(join(root, 'dest/x.bin'), 'utf8')).toBe('changed');
+    expect(readFileSync(join(root, 'cache/kind/k/x.bin'), 'utf8')).toBe('data');
+    expect(c.restore('kind', 'k', join(root, 'dest2'))).toBeDefined();
+    expect(readFileSync(join(root, 'dest2/x.bin'), 'utf8')).toBe('data');
+  });
+
+  it('restores over an existing file without touching what it linked to', () => {
+    put('src/x.bin', 'data');
+    const c = cache();
+    c.store('kind', 'k', join(root, 'src'), ['x.bin']);
+    c.restore('kind', 'k', join(root, 'dest'));
+    put('dest2/x.bin', 'old');
+    expect(c.restore('kind', 'k', join(root, 'dest2'))).toBeDefined();
+    expect(readFileSync(join(root, 'dest2/x.bin'), 'utf8')).toBe('data');
+  });
+
+  it('rehashes a file whose time differs from the stored one', () => {
+    put('src/x.bin', 'data');
+    const c = cache();
+    c.store('kind', 'k', join(root, 'src'), ['x.bin']);
+    const entry = join(root, 'cache/kind/k/x.bin');
+    writeFileSync(entry, 'DATA');
+    utimesSync(entry, 1_600_000_000, 1_600_000_000);
+    expect(c.restore('kind', 'k', join(root, 'dest'))).toBeUndefined();
   });
 
   it('writes an entry under its final name in one step and leaves no temporary files', () => {

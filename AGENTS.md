@@ -34,6 +34,8 @@ Automated runs must be silent: browsers launched by tools or tests use `--mute-a
 
 Workers run on the user's own computer, alongside each other and the user's apps. Never take over its resources:
 - Run at most one heavy process at a time (a game build, wasm-opt, a scene sweep, a headless browser running the game). Never fan out parallel sweeps or builds.
+- Dependencies come from `npm run deps` (`tools/deps.mjs`: one shared install per `package-lock.json`, junctioned as `node_modules`); never run `npm ci` or `npm install` in a worktree.
+- Deploys run from the user's main checkout (`C:/Users/cambo/Documents/Projects/zelda-oot-js`, after `git pull` on main and `npm run deps`), never from a task worktree.
 - Never `mkdtemp` a browser profile directory: take it from `tools/lib/chrome-profile.ts` (`createChromeProfile`, then `removeChromeProfile` after Chrome exits), which deletes it reliably and sweeps old leftovers from TEMP.
 - Never start vite or any server on port 5173 (the Overseer app's UI uses it): always pass an explicit port (`vite.config.ts` defaults to 5317, or `$PORT`).
 - Close each headless browser or game instance as soon as its result is captured, and stop every process you started before reporting done.

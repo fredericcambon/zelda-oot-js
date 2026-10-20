@@ -2,7 +2,7 @@
 // `entry.json` that lists their sizes and hashes; it appears under its final name by one rename, so readers never see a
 // half-written entry. Any entry that cannot be read back exactly is a miss, never an error.
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 
@@ -71,6 +71,8 @@ interface EntryFile {
   path: string;
   size: number;
   sha1: string;
+  /** Modification time of the stored file; a restore that finds the same size and time does not hash the file again. */
+  mtimeMs?: number;
 }
 
 interface EntryManifest {
@@ -111,40 +113,55 @@ export class Cache {
   }
 
   /**
-   * Copies the entry's files below `dest`. Every size and hash is checked, and `accept` (when given) may veto a file's
-   * bytes, before anything is written. Returns undefined, and drops the entry, when it is missing, unreadable, does not
-   * match its manifest or is vetoed. A failure to write below `dest` is a miss too, but leaves the sound entry alone.
+   * Puts the entry's files below `dest`, as hard links to the entry's files (a copy when the link cannot be made, for
+   * example across volumes). A restored file shares its bytes with the entry, so whatever later rewrites it must replace
+   * it (write a temporary file, then rename), never write it in place. Every size is checked, and the hash too unless the
+   * file still has the size and modification time recorded when it was stored; `accept` (when given) may veto a file's
+   * bytes. All of it is checked before anything is placed. Returns undefined, and drops the entry, when it is missing,
+   * unreadable, does not match its manifest or is vetoed. A failure to write below `dest` is a miss too, but leaves the
+   * sound entry alone.
    */
   restore(kind: string, key: string, dest: string, accept?: (path: string, data: Buffer) => boolean): CacheHit | undefined {
     const dir = this.entryDir(kind, key);
     if (!existsSync(dir)) return undefined;
     let manifest: EntryManifest;
-    const loaded: { path: string; data: Buffer }[] = [];
     try {
       manifest = JSON.parse(readFileSync(join(dir, MANIFEST), 'utf8')) as EntryManifest;
       if (manifest.version !== 1 || !Array.isArray(manifest.files)) throw new Error('unknown manifest');
       for (const f of manifest.files) {
-        const data = readFileSync(join(dir, f.path));
-        if (data.length !== f.size || sha1(data) !== f.sha1) throw new Error(`${f.path} does not match its manifest`);
+        const source = join(dir, f.path);
+        const st = statSync(source);
+        if (st.size !== f.size) throw new Error(`${f.path} does not match its manifest`);
+        const unchanged = f.mtimeMs !== undefined && st.mtimeMs === f.mtimeMs;
+        if (unchanged && !accept) continue;
+        const data = readFileSync(source);
+        if (data.length !== f.size || (!unchanged && sha1(data) !== f.sha1)) throw new Error(`${f.path} does not match its manifest`);
         if (accept && !accept(f.path, data)) throw new Error(`${f.path} is not acceptable`);
-        loaded.push({ path: f.path, data });
       }
     } catch {
       this.drop(dir);
       return undefined;
     }
+    const placed: string[] = [];
     try {
-      for (const { path, data } of loaded) {
+      for (const { path } of manifest.files) {
         const target = join(dest, path);
         mkdirSync(dirname(target), { recursive: true });
-        const part = `${target}.part-${process.pid}`;
-        writeFileSync(part, data);
-        renameSync(part, target);
+        rmSync(target, { force: true });
+        placed.push(target);
+        try {
+          linkSync(join(dir, path), target);
+        } catch {
+          const part = `${target}.part-${process.pid}`;
+          copyFileSync(join(dir, path), part);
+          renameSync(part, target);
+        }
       }
       const now = new Date();
       utimesSync(join(dir, MANIFEST), now, now);
     } catch {
-      // The destination is busy or unwritable (another process holds the file); the entry itself is sound.
+      // The destination is busy or unwritable (another process holds the file); the entry itself is sound. Nothing half-restored stays behind.
+      for (const target of placed) rmSync(target, { force: true });
       return undefined;
     }
     return { meta: manifest.meta };
@@ -161,7 +178,7 @@ export class Cache {
         const target = join(tmp, path);
         mkdirSync(dirname(target), { recursive: true });
         writeFileSync(target, data);
-        list.push({ path, size: data.length, sha1: sha1(data) });
+        list.push({ path, size: data.length, sha1: sha1(data), mtimeMs: statSync(target).mtimeMs });
       }
       const manifest: EntryManifest = { version: 1, files: list, bytes: list.reduce((n, f) => n + f.size, 0), meta };
       writeFileSync(join(tmp, MANIFEST), JSON.stringify(manifest));
@@ -220,4 +237,11 @@ export class Cache {
 /** Every file below `root`, as paths relative to it with forward slashes, sorted. */
 export function listTree(root: string): string[] {
   return walk(resolve(root)).map((f) => relative(resolve(root), f).replaceAll('\\', '/')).sort();
+}
+
+/** Writes a file by replacing it, so a hard link to its old bytes (a restored cache file) is never modified. */
+export function replaceFile(path: string, data: Uint8Array | string): void {
+  const part = `${path}.part-${process.pid}`;
+  writeFileSync(part, data);
+  renameSync(part, path);
 }
