@@ -15,31 +15,37 @@ export function stickFromOffset(dx: number, dy: number, radius = STICK_RADIUS_PX
   return { x: 0 + Math.round(Math.cos(angle) * scaled), y: 0 + Math.round(Math.sin(angle) * scaled) };
 }
 
+/** A button's rectangle in reference CSS pixels: left, top, width and height inside a view of `VIEW` size. */
+export interface Box { x: number; y: number; w: number; h: number }
+
+export type Orientation = 'landscape' | 'portrait';
+
+/** Reference viewport per orientation; positions are scaled to the real viewport by percentage, sizes stay in pixels. */
+export const VIEW: Record<Orientation, { w: number; h: number }> = { landscape: { w: 844, h: 390 }, portrait: { w: 390, h: 844 } };
+
 export interface TouchButton {
   id: string;
   label: string;
   bit: number;
-  /** Left, top and size in CSS pixels inside the button cluster. */
-  x: number;
-  y: number;
-  size: number;
+  shape: 'circle' | 'shoulder-left' | 'shoulder-right';
+  landscape: Box;
+  portrait: Box;
 }
 
-export const CLUSTER_WIDTH = 284;
-export const CLUSTER_HEIGHT = 262;
+const circle = (cx: number, cy: number, r: number): Box => ({ x: cx - r, y: cy - r, w: 2 * r, h: 2 * r });
 
-/** Buttons of the right-hand cluster: C diamond top right, A and B below it, L, Z and Start at the left, R beside L. Every size is at least 48. */
+/** Outline buttons laid out like a classic N64 emulator: L over Z at the left, R at the right, Start at the top (left of centre in landscape, clear of the HUD button icons), the C diamond at the right middle, B and A on a diagonal at the bottom right. */
 export const TOUCH_BUTTONS: readonly TouchButton[] = [
-  { id: 'cup', label: 'C▲', bit: Button.CUp, x: 174, y: 0, size: 50 },
-  { id: 'cleft', label: 'C◀', bit: Button.CLeft, x: 122, y: 50, size: 50 },
-  { id: 'cright', label: 'C▶', bit: Button.CRight, x: 226, y: 50, size: 50 },
-  { id: 'cdown', label: 'C▼', bit: Button.CDown, x: 174, y: 100, size: 50 },
-  { id: 'a', label: 'A', bit: Button.A, x: 200, y: 186, size: 68 },
-  { id: 'b', label: 'B', bit: Button.B, x: 132, y: 196, size: 56 },
-  { id: 'r', label: 'R', bit: Button.R, x: 64, y: 0, size: 52 },
-  { id: 'z', label: 'Z', bit: Button.Z, x: 4, y: 58, size: 52 },
-  { id: 'start', label: 'Start', bit: Button.Start, x: 4, y: 130, size: 56 },
-  { id: 'l', label: 'L', bit: Button.L, x: 4, y: 0, size: 52 },
+  { id: 'l', label: 'L', bit: Button.L, shape: 'shoulder-left', landscape: { x: 14, y: 14, w: 136, h: 38 }, portrait: { x: 14, y: 310, w: 116, h: 34 } },
+  { id: 'z', label: 'Z', bit: Button.Z, shape: 'shoulder-left', landscape: { x: 14, y: 64, w: 136, h: 38 }, portrait: { x: 14, y: 354, w: 116, h: 34 } },
+  { id: 'r', label: 'R', bit: Button.R, shape: 'shoulder-right', landscape: { x: 694, y: 14, w: 136, h: 38 }, portrait: { x: 260, y: 310, w: 116, h: 34 } },
+  { id: 'start', label: 'Start', bit: Button.Start, shape: 'circle', landscape: circle(395, 30, 18), portrait: circle(195, 327, 18) },
+  { id: 'cup', label: '▲', bit: Button.CUp, shape: 'circle', landscape: circle(760, 128, 22), portrait: circle(318, 454, 23) },
+  { id: 'cleft', label: '◀', bit: Button.CLeft, shape: 'circle', landscape: circle(716, 172, 22), portrait: circle(272, 500, 23) },
+  { id: 'cright', label: '▶', bit: Button.CRight, shape: 'circle', landscape: circle(804, 172, 22), portrait: circle(364, 500, 23) },
+  { id: 'cdown', label: '▼', bit: Button.CDown, shape: 'circle', landscape: circle(760, 216, 22), portrait: circle(318, 546, 23) },
+  { id: 'b', label: 'B', bit: Button.B, shape: 'circle', landscape: circle(718, 300, 30), portrait: circle(262, 672, 32) },
+  { id: 'a', label: 'A', bit: Button.A, shape: 'circle', landscape: circle(788, 346, 32), portrait: circle(334, 734, 36) },
 ];
 
 /** Pointer bookkeeping for the stick and the buttons, independent of the DOM. */
@@ -198,17 +204,15 @@ export class TouchControls {
   private buildButtons(): void {
     const cluster = document.createElement('div');
     cluster.id = 'touch-buttons';
-    cluster.style.width = `${CLUSTER_WIDTH}px`;
-    cluster.style.height = `${CLUSTER_HEIGHT}px`;
+    const els: Array<[TouchButton, HTMLElement]> = [];
     for (const b of TOUCH_BUTTONS) {
       const el = document.createElement('button');
       el.type = 'button';
       el.tabIndex = -1;
       el.id = `touch-${b.id}`;
-      el.className = 'touch-button';
+      el.className = `touch-button ${b.shape}`;
       el.textContent = b.label;
       el.dataset.bit = String(b.bit);
-      Object.assign(el.style, { left: `${b.x}px`, top: `${b.y}px`, width: `${b.size}px`, height: `${b.size}px` });
       el.addEventListener('pointerdown', (e) => {
         e.preventDefault();
         el.setPointerCapture(e.pointerId);
@@ -222,7 +226,19 @@ export class TouchControls {
       el.addEventListener('pointerup', end);
       el.addEventListener('pointercancel', end);
       cluster.append(el);
+      els.push([b, el]);
     }
+    const portrait = matchMedia('(orientation: portrait)');
+    const place = () => {
+      const o: Orientation = portrait.matches ? 'portrait' : 'landscape';
+      const v = VIEW[o];
+      for (const [b, el] of els) {
+        const r = b[o];
+        Object.assign(el.style, { left: `${(r.x / v.w) * 100}%`, top: `${(r.y / v.h) * 100}%`, width: `${r.w}px`, height: `${r.h}px` });
+      }
+    };
+    place();
+    portrait.addEventListener('change', place);
     this.layer.append(cluster);
   }
 }
