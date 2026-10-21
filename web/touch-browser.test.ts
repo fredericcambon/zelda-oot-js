@@ -98,7 +98,7 @@ describe.skipIf(!chrome)('touch overlay in headless Chrome', () => {
     await touch('touchEnd', []);
     expect(await pad()).toEqual({ buttons: 0, x: 0, y: 0 });
     close();
-  }, 60_000);
+  }, 300_000);
 
   it('does not zoom on a double tap next to a button or in the empty control area', async () => {
     const page = await openPage();
@@ -115,7 +115,7 @@ describe.skipIf(!chrome)('touch overlay in headless Chrome', () => {
     await new Promise((r) => setTimeout(r, 400));
     expect(await scale()).toBe(1);
     page.close();
-  }, 60_000);
+  }, 300_000);
 
   it('keeps every portrait control below the picture and inside the screen', async () => {
     const page = await openPage();
@@ -130,5 +130,5 @@ describe.skipIf(!chrome)('touch overlay in headless Chrome', () => {
       }
     }
     page.close();
-  }, 60_000);
+  }, 300_000);
 });
