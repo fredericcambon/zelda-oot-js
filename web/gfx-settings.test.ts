@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { defaultSettings, MAX_SCALE, parseSettings, renderScale } from './gfx-settings.ts';
+import { defaultSettings, MAX_SCALE, parseSettings, renderScale, type GfxSettings } from './gfx-settings.ts';
+
+/** The settings as older versions stored them: without `maxScale`. */
+const savedBeforeMaxScale = (settings: GfxSettings): Record<string, unknown> => Object.fromEntries(Object.entries(settings).filter(([key]) => key !== 'maxScale'));
 
 describe('graphics settings', () => {
   it('falls back to the defaults for missing, broken or invalid stored values', () => {
@@ -26,7 +29,7 @@ describe('graphics settings', () => {
   });
 
   it('moves phones that kept the old defaults to the new ones and keeps their own choices', () => {
-    const { maxScale: _unused, ...old } = { ...defaultSettings(false), scaleCap: 2, anisotropy: 2 };
+    const old = savedBeforeMaxScale({ ...defaultSettings(false), scaleCap: 2, anisotropy: 2 });
     expect(parseSettings(JSON.stringify(old), true)).toEqual(defaultSettings(true));
     expect(parseSettings(JSON.stringify({ ...old, bloom: false }), true)).toEqual({ ...old, bloom: false, maxScale: 0 });
     expect(parseSettings(JSON.stringify(old), false)).toEqual({ ...old, maxScale: 0 });
@@ -50,7 +53,7 @@ describe('graphics settings', () => {
   });
 
   it('gives settings saved before the cap existed the new cap, unless the user chose a ratio cap', () => {
-    const { maxScale: _unused, ...old } = defaultSettings(false);
+    const old = savedBeforeMaxScale(defaultSettings(false));
     expect(parseSettings(JSON.stringify(old), false).maxScale).toBe(4.5);
     expect(parseSettings(JSON.stringify({ ...old, scaleCap: 3 }), false).maxScale).toBe(0);
   });
