@@ -21,6 +21,8 @@ export interface GfxSettings {
   msaa: boolean;
   /** Largest device pixel ratio the 3D image is rendered at; 0 means no cap. */
   scaleCap: number;
+  /** Largest size of the 3D image as a multiple of 320x240, whatever the device pixel ratio; 0 means only `MAX_SCALE`. */
+  maxScale: number;
   /** Mip levels for 3D textures. */
   mipmaps: boolean;
   /** Taps along the long axis of a texture's footprint on surfaces seen at a grazing angle (1 off, up to 8). */
@@ -57,12 +59,15 @@ export const STORAGE_KEY = 'oot.gfx';
 export const MOBILE_SCALE_CAP = 2;
 /** The 3D image is at most this many times 320x240 (a 2560 pixel wide canvas). */
 export const MAX_SCALE = 8;
+/** The desktop default for `maxScale`: 1440x1080, no taller than 1080 lines. */
+export const DESKTOP_MAX_SCALE = 4.5;
 
 /** The desktop defaults; phones start from them with the costly effects off. */
 const baseSettings = (): GfxSettings => ({
   filter: 'n64',
   msaa: true,
   scaleCap: 0,
+  maxScale: DESKTOP_MAX_SCALE,
   mipmaps: true,
   anisotropy: 4,
   cutout: 'smooth',
@@ -81,10 +86,10 @@ const baseSettings = (): GfxSettings => ({
 });
 
 /** What phones defaulted to before the costly effects were turned off there: stored settings equal to this were never changed by the user. */
-const previousMobileSettings = (): GfxSettings => ({ ...baseSettings(), scaleCap: MOBILE_SCALE_CAP, anisotropy: 2 });
+const previousMobileSettings = (): GfxSettings => ({ ...baseSettings(), scaleCap: MOBILE_SCALE_CAP, maxScale: 0, anisotropy: 2 });
 
 export const defaultSettings = (mobile: boolean): GfxSettings =>
-  mobile ? { ...baseSettings(), scaleCap: MOBILE_SCALE_CAP, msaa: false, anisotropy: 1, ao: false, bloom: false, sharpen: false } : baseSettings();
+  mobile ? { ...baseSettings(), scaleCap: MOBILE_SCALE_CAP, maxScale: 0, msaa: false, anisotropy: 1, ao: false, bloom: false, sharpen: false } : baseSettings();
 
 export const isMobile = (): boolean => typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
 
@@ -106,6 +111,9 @@ export function parseSettings(text: string | null, mobile: boolean): GfxSettings
   if (typeof raw.msaa === 'boolean') settings.msaa = raw.msaa;
   if (typeof raw.mipmaps === 'boolean') settings.mipmaps = raw.mipmaps;
   if (typeof raw.scaleCap === 'number' && Number.isFinite(raw.scaleCap) && raw.scaleCap >= 0) settings.scaleCap = raw.scaleCap;
+  if (typeof raw.maxScale === 'number' && Number.isFinite(raw.maxScale) && raw.maxScale >= 0) settings.maxScale = raw.maxScale;
+  // Settings saved before `maxScale` existed: a device pixel ratio cap chosen by the user stays the only cap.
+  else if (raw.maxScale === undefined && settings.scaleCap > 0) settings.maxScale = 0;
   if (typeof raw.anisotropy === 'number' && Number.isInteger(raw.anisotropy) && raw.anisotropy >= 1 && raw.anisotropy <= 8) settings.anisotropy = raw.anisotropy;
   if (typeof raw.pointLights === 'boolean') settings.pointLights = raw.pointLights;
   if (isStrength(raw.pointLightStrength)) settings.pointLightStrength = raw.pointLightStrength;
@@ -141,9 +149,9 @@ export function saveSettings(settings: GfxSettings): boolean {
   }
 }
 
-/** The 3D image's size as a multiple of 320x240: the canvas in device pixels, with the device pixel ratio capped by `scaleCap`. */
+/** The 3D image's size as a multiple of 320x240: the canvas in device pixels, with the device pixel ratio capped by `scaleCap`, and the result by `maxScale`. */
 export function renderScale(cssWidth: number, devicePixelRatio: number, settings: GfxSettings): number {
   const ratio = settings.scaleCap > 0 ? Math.min(devicePixelRatio, settings.scaleCap) : devicePixelRatio;
   const scale = (cssWidth * ratio) / 320;
-  return Math.min(MAX_SCALE, Math.max(1, Number.isFinite(scale) ? scale : 1));
+  return Math.min(settings.maxScale > 0 ? Math.min(MAX_SCALE, settings.maxScale) : MAX_SCALE, Math.max(1, Number.isFinite(scale) ? scale : 1));
 }
