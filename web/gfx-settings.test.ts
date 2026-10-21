@@ -9,7 +9,7 @@ describe('graphics settings', () => {
   });
 
   it('keeps valid stored values', () => {
-    const stored = { filter: 'sharp', msaa: false, scaleCap: 1.5, mipmaps: false, anisotropy: 8, cutout: 'hard', lightingMode: 'pixel', pointLights: true, pointLightStrength: 80, ao: false, aoStrength: 65, bloom: false, bloomStrength: 55, bloomThreshold: 70, bloomKnee: 0, bloomRadius: 50, sharpen: false, sharpenStrength: 0 };
+    const stored = { filter: 'sharp', msaa: false, scaleCap: 1.5, maxScale: 6, mipmaps: false, anisotropy: 8, cutout: 'hard', lightingMode: 'pixel', pointLights: true, pointLightStrength: 80, ao: false, aoStrength: 65, bloom: false, bloomStrength: 55, bloomThreshold: 70, bloomKnee: 0, bloomRadius: 50, sharpen: false, sharpenStrength: 0 };
     expect(parseSettings(JSON.stringify(stored), false)).toEqual(stored);
   });
 
@@ -26,10 +26,10 @@ describe('graphics settings', () => {
   });
 
   it('moves phones that kept the old defaults to the new ones and keeps their own choices', () => {
-    const old = { ...defaultSettings(false), scaleCap: 2, anisotropy: 2 };
+    const { maxScale: _unused, ...old } = { ...defaultSettings(false), scaleCap: 2, anisotropy: 2 };
     expect(parseSettings(JSON.stringify(old), true)).toEqual(defaultSettings(true));
-    expect(parseSettings(JSON.stringify({ ...old, bloom: false }), true)).toEqual({ ...old, bloom: false });
-    expect(parseSettings(JSON.stringify(old), false)).toEqual({ ...old, scaleCap: 2, anisotropy: 2 });
+    expect(parseSettings(JSON.stringify({ ...old, bloom: false }), true)).toEqual({ ...old, bloom: false, maxScale: 0 });
+    expect(parseSettings(JSON.stringify(old), false)).toEqual({ ...old, maxScale: 0 });
   });
 
   it('renders at the canvas size in device pixels', () => {
@@ -37,12 +37,27 @@ describe('graphics settings', () => {
     expect(renderScale(960, 1, desktop)).toBe(3);
     expect(renderScale(960, 1.5, desktop)).toBe(4.5);
     expect(renderScale(960, 3, defaultSettings(true))).toBe(6);
-    expect(renderScale(960, 3, { ...desktop, scaleCap: 2 })).toBe(6);
+    expect(renderScale(960, 3, { ...desktop, scaleCap: 2, maxScale: 0 })).toBe(6);
+  });
+
+  it('caps the desktop image at 1080 lines whatever the device pixel ratio', () => {
+    const desktop = defaultSettings(false);
+    expect(desktop.maxScale).toBe(4.5);
+    expect(renderScale(1470, 2, desktop)).toBe(4.5);
+    expect(renderScale(1280, 1, desktop)).toBe(4);
+    expect(renderScale(1470, 2, { ...desktop, maxScale: 8 })).toBe(8);
+    expect(defaultSettings(true).maxScale).toBe(0);
+  });
+
+  it('gives settings saved before the cap existed the new cap, unless the user chose a ratio cap', () => {
+    const { maxScale: _unused, ...old } = defaultSettings(false);
+    expect(parseSettings(JSON.stringify(old), false).maxScale).toBe(4.5);
+    expect(parseSettings(JSON.stringify({ ...old, scaleCap: 3 }), false).maxScale).toBe(0);
   });
 
   it('stays between native size and the largest scale', () => {
     expect(renderScale(100, 1, defaultSettings(false))).toBe(1);
-    expect(renderScale(8000, 2, defaultSettings(false))).toBe(MAX_SCALE);
+    expect(renderScale(8000, 2, { ...defaultSettings(false), maxScale: 0 })).toBe(MAX_SCALE);
     expect(renderScale(NaN, 1, defaultSettings(false))).toBe(1);
   });
 });
