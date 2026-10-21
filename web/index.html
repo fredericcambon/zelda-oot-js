@@ -27,7 +27,7 @@
       #status.error { color: #f88; }
 
       /* The panel: a strip on the right on a desktop that opens over the picture, a sheet behind the menu button on touch devices. */
-      #dock { position: absolute; top: 0; right: 0; bottom: 0; z-index: 4; width: var(--dock-width, 360px); display: flex; background: rgba(24, 24, 24, 0.96); border-left: 1px solid #333; }
+      #dock { position: absolute; top: 0; right: 0; bottom: 0; z-index: 4; box-sizing: border-box; width: var(--dock-width, 360px); display: flex; background: rgba(24, 24, 24, 0.96); border-left: 1px solid #333; }
       #dock.folded { width: 40px; }
       #dock-resizer { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; touch-action: none; z-index: 1; }
       #dock-resizer:hover { background: rgba(255, 255, 255, 0.12); }
