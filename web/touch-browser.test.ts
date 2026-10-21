@@ -1,5 +1,5 @@
 // Drives the overlay in headless Chrome with emulated touch events. Skipped when no Chrome is found (set CHROME_PATH to point at one).
-import { spawn, type ChildProcess } from 'node:child_process';
+import { type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

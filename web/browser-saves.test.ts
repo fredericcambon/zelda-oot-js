@@ -1,6 +1,6 @@
 // Keys 5, 6 and 7 in the real page: headless Chrome against the dev server, with and without the disk saves endpoint, at
-// both video rates. Needs the built game and its assets in dist/ (`npm run port`) and Chrome (CHROME_PATH or a usual place).
-import { type ChildProcess, spawn } from 'node:child_process';
+// both video rates. Needs OOT_ROM, the built game and its assets in dist/ (`npm run port`) and Chrome (CHROME_PATH or a usual place).
+import { type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -11,7 +11,7 @@ import { createChromeProfile, removeChromeProfile, removeWithRetry , spawnChrome
 import { CHROME_SILENT_FLAGS } from '../tools/port/cdp.ts';
 
 const CHROME = [process.env.CHROME_PATH, 'C:/Program Files/Google/Chrome/Application/chrome.exe', '/usr/bin/google-chrome', '/usr/bin/chromium'].find((p) => p && existsSync(p));
-const built = existsSync(resolve('dist/oot.wasm')) && existsSync(resolve('dist/assets/manifest.json'));
+const built = !!process.env.OOT_ROM && existsSync(resolve('dist/oot.wasm')) && existsSync(resolve('dist/assets/manifest.json'));
 
 type Reply = { id?: number; method?: string; params?: Record<string, unknown>; result?: unknown; error?: { message: string } };
 
