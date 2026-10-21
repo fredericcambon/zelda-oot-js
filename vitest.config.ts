@@ -35,8 +35,8 @@ export default defineConfig({
     maxWorkers: 6,
     projects: [
       // The projects do not inherit the root's options: the global setup, which builds the game, must run once, not once per project.
-      { test: { ...common, name: 'light', include: ['tools/**/*.test.ts', 'web/**/*.test.ts'], exclude: HEAVY, maxWorkers: 6, globalSetup: ['tools/recomp/global-setup.ts'] } },
-      { test: { ...common, name: 'heavy', include: HEAVY, maxWorkers: 2 } },
+      { test: { ...common, name: 'light', sequence: { groupOrder: 1 }, include: ['tools/**/*.test.ts', 'web/**/*.test.ts'], exclude: HEAVY, maxWorkers: 6, globalSetup: ['tools/recomp/global-setup.ts'] } },
+      { test: { ...common, name: 'heavy', sequence: { groupOrder: 2 }, include: HEAVY, maxWorkers: 2 } },
     ],
   },
 });
