@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createServer as createViteServer } from 'vite';
 import { describe, expect, it } from 'vitest';
-import { createChromeProfile, removeChromeProfile, removeWithRetry } from '../tools/lib/chrome-profile.ts';
+import { createChromeProfile, removeChromeProfile, removeWithRetry , spawnChrome } from '../tools/lib/chrome-profile.ts';
 import { CHROME_SILENT_FLAGS } from '../tools/port/cdp.ts';
 
 const CHROME = [process.env.CHROME_PATH, 'C:/Program Files/Google/Chrome/Application/chrome.exe', '/usr/bin/google-chrome', '/usr/bin/chromium'].find((p) => p && existsSync(p));
@@ -100,7 +100,7 @@ describe.skipIf(!CHROME || !built)('save states in the page', () => {
         const vite = await createViteServer({ configFile: resolve('vite.config.ts'), server: { port: 0, strictPort: true, host: '127.0.0.1' }, logLevel: 'silent' });
         await vite.listen();
         const debugPort = 9300 + Math.floor(Math.random() * 500);
-        const chrome: ChildProcess = spawn(CHROME!, ['--headless=new', ...CHROME_SILENT_FLAGS, `--remote-debugging-port=${debugPort}`, `--user-data-dir=${profile}`, '--no-first-run', '--enable-unsafe-swiftshader', '--use-angle=swiftshader', 'about:blank'], { stdio: 'ignore' });
+        const chrome: ChildProcess = spawnChrome(CHROME!, ['--headless=new', ...CHROME_SILENT_FLAGS, `--remote-debugging-port=${debugPort}`, `--user-data-dir=${profile}`, '--no-first-run', '--enable-unsafe-swiftshader', '--use-angle=swiftshader', 'about:blank'], { stdio: 'ignore' });
         let page: Page | undefined;
         try {
           await waitFor('chrome', () => fetch(`http://127.0.0.1:${debugPort}/json/version`).then((r) => r.ok), 30_000);

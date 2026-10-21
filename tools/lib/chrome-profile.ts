@@ -1,8 +1,8 @@
 // Chrome profile directories for the browser tools and tests. Every launch gets its profile here, so it is removed
 // after Chrome has exited (Windows refuses to delete files a running Chrome holds) and leftovers of earlier runs are swept.
-import { spawnSync, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { constants, getPriority, setPriority, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 export const PROFILE_ROOT = join(tmpdir(), 'oot-chrome-profiles');
@@ -109,4 +109,16 @@ export async function removeChromeProfile(dir: string, chrome?: ChildProcess): P
     await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 10_000))]);
   }
   return removeWithRetry(dir, { tries: 6, delayMs: 200 });
+}
+
+/** Starts Chrome at Idle priority on Windows. A child process inherits its parent's priority class, so this process runs at Idle only for the spawn call and Chrome's own children inherit it from Chrome. */
+export function spawnChrome(exe: string, args: string[], options: SpawnOptions = { stdio: 'ignore' }): ChildProcess {
+  if (process.platform !== 'win32') return spawn(exe, args, options);
+  const before = getPriority(0);
+  try {
+    setPriority(0, constants.priority.PRIORITY_LOW);
+    return spawn(exe, args, options);
+  } finally {
+    setPriority(0, before);
+  }
 }

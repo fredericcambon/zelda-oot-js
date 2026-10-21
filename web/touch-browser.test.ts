@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { buildSync } from 'esbuild';
 import { afterAll, describe, expect, it } from 'vitest';
-import { createChromeProfile, removeChromeProfile } from '../tools/lib/chrome-profile.ts';
+import { createChromeProfile, removeChromeProfile , spawnChrome } from '../tools/lib/chrome-profile.ts';
 import { CHROME_SILENT_FLAGS } from '../tools/port/cdp.ts';
 import { Button, STICK_MAX } from './input.ts';
 
@@ -45,7 +45,7 @@ async function openPage() {
     writeFileSync(file, html);
 
     const port = 9300 + Math.floor(Math.random() * 500);
-    proc = spawn(chrome as string, ['--headless=new', ...CHROME_SILENT_FLAGS, `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, '--no-first-run', '--window-size=844,390', 'about:blank'], { stdio: 'ignore' });
+    proc = spawnChrome(chrome as string, ['--headless=new', ...CHROME_SILENT_FLAGS, `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, '--no-first-run', '--window-size=844,390', 'about:blank'], { stdio: 'ignore' });
     let targets: Array<{ type: string; webSocketDebuggerUrl: string }> = [];
     for (let i = 0; i < 100 && !targets.length; i++) {
       await new Promise((r) => setTimeout(r, 100));

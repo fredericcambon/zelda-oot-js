@@ -5,7 +5,7 @@ import { type ChildProcess, spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { createChromeProfile, removeChromeProfile } from '../lib/chrome-profile.ts';
+import { createChromeProfile, removeChromeProfile , spawnChrome } from '../lib/chrome-profile.ts';
 
 const { values } = parseArgs({
   options: {
@@ -122,7 +122,7 @@ try {
   children.push(vite);
   await waitFor('the dev server', async () => ((await fetch(`http://localhost:${port}/`)).ok ? true : undefined));
   const debugPort = port + 1;
-  chrome = spawn(values.chrome!, [
+  chrome = spawnChrome(values.chrome!, [
     '--headless=new', `--remote-debugging-port=${debugPort}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check',
     '--ignore-gpu-blocklist', '--mute-audio', '--autoplay-policy=no-user-gesture-required', 'about:blank',
   ], { stdio: 'ignore' });
