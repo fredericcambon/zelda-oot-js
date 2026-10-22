@@ -823,9 +823,8 @@ export class Renderer {
     this.stats.rects++;
     this.stats.unmergedDrawCalls++;
     const state = b.state;
-    const copyOrFill = cycleTypeOf(state.otherModeH) >= CycleType.COPY;
     const x0 = b.xh / 4, y0 = b.yh / 4;
-    const x1 = b.xl / 4 + (copyOrFill ? 1 : 0), y1 = b.yl / 4 + (copyOrFill ? 1 : 0);
+    const [x1, y1] = rectEnd(b, SCREEN_W, SCREEN_H);
     // A copy-mode rectangle steps four pixels per texel step.
     const stepS = b.dsdx / 1024 / (cycleTypeOf(state.otherModeH) === CycleType.COPY ? 4 : 1);
     const stepT = b.dtdy / 1024;
