@@ -3,7 +3,7 @@
 // (same profile, so the HTTP cache is warm). The page publishes its milestones as `globalThis.ootTiming`.
 import { type ChildProcess, spawn } from 'node:child_process';
 import { parseArgs } from 'node:util';
-import { createChromeProfile, removeChromeProfile } from '../lib/chrome-profile.ts';
+import { createChromeProfile, removeChromeProfile , spawnChrome } from '../lib/chrome-profile.ts';
 import { Cdp, CHROME_SILENT_FLAGS, waitFor } from './cdp.ts';
 
 const FIRST_FRAME_LIMIT_MS = 1500;
@@ -70,7 +70,7 @@ try {
   await waitFor('the dev server', async () => ((await fetch(url)).ok ? true : undefined));
 
   const debugPort = port + 1;
-  chrome = spawn(values.chrome!, [
+  chrome = spawnChrome(values.chrome!, [
     '--headless=new', ...CHROME_SILENT_FLAGS, `--remote-debugging-port=${debugPort}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check',
     '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required', 'about:blank',
   ], { stdio: 'ignore' });

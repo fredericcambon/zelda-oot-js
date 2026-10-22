@@ -1,17 +1,17 @@
 // Keys 5, 6 and 7 in the real page: headless Chrome against the dev server, with and without the disk saves endpoint, at
-// both video rates. Needs the built game and its assets in dist/ (`npm run port`) and Chrome (CHROME_PATH or a usual place).
-import { type ChildProcess, spawn } from 'node:child_process';
+// both video rates. Needs OOT_ROM, the built game and its assets in dist/ (`npm run port`) and Chrome (CHROME_PATH or a usual place).
+import { type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createServer as createViteServer } from 'vite';
 import { describe, expect, it } from 'vitest';
-import { createChromeProfile, removeChromeProfile, removeWithRetry } from '../tools/lib/chrome-profile.ts';
+import { createChromeProfile, removeChromeProfile, removeWithRetry , spawnChrome } from '../tools/lib/chrome-profile.ts';
 import { CHROME_SILENT_FLAGS } from '../tools/port/cdp.ts';
 
 const CHROME = [process.env.CHROME_PATH, 'C:/Program Files/Google/Chrome/Application/chrome.exe', '/usr/bin/google-chrome', '/usr/bin/chromium'].find((p) => p && existsSync(p));
-const built = existsSync(resolve('dist/oot.wasm')) && existsSync(resolve('dist/assets/manifest.json'));
+const built = !!process.env.OOT_ROM && existsSync(resolve('dist/oot.wasm')) && existsSync(resolve('dist/assets/manifest.json'));
 
 type Reply = { id?: number; method?: string; params?: Record<string, unknown>; result?: unknown; error?: { message: string } };
 
@@ -100,7 +100,7 @@ describe.skipIf(!CHROME || !built)('save states in the page', () => {
         const vite = await createViteServer({ configFile: resolve('vite.config.ts'), server: { port: 0, strictPort: true, host: '127.0.0.1' }, logLevel: 'silent' });
         await vite.listen();
         const debugPort = 9300 + Math.floor(Math.random() * 500);
-        const chrome: ChildProcess = spawn(CHROME!, ['--headless=new', ...CHROME_SILENT_FLAGS, `--remote-debugging-port=${debugPort}`, `--user-data-dir=${profile}`, '--no-first-run', '--enable-unsafe-swiftshader', '--use-angle=swiftshader', 'about:blank'], { stdio: 'ignore' });
+        const chrome: ChildProcess = spawnChrome(CHROME!, ['--headless=new', ...CHROME_SILENT_FLAGS, `--remote-debugging-port=${debugPort}`, `--user-data-dir=${profile}`, '--no-first-run', '--enable-unsafe-swiftshader', '--use-angle=swiftshader', 'about:blank'], { stdio: 'ignore' });
         let page: Page | undefined;
         try {
           await waitFor('chrome', () => fetch(`http://127.0.0.1:${debugPort}/json/version`).then((r) => r.ok), 30_000);

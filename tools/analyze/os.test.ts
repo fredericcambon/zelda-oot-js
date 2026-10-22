@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { loadContext } from './context.ts';
 import { analyseImage, buildSpecs } from './image.ts';
 import { identifyOs, loadSignatures, type OsRoutine } from './os.ts';
@@ -45,11 +45,17 @@ describe('reverse-engineering notes', () => {
 });
 
 describe.skipIf(!rom || !existsSync(rom))('OS routines of the ROM', () => {
-  const sigs = loadSignatures();
-  const ctx = loadContext(rom!);
-  const specs = buildSpecs(ctx);
-  const result = identifyOs(ctx, specs, specs.map((s) => analyseImage(s)), sigs);
-  const byId = new Map<string, OsRoutine>(result.routines.map((r) => [r.id, r]));
+  // Built in beforeAll: vitest runs a skipped suite's body at collection, when there is no ROM to read.
+  let sigs: ReturnType<typeof loadSignatures>;
+  let result: ReturnType<typeof identifyOs>;
+  let byId: Map<string, OsRoutine>;
+  beforeAll(() => {
+    sigs = loadSignatures();
+    const ctx = loadContext(rom!);
+    const specs = buildSpecs(ctx);
+    result = identifyOs(ctx, specs, specs.map((s) => analyseImage(s)), sigs);
+    byId = new Map(result.routines.map((r) => [r.id, r]));
+  });
 
   it('resolves every rule to exactly one address', () => {
     const unresolved = result.routines.filter((r) => r.status !== 'found' && r.status !== 'not-present');

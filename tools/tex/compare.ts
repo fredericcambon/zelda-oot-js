@@ -9,7 +9,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, write
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { encodePng } from '../gfx/png.ts';
-import { createChromeProfile, removeChromeProfile, removeWithRetry } from '../lib/chrome-profile.ts';
+import { createChromeProfile, removeChromeProfile, removeWithRetry , spawnChrome } from '../lib/chrome-profile.ts';
 import type { RgbaImage } from '../gfx/types.ts';
 import { savesDir } from '../../web/saves-endpoint.ts';
 import { decodePng } from './png-read.ts';
@@ -194,7 +194,7 @@ export async function compare({ out, pack, dump, variants: wanted, places, chrom
     children.push(vite);
     await waitFor('the dev server', async () => ((await fetch(`http://localhost:${port}/`)).ok ? true : undefined));
     const debugPort = port + 1;
-    browser = spawn(chrome, [
+    browser = spawnChrome(chrome, [
       '--headless=new', `--remote-debugging-port=${debugPort}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check',
       '--ignore-gpu-blocklist', '--mute-audio', '--autoplay-policy=no-user-gesture-required', 'about:blank',
     ], { stdio: 'ignore' });

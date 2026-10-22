@@ -10,7 +10,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { createChromeProfile, removeChromeProfile } from '../lib/chrome-profile.ts';
+import { createChromeProfile, removeChromeProfile , spawnChrome } from '../lib/chrome-profile.ts';
 import { Cdp, CHROME_SILENT_FLAGS, sleep, waitFor } from './cdp.ts';
 
 const { values } = parseArgs({
@@ -117,7 +117,7 @@ try {
   await waitFor('the dev server', async () => ((await fetch(url)).ok ? true : undefined));
 
   const debugPort = port + 1;
-  chrome = spawn(values.chrome!, [
+  chrome = spawnChrome(values.chrome!, [
     ...(values.headless ? ['--headless=new', '--use-angle=d3d11', '--enable-gpu'] : []),
     ...CHROME_SILENT_FLAGS,
     `--remote-debugging-port=${debugPort}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check',

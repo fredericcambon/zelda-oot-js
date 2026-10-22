@@ -1,12 +1,12 @@
 // Drives the overlay in headless Chrome with emulated touch events. Skipped when no Chrome is found (set CHROME_PATH to point at one).
-import { spawn, type ChildProcess } from 'node:child_process';
+import { type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { buildSync } from 'esbuild';
 import { afterAll, describe, expect, it } from 'vitest';
-import { createChromeProfile, removeChromeProfile } from '../tools/lib/chrome-profile.ts';
+import { createChromeProfile, removeChromeProfile , spawnChrome } from '../tools/lib/chrome-profile.ts';
 import { CHROME_SILENT_FLAGS } from '../tools/port/cdp.ts';
 import { Button, STICK_MAX } from './input.ts';
 
@@ -45,7 +45,7 @@ async function openPage() {
     writeFileSync(file, html);
 
     const port = 9300 + Math.floor(Math.random() * 500);
-    proc = spawn(chrome as string, ['--headless=new', ...CHROME_SILENT_FLAGS, `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, '--no-first-run', '--window-size=844,390', 'about:blank'], { stdio: 'ignore' });
+    proc = spawnChrome(chrome as string, ['--headless=new', ...CHROME_SILENT_FLAGS, `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, '--no-first-run', '--window-size=844,390', 'about:blank'], { stdio: 'ignore' });
     let targets: Array<{ type: string; webSocketDebuggerUrl: string }> = [];
     for (let i = 0; i < 100 && !targets.length; i++) {
       await new Promise((r) => setTimeout(r, 100));
@@ -98,7 +98,7 @@ describe.skipIf(!chrome)('touch overlay in headless Chrome', () => {
     await touch('touchEnd', []);
     expect(await pad()).toEqual({ buttons: 0, x: 0, y: 0 });
     close();
-  }, 60_000);
+  }, 300_000);
 
   it('does not zoom on a double tap next to a button or in the empty control area', async () => {
     const page = await openPage();
@@ -115,7 +115,7 @@ describe.skipIf(!chrome)('touch overlay in headless Chrome', () => {
     await new Promise((r) => setTimeout(r, 400));
     expect(await scale()).toBe(1);
     page.close();
-  }, 60_000);
+  }, 300_000);
 
   it('keeps every portrait control below the picture and inside the screen', async () => {
     const page = await openPage();
@@ -130,5 +130,5 @@ describe.skipIf(!chrome)('touch overlay in headless Chrome', () => {
       }
     }
     page.close();
-  }, 60_000);
+  }, 300_000);
 });

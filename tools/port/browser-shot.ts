@@ -25,7 +25,7 @@ import { Cdp, CHROME_SILENT_FLAGS, sleep, waitFor } from './cdp.ts';
 import { contactSheet, crop, diffImage, diffStats, downscale, formatDiff, parseRegion } from '../gfx/image-ops.ts';
 import { encodePng } from '../gfx/png.ts';
 import type { RgbaImage } from '../gfx/types.ts';
-import { createChromeProfile, removeChromeProfile } from '../lib/chrome-profile.ts';
+import { createChromeProfile, removeChromeProfile , spawnChrome } from '../lib/chrome-profile.ts';
 import { decodePng } from '../tex/png-read.ts';
 
 const { values } = parseArgs({
@@ -77,7 +77,7 @@ try {
   children.push(spawn('npx', ['vite', '--config', 'vite.config.ts', '--port', String(port), '--strictPort'], { stdio: 'ignore', shell: true }));
   await waitFor('the dev server', async () => ((await fetch(`http://localhost:${port}/`)).ok ? true : undefined), 60_000);
   const debugPort = port + 1;
-  chrome = spawn(values.chrome!, [
+  chrome = spawnChrome(values.chrome!, [
     '--headless=new', `--remote-debugging-port=${debugPort}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check',
     '--ignore-gpu-blocklist', ...CHROME_SILENT_FLAGS, 'about:blank',
   ], { stdio: 'ignore' });

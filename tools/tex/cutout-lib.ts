@@ -1,6 +1,6 @@
 // Shared by tools/tex/cutout-compare.ts: starts the dev server and headless Chrome and drives the page over the DevTools protocol.
 import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
-import { createChromeProfile, removeChromeProfile } from '../lib/chrome-profile.ts';
+import { createChromeProfile, removeChromeProfile , spawnChrome } from '../lib/chrome-profile.ts';
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -65,7 +65,7 @@ export async function start(port: number, chrome: string): Promise<Session> {
   try {
     children.push(spawn('npx', ['vite', '--config', 'vite.config.ts', '--port', String(port), '--strictPort'], { stdio: 'ignore', shell: true }));
     await waitFor('the dev server', async () => ((await fetch(`http://localhost:${port}/`)).ok ? true : undefined));
-    browser = spawn(chrome, [
+    browser = spawnChrome(chrome, [
       '--headless=new', `--remote-debugging-port=${port + 1}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check',
       '--ignore-gpu-blocklist', '--mute-audio', '--autoplay-policy=no-user-gesture-required', 'about:blank',
     ], { stdio: 'ignore' });
