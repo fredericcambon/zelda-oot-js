@@ -43,15 +43,59 @@ function withLock(lockPath, fn) {
   }
 }
 
+/** Tools the package scripts run; each must have a launcher in node_modules/.bin. */
+export const REQUIRED_BINS = ['tsx', 'vite', 'vitest', 'eslint', 'tsc'];
+
+/**
+ * True when the install in `dir` is whole: the marker holds the top-level package count taken at install time, node_modules
+ * has at least that many entries and .bin has every required tool. A marker without a count (an older install) is not whole.
+ * Costs one readdir and a few stats.
+ */
+export function isComplete(dir, bins = REQUIRED_BINS) {
+  try {
+    const expected = Number.parseInt(readFileSync(join(dir, READY), 'utf8'), 10);
+    if (!(expected > 0)) return false;
+    const modules = join(dir, 'node_modules');
+    if (readdirSync(modules).length < expected) return false;
+    const ext = process.platform === 'win32' ? '.cmd' : '';
+    return bins.every((b) => existsSync(join(modules, '.bin', b + ext)));
+  } catch {
+    return false;
+  }
+}
+
+// A deletion that follows the worktree's junction (robocopy /MIR does; Node, Remove-Item and rd do not) empties the shared
+// install. A deny-delete entry for Everyone, inherited by every file and folder, makes any recursive delete fail instead.
+// Reads, execution and writes are untouched, so vite, vitest, tsx and eslint run as before.
+const EVERYONE = '*S-1-1-0';
+const icacls = (args) => spawnSync('icacls', args, { stdio: 'ignore' }).status === 0;
+
+/** Marks `modules` and everything in it undeletable (Windows only). */
+export function protect(modules) {
+  return process.platform !== 'win32' || icacls([modules, '/deny', `${EVERYONE}:(OI)(CI)(DE,DC)`, '/C', '/Q']);
+}
+
+/** Lifts the protection from `modules` so the folder can be replaced or removed (Windows only). */
+export function unprotect(modules) {
+  return process.platform !== 'win32' || !existsSync(modules) || icacls([modules, '/remove:d', EVERYONE, '/T', '/C', '/Q']);
+}
+
+/** Removes an install folder, lifting its protection first. */
+export function removeInstall(dir) {
+  unprotect(join(dir, 'node_modules'));
+  rmSync(dir, { recursive: true, force: true });
+}
+
 /** Installs the packages for `repo`'s lock file into <deps>/<hash>/node_modules unless they are there. Returns that folder. */
 export function ensureInstalled(repo, root = depsRoot(), log = console.log) {
   const hash = lockHash(join(repo, 'package-lock.json'));
   const dir = join(root, hash);
   const ready = join(dir, READY);
-  if (!existsSync(ready)) {
+  if (!isComplete(dir)) {
     withLock(join(root, `${hash}.lock`), () => {
-      if (existsSync(ready)) return;
-      rmSync(dir, { recursive: true, force: true });
+      if (isComplete(dir)) return;
+      if (existsSync(ready)) log(`deps: ${dir} is incomplete; reinstalling`);
+      removeInstall(dir);
       mkdirSync(dir, { recursive: true });
       for (const f of ['package.json', 'package-lock.json']) copyFileSync(join(repo, f), join(dir, f));
       log(`deps: installing into ${dir} (once per package-lock.json)`);
@@ -65,7 +109,10 @@ export function ensureInstalled(repo, root = depsRoot(), log = console.log) {
         rmSync(dir, { recursive: true, force: true });
         throw new Error('npm ci failed');
       }
-      writeFileSync(ready, '');
+      const modules = join(dir, 'node_modules');
+      const count = readdirSync(modules).length;
+      if (!protect(modules)) log('deps: could not protect the install from deletion');
+      writeFileSync(ready, String(count));
     });
   }
   const now = new Date();
@@ -116,7 +163,7 @@ export function pruneUnused(root, keep, days = UNUSED_DAYS, now = Date.now()) {
     if (name === keep || !/^[0-9a-f]{64}$/.test(name)) continue;
     try {
       if (!existsSync(join(path, READY)) || now - statSync(path).mtimeMs <= days * 86_400_000) continue;
-      rmSync(path, { recursive: true, force: true });
+      removeInstall(path);
       removed.push(name);
     } catch {
       // Another process is using or removing it.

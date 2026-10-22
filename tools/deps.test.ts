@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 // @ts-expect-error plain JavaScript module without declarations
-import { junction, lockHash, pruneUnused } from './deps.mjs';
+import { isComplete, junction, lockHash, pruneUnused } from './deps.mjs';
 
 let root: string;
 beforeEach(() => {
@@ -60,6 +60,37 @@ describe('junction', () => {
     expect(junction(link, target())).toBe('kept');
     expect(existsSync(join(link, 'mine'))).toBe(true);
     expect(lstatSync(link).isSymbolicLink()).toBe(false);
+  });
+});
+
+describe('isComplete', () => {
+  const ext = process.platform === 'win32' ? '.cmd' : '';
+  const bins = ['tsx', 'vite'];
+  const fake = (count: number, binNames = bins, marker = String(count)) => {
+    const dir = join(root, 'install');
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(join(dir, 'node_modules', '.bin'), { recursive: true });
+    for (let i = 1; i < count; i++) mkdirSync(join(dir, 'node_modules', `p${i}`));
+    for (const b of binNames) writeFileSync(join(dir, 'node_modules', '.bin', b + ext), '');
+    writeFileSync(join(dir, 'ready'), marker);
+    return dir;
+  };
+
+  it('accepts an install with its stored count and tools', () => {
+    expect(isComplete(fake(5), bins)).toBe(true);
+  });
+
+  it('rejects a missing install, an empty marker and a missing .bin tool', () => {
+    expect(isComplete(join(root, 'none'), bins)).toBe(false);
+    expect(isComplete(fake(5, bins, ''), bins)).toBe(false);
+    expect(isComplete(fake(5, ['tsx']), bins)).toBe(false);
+  });
+
+  it('rejects an install that lost top-level packages', () => {
+    const dir = fake(5);
+    rmSync(join(dir, 'node_modules', 'p1'), { recursive: true });
+    rmSync(join(dir, 'node_modules', 'p2'), { recursive: true });
+    expect(isComplete(dir, bins)).toBe(false);
   });
 });
 
