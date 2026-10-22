@@ -40,6 +40,7 @@ Where to look first. Search with grep before reading whole files.
 - Lighting: `web/point-lights.ts`, `web/shader.ts`, `docs/re/lighting.md`.
 - Input: `web/input.ts`, `docs/re/input.md`.
 - Saves: `web/saves.ts`, `web/savestate.ts`, `tools/saves/`, `docs/re/saves.md`.
+- Link's tunic colour: `runtime/rsp.c` `rt_patch_tunic`, `docs/re/tunic.md`.
 - Warps: `web/inspect/warp.ts`, `web/ui/warp-tab.ts`, `docs/re/entrances.md`.
 - Texture pack: `tools/tex/`, `web/tex-pack.ts`, `docs/texture-pack.md`.
 - Build and cache: `docs/build.md`, `tools/port/build.ts`; web deploy: `docs/web.md`.

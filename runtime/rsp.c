@@ -67,6 +67,18 @@ EMSCRIPTEN_KEEPALIVE uint32_t oot_rsp_task_kind(uint32_t i, uint32_t field) {
   return field == 0 ? task_kinds[i].type : field == 1 ? task_kinds[i].ucode : task_kinds[i].count;
 }
 
+// The tunic colour table in the code file's data (0x800f5a38): three bytes per tunic, Kokiri first, which the draw routine at
+// 0x8007a680 copies into a G_SETENVCOLOR word (docs/re/tunic.md). The Kokiri entry becomes a near-black; a table that does not
+// hold the original green is left alone.
+#define TUNIC_TABLE 0x800f5a38u
+static const uint8_t tunic_kokiri_green[3] = {0x1e, 0x69, 0x1b};
+static const uint8_t tunic_kokiri_black[3] = {0x20, 0x20, 0x20};
+
+void rt_patch_tunic(void) {
+  for (int k = 0; k < 3; k++) if (rd8(TUNIC_TABLE + k) != tunic_kokiri_green[k]) return;
+  for (int k = 0; k < 3; k++) wr8(TUNIC_TABLE + k, tunic_kokiri_black[k]);
+}
+
 void rsp_reset(void) { ai_count = 0; ai_queued = ai_gaps = 0; task_kind_n = 0; }
 uint32_t rt_ai_gaps(void) { return ai_gaps; }
 
@@ -97,6 +109,7 @@ void rt_osSpTaskStartGo(Cpu *c) {
   note_task(&task);
   uint64_t done = rt_clock();
   if (task.type == TASK_GFX) {
+    rt_patch_tunic();
     if (gfx_hook) gfx_hook(&task);
     done += GFX_TASK_CYCLES;
     rt_schedule(done, TE_RSP_EVENT, EVENT_SP, 0);
