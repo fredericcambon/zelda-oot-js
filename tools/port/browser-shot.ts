@@ -6,6 +6,7 @@
 //   --seconds <n> --every <s> --from <s>   shot every s seconds up to n, skipping those before `from`
 //   --frames <n> --every-frames <k>        instead of seconds: n shots, each after k more game frames (adds `capture` to the query; names `<out>-f<frame>.png`)
 //   --save-at <seconds>    presses 5 (save state to the current slot; set OOT_SAVES_DIR so the user's folder is untouched)
+//   --press <Code@seconds,...>  holds the key with that `KeyboardEvent.code` for 0.4 s at that second (`Enter@40` is Start, `KeyX@45` is A)
 //   --phone <WxH>         emulates a touch phone of that size (844x390 is landscape) and shoots the whole page, overlay included, instead of the canvas
 //   --eval <global>        writes JSON.stringify(globalThis.<global>) after each shot to `<out>-<seconds>.txt`
 //   --region x,y,w,h       crop, in canvas pixels (the game's framebuffer coordinates)
@@ -40,6 +41,7 @@ const { values } = parseArgs({
     eval: { type: 'string' },
     from: { type: 'string', default: '0' },
     'save-at': { type: 'string' },
+    press: { type: 'string', default: '' },
     ls: { type: 'string', default: '' },
     region: { type: 'string' },
     max: { type: 'string', default: '512' },
@@ -66,6 +68,7 @@ const region = values.region ? parseRegion(values.region) : undefined;
 const max = Number(values.max);
 const reference = values.diff ? decodePng(readFileSync(values.diff)) : undefined;
 const frameMode = values.frames !== undefined;
+const presses = values.press.split(',').filter(Boolean).map((p): [string, number] => [p.split('@')[0]!, Number(p.split('@')[1])]);
 const sheet: RgbaImage[] = [];
 const small = (img: RgbaImage) => (max > 0 ? downscale(img, max) : img);
 const write = (path: string, img: RgbaImage) => writeFileSync(path, encodePng(img.width, img.height, img.rgba));
@@ -131,6 +134,12 @@ try {
     for (let t = every; t <= total; t = Math.round((t + every) * 100) / 100) {
       await sleep(every * 1000);
       if (values['save-at'] && t === Number(values['save-at'])) for (const type of ['keyDown', 'keyUp']) await call('Input.dispatchKeyEvent', { type, key: '5', code: 'Digit5', text: type === 'keyDown' ? '5' : undefined });
+      for (const [code, at] of presses) {
+        if (at !== t) continue;
+        await call('Input.dispatchKeyEvent', { type: 'keyDown', key: code, code });
+        await sleep(400);
+        await call('Input.dispatchKeyEvent', { type: 'keyUp', key: code, code });
+      }
       if (t < Number(values.from)) continue;
       await shoot(`${t}`);
     }
