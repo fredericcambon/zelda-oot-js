@@ -78,3 +78,15 @@ export function mergeRuns(batches: readonly Batch[]): Run[] {
   }
   return runs;
 }
+
+/**
+ * Where a rectangle ends, in pixels of a `w` x `h` screen. Copy and fill modes include the lower-right corner's pixel. A one- or two-cycle
+ * fill rectangle (the fades) leaves it out on the RDP, but the game names the last pixel of the screen (319, 239) as its corner when it means
+ * the whole picture, and the television overscan hides the column and row that this leaves unpainted; here they would keep the picture
+ * drawn under the fade, so a corner on the last pixel is taken to include it.
+ */
+export function rectEnd(b: RectBatch, w: number, h: number): [number, number] {
+  const x = b.xl / 4, y = b.yl / 4;
+  if (cycleTypeOf(b.state.otherModeH) >= CycleType.COPY) return [x + 1, y + 1];
+  return b.kind === 'fillrect' ? [x === w - 1 ? w : x, y === h - 1 ? h : y] : [x, y];
+}

@@ -1,7 +1,7 @@
 // WebGL2 back end for the draw batches of tools/gfx/types.ts (produced by the interpreter in runtime/gfx/). Every colour image the game draws into is a 320x240 texture
 // keyed by its address, so double buffering behaves as on the console; the depth image is one shared buffer.
 import type { DecodedTexture, DisplayListResult, DrawState, LightSet, RectBatch, TriangleBatch } from '../tools/gfx/types.ts';
-import { mergeRuns, type DrawRun, type Run } from './batching.ts';
+import { mergeRuns, rectEnd, type DrawRun, type Run } from './batching.ts';
 import { GpuTimer } from './gpu-timer.ts';
 import { flicker, frameCamera, pickLights, POINT_LIGHT_COLOR, POINT_LIGHT_GAIN, POINT_LIGHT_RADIUS, type FrameCamera, type PointLight } from './point-lights.ts';
 import { Geo } from '../tools/gfx/opcodes.ts';
@@ -823,9 +823,8 @@ export class Renderer {
     this.stats.rects++;
     this.stats.unmergedDrawCalls++;
     const state = b.state;
-    const copyOrFill = cycleTypeOf(state.otherModeH) >= CycleType.COPY;
     const x0 = b.xh / 4, y0 = b.yh / 4;
-    const x1 = b.xl / 4 + (copyOrFill ? 1 : 0), y1 = b.yl / 4 + (copyOrFill ? 1 : 0);
+    const [x1, y1] = rectEnd(b, SCREEN_W, SCREEN_H);
     // A copy-mode rectangle steps four pixels per texel step.
     const stepS = b.dsdx / 1024 / (cycleTypeOf(state.otherModeH) === CycleType.COPY ? 4 : 1);
     const stepT = b.dtdy / 1024;

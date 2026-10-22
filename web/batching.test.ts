@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { decodeCombine, type Batch, type DrawState, type RectBatch, type TriangleBatch } from '../tools/gfx/types.ts';
-import { mergeRuns } from './batching.ts';
+import { mergeRuns, rectEnd } from './batching.ts';
 
 const rgba = { r: 0, g: 0, b: 0, a: 0 };
 const tile = { fmt: 0, siz: 3, line: 0, tmem: 0, palette: 0, cmT: 0, maskT: 0, shiftT: 0, cmS: 0, maskS: 0, shiftS: 0, uls: 0, ult: 0, lrs: 0, lrt: 0, sized: true };
@@ -61,5 +61,25 @@ describe('mergeRuns', () => {
   it('skips empty triangle batches without ending a run', () => {
     const empty: TriangleBatch = { ...tri(state()), positions: new Float32Array(0) };
     expect(sizes([tri(state()), empty, tri(state())])).toEqual([2]);
+  });
+});
+
+describe('rectEnd', () => {
+  const at = (mode: number, kind: RectBatch['kind'], xl: number, yl: number): RectBatch => ({ ...rect(state({ otherModeH: mode << 20 }), kind), xl, yl });
+
+  it('includes the corner pixel in copy and fill mode', () => {
+    expect(rectEnd(at(2, 'texrect', 1276, 956), 320, 240)).toEqual([320, 240]);
+    expect(rectEnd(at(3, 'fillrect', 100, 60), 320, 240)).toEqual([26, 16]);
+  });
+
+  it('leaves the corner pixel out of a texture rectangle in one-cycle mode', () => {
+    expect(rectEnd(at(0, 'texrect', 1276, 956), 320, 240)).toEqual([319, 239]);
+  });
+
+  it('extends a one-cycle fill rectangle that ends on the last pixel of the screen, and no other', () => {
+    expect(rectEnd(at(0, 'fillrect', 1276, 956), 320, 240)).toEqual([320, 240]);
+    expect(rectEnd(at(1, 'fillrect', 1276, 124), 320, 240)).toEqual([320, 31]);
+    expect(rectEnd(at(0, 'fillrect', 1280, 960), 320, 240)).toEqual([320, 240]);
+    expect(rectEnd(at(0, 'fillrect', 400, 200), 320, 240)).toEqual([100, 50]);
   });
 });
