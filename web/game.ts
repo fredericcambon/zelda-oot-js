@@ -13,6 +13,7 @@ import type { Renderer } from './renderer.ts';
 import type { SaveMemory } from './saves.ts';
 import { compress, decompress, type StateSource } from './savestate.ts';
 import { mark } from './timing.ts';
+import { GAME_MODE, logoAlpha, titleFade } from './title-edition.ts';
 import { MODULE_URL, type WasmBuild } from './wasm.ts';
 import { loadState, saveState, type StateCore } from '../tools/runtime/snapshot.ts';
 
@@ -38,6 +39,8 @@ export interface Game {
   frame(): Promise<void>;
   /** Address of the colour image the video interface shows. */
   framebuffer(): number;
+  /** How visible the title logo is in the last picture drawn, 0 to 1 (0 away from the title); see title-edition.ts. */
+  titleFade(): number;
   /** Times the phases of each game frame; see FrameProfiler. */
   profiler: FrameProfiler;
   /**
@@ -82,6 +85,7 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
   let tuning = FULL_SMOOTHING;
   let drawn = '';
   let lastShown: number | null = null;
+  let titleAlpha = 0;
   // 1: lit triangles come with normals and light sets for per-pixel shading (runtime/gfx/gfx.h).
   const useLighting = () => {
     mod._gfx_set_pixel_lighting(renderer.options.lightingMode === 'pixel' ? 1 : 0);
@@ -127,6 +131,7 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
         useLighting();
         const result = runDisplayList(mod, data);
         const t1 = performance.now();
+        titleAlpha = logoAlpha(result.batches);
         renderer.drawTask(result, guestRam());
         profiler.addDisplayList(t1 - t0);
         profiler.addSubmit(performance.now() - t1, renderer.stats.drawCalls);
@@ -193,6 +198,7 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
         useLighting();
         const result = frames!.at(t);
         const t1 = performance.now();
+        titleAlpha = logoAlpha(result.batches);
         renderer.drawTask(result);
         profiler.addDisplayList(t1 - t0);
         profiler.addSubmit(performance.now() - t1, renderer.stats.drawCalls);
@@ -219,6 +225,7 @@ export async function startGame(rom: Uint8Array, renderer: Renderer, audio: Audi
       }
     },
     framebuffer: () => shownFramebuffer((addr) => view().getUint32(addr & 0x1fffffff)),
+    titleFade: () => titleFade(titleAlpha, view().getUint32(GAME_MODE & 0x1fffffff)),
     info: () => ({ frames: mod._oot_frames(), retraces: mod._oot_retraces(), gfxTasks: mod._oot_gfx_tasks(), audioTasks: mod._oot_audio_tasks(), idle: mod._oot_idle() !== 0, renderError, audioError }),
   };
 }

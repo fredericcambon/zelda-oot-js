@@ -28,6 +28,7 @@ Where to look first. Search with grep before reading whole files.
 - `web/main.ts` page start: settings, canvas, keys, panel wiring.
 - `web/game.ts` boots the wasm, feeds each graphics task to the renderer, audio, timing.
 - `web/renderer.ts` WebGL2 back end (1160+ lines: grep for the function, read by line range); `shader.ts`, `batching.ts`, `post-fx.ts`, `ao.ts`, `point-lights.ts`, `gfx-settings.ts` support it.
+- `web/title-edition.ts` the "Fraidoux Edition" line over the title logo (`docs/re/title-logo.md`); its font is `web/fonts/` (Cinzel Bold subset, OFL licence beside it).
 - `web/input.ts` keyboard/gamepad to controller 1; `touch.ts` touch.
 - `web/saves.ts`, `savestate.ts`, `save-actions.ts`, `save-picker.ts`, `published-saves.ts` saves and save states.
 - `web/tex-pack.ts` texture replacement lookup.

@@ -30,6 +30,7 @@ import { EMPTY_MEMORY, MemoryModel, parseAddress } from './inspect/memory.ts';
 import { labels } from './ui/labels.ts';
 import { mountUi } from './ui/panel.ts';
 import { Store } from './ui/store.ts';
+import { TitleEdition } from './title-edition.ts';
 import { isTyping } from './ui/typing.ts';
 import type { UiActions, UiState } from './ui/types.ts';
 
@@ -40,6 +41,7 @@ const status = document.getElementById('status')!;
 const overlay = document.getElementById('overlay') as HTMLPreElement;
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
 const notice = document.getElementById('notice')!;
+const edition = new TitleEdition(canvas.parentElement!, overlay);
 
 const SMOOTH_KEY = 'oot.smooth';
 const readSmooth = (): boolean => {
@@ -186,6 +188,7 @@ if (captureMode) {
       await game.frame();
     }
     renderer.present(game.framebuffer());
+    edition.set(game.titleFade());
   };
 }
 let fps = 0;
@@ -264,6 +267,7 @@ function toggleNative(): void {
   const native = renderer.resolutionScale !== 1;
   renderer.setScale(native ? 1 : displayScale());
   canvas.classList.toggle('native', native);
+  edition.canvas.classList.toggle('native', native);
   store.set({ native });
 }
 function cycleCull(): void {
@@ -454,6 +458,7 @@ async function loop(): Promise<void> {
       const smooth = game.drawSmooth(pacer.fraction());
       if (smooth !== null || stepped) {
         renderer.present(smooth ?? game.framebuffer());
+        edition.set(game.titleFade());
         mark('firstFrame');
         presented++;
       }
