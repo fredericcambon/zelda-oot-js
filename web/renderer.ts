@@ -1,7 +1,7 @@
 // WebGL2 back end for the draw batches of tools/gfx/types.ts (produced by the interpreter in runtime/gfx/). Every colour image the game draws into is a 320x240 texture
 // keyed by its address, so double buffering behaves as on the console; the depth image is one shared buffer.
 import type { DecodedTexture, DisplayListResult, DrawState, LightSet, RectBatch, TriangleBatch } from '../tools/gfx/types.ts';
-import { mergeRuns, type DrawRun, type Run } from './batching.ts';
+import { mergeRuns, rectEnd, type DrawRun, type Run } from './batching.ts';
 import { GpuTimer } from './gpu-timer.ts';
 import { flicker, frameCamera, pickLights, POINT_LIGHT_COLOR, POINT_LIGHT_GAIN, POINT_LIGHT_RADIUS, type FrameCamera, type PointLight } from './point-lights.ts';
 import { Geo } from '../tools/gfx/opcodes.ts';
