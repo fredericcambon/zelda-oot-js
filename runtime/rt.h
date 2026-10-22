@@ -309,6 +309,8 @@ void pi_reset(void);
 void vi_reset(void);
 void cont_reset(void);
 void rsp_reset(void);
+// Turns the Kokiri tunic colour in the game's table near-black.
+void rt_patch_tunic(void);
 void timers_reset(void);
 
 // Sends `msg` to the queue when it has room, waking the first receiver; returns 0 when the queue is full.

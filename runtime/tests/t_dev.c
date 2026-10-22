@@ -608,6 +608,25 @@ TEST(a_submitted_task_never_yields_and_the_rsp_registers_read_idle) {
   os(&host, rt_osDpSetStatus, 1, 0, 0, 0);
 }
 
+TEST(a_graphics_task_turns_the_kokiri_tunic_black_and_leaves_the_other_tunics) {
+  static const uint8_t table[9] = {0x1e, 0x69, 0x1b, 0x64, 0x14, 0x00, 0x00, 0x3c, 0x64};
+  static const uint8_t want[9] = {0x20, 0x20, 0x20, 0x64, 0x14, 0x00, 0x00, 0x3c, 0x64};
+  for (int k = 0; k < 9; k++) wr8(0x800f5a38u + k, table[k]);
+  rt_set_gfx_hook(record_gfx);
+  build_task(TASK_GFX);
+  os(&host, rt_osSpTaskStartGo, TASK, 0, 0, 0);
+  for (int k = 0; k < 9; k++) CHECK_EQ(rd8(0x800f5a38u + k), want[k]);
+}
+
+TEST(a_tunic_table_that_is_not_the_original_green_is_left_alone) {
+  wr8(0x800f5a38u, 0x1e);
+  wr8(0x800f5a39u, 0x69);
+  wr8(0x800f5a3au, 0x1c);
+  rt_patch_tunic();
+  CHECK_EQ(rd8(0x800f5a38u), 0x1e);
+  CHECK_EQ(rd8(0x800f5a3au), 0x1c);
+}
+
 // ---- Audio interface ----------------------------------------------------------------------------------------------------
 
 static uint32_t hooked_addr, hooked_len;
